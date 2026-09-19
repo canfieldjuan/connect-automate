@@ -55,6 +55,23 @@ def test_generic_discovery_rejects_competing_timeout_sources(tmp_path: Path) -> 
         )
 
 
+@pytest.mark.parametrize("invalid", [0, -0.1, float("nan"), float("inf"), True])
+def test_generic_discovery_validates_timeout_with_injected_client(
+    tmp_path: Path, invalid: float
+) -> None:
+    with (
+        httpx.Client(
+            transport=httpx.MockTransport(lambda _request: None)
+        ) as client,
+        pytest.raises(ValueError, match="positive finite"),
+    ):
+        connect.discover_capabilities(
+            tmp_path,
+            client=client,
+            timeout_seconds=invalid,
+        )
+
+
 def registration(
     *,
     instance_id: str,
@@ -554,6 +571,37 @@ def test_generic_discovery_recomputes_remaining_timeout_per_manifest_request(
 
     assert len(catalog.items) == 1
     assert request_timeouts == [0.8, 0.5]
+
+
+def test_generic_discovery_applies_timeout_to_injected_client(tmp_path: Path) -> None:
+    directory = providers_dir_v2(tmp_path)
+    write_registration(
+        directory / "provider.json",
+        registration_v2(
+            instance_id=INSTANCE_A,
+            app_id="provider-a",
+            base_url="http://127.0.0.1:32123/",
+        ),
+    )
+    request_timeouts: list[dict[str, float]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        request_timeouts.append(request.extensions["timeout"])
+        return httpx.Response(200, json=manifest_v2(INSTANCE_A, "provider-a"))
+
+    with httpx.Client(
+        transport=httpx.MockTransport(handler), timeout=9.0
+    ) as client:
+        catalog = connect.discover_capabilities(
+            tmp_path,
+            client=client,
+            timeout_seconds=0.25,
+        )
+
+    assert len(catalog.items) == 1
+    assert request_timeouts == [
+        {"connect": 0.25, "read": 0.25, "write": 0.25, "pool": 0.25}
+    ]
 
 
 def test_registered_reconciliation_deduplicates_endpoint_without_manifest(

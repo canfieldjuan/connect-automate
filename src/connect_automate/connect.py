@@ -1146,6 +1146,9 @@ def _discover_capabilities(
 ) -> CapabilityCatalog:
     if timeout_seconds is not None and remaining_timeout is not None:
         raise ValueError("Connect discovery accepts one timeout source")
+    fixed_timeout = (
+        _http_timeout(timeout_seconds) if timeout_seconds is not None else None
+    )
     if require_entitlement and not entitlement.connect_entitlement_decision().is_active:
         return CapabilityCatalog((), "connect_entitlement_required")
     locations = _providers_directory(runtime_dir, GENERIC_PROTOCOL_VERSION)
@@ -1185,7 +1188,12 @@ def _discover_capabilities(
                     "Accept": "application/json",
                     "Authorization": f"Bearer {registration.auth.token}",
                 }
-                if remaining_timeout is None:
+                request_timeout = (
+                    _http_timeout(remaining_timeout())
+                    if remaining_timeout is not None
+                    else fixed_timeout
+                )
+                if request_timeout is None:
                     response_stream = active_client.stream(
                         "GET",
                         f"{base_url}v2/manifest",
@@ -1196,7 +1204,7 @@ def _discover_capabilities(
                         "GET",
                         f"{base_url}v2/manifest",
                         headers=headers,
-                        timeout=_http_timeout(remaining_timeout()),
+                        timeout=request_timeout,
                     )
                 with response_stream as response:
                     if response.status_code != 200:
