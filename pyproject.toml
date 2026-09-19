@@ -1,0 +1,43 @@
+[project]
+name = "connect-automate"
+version = "0.1.0"
+description = "Vendor-neutral licensed-consumer host core for Local Connect automations"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+  "cryptography>=45,<50",
+  "filelock>=3.18,<4",
+  "httpx>=0.28,<1",
+  "pydantic>=2.11,<3",
+]
+
+[project.scripts]
+connect-automate-host = "connect_automate.automate.host:main"
+
+[dependency-groups]
+dev = [
+  "pytest>=8.4,<9",
+  "pytest-cov>=6.2,<7",
+  "ruff>=0.12,<1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/connect_automate"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+markers = [
+  "integration: opt-in tests against ephemeral local services",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
