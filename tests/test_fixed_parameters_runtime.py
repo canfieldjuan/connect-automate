@@ -435,6 +435,8 @@ def test_persisted_wire_bytes_never_reserialized():
         "requirement-forwarding",
         "ack-selection",
         "requested-is-ack",
+        "legacy-header-bypass",
+        "unrelated-error-permanent",
     ],
 )
 def test_runtime_boundary_mutations_are_killed(tmp_path, mutation):
@@ -480,6 +482,21 @@ def test_runtime_boundary_mutations_are_killed(tmp_path, mutation):
         text = text.replace(
             "return (_manifest_policy.FEATURE,) if extended else ()", "return requested"
         )
+    elif mutation == "legacy-header-bypass":
+        text = text.replace(
+            "acknowledged = _admitted_manifest_features(\n"
+            "                        response, required_manifest_features\n                    )",
+            "acknowledged = (_admitted_manifest_features(response, required_manifest_features)\n"
+            "                        if required_manifest_features else ())",
+        )
+        target = "test_default_discovery_applies_consumer_header_policy"
+    elif mutation == "unrelated-error-permanent":
+        start = text.index("def _http_error_v2(")
+        end = text.index("def _http_timeout(", start)
+        fragment = text[start:end].replace('"PROVIDER_REQUEST_FAILED"', '"RESPONSE_INVALID"')
+        fragment = fragment.replace("retryable=response.status_code >= 500", "retryable=False")
+        text = text[:start] + fragment + text[end:]
+        target = "test_unrelated_malformed_error_preserves_legacy_fallback"
     source.write_text(text)
     source = package / "automate_connect.py"
     text = source.read_text()
@@ -507,3 +524,111 @@ def test_runtime_boundary_mutations_are_killed(tmp_path, mutation):
     assert result.returncode == 1, result.stdout + result.stderr
     assert "FAILED" in result.stdout and target in result.stdout, result.stdout + result.stderr
     assert "ERROR collecting" not in result.stdout, result.stdout
+
+
+@pytest.mark.parametrize(
+    "headers,admitted",
+    [
+        ([], True),
+        ([("Cache-Control", "no-store")], True),
+        ([("Cache-Control", "max-age=60")], False),
+        ([("Cache-Control", "no-store, max-age=wrong")], False),
+        ([("Vary", "Accept-Encoding, @invalid")], False),
+        ([("Cache-Control", "no-store"), ("cache-control", "no-store")], False),
+    ],
+)
+def test_default_discovery_applies_consumer_header_policy(tmp_path, monkeypatch, headers, admitted):
+    from test_connect import (
+        INSTANCE_A,
+        manifest_v2,
+        providers_dir_v2,
+        registration_v2,
+        write_registration,
+    )
+
+    monkeypatch.setattr(
+        connect.entitlement,
+        "connect_entitlement_decision",
+        lambda: connect.entitlement.EntitlementDecision.ACTIVE,
+    )
+    folder = providers_dir_v2(tmp_path)
+    write_registration(
+        folder / "provider.json",
+        registration_v2(
+            instance_id=INSTANCE_A, app_id="generic-provider", base_url="http://127.0.0.1:32123/"
+        ),
+    )
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        assert "local-connect-manifest-features" not in request.headers
+        return httpx.Response(
+            200, headers=headers, json=manifest_v2(INSTANCE_A, "generic-provider")
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        catalog = connect.discover_capabilities(tmp_path, client=http_client)
+    assert bool(catalog.items) is admitted
+    assert len(requests) == 1
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b'{"protocol_version":2,"error":',
+        b"<html>Unavailable</html>",
+        b'{"protocol_version":2,"error":{"code":"OTHER"}}',
+    ],
+)
+@pytest.mark.parametrize("status", [409, 503])
+def test_unrelated_malformed_error_preserves_legacy_fallback(payload, status):
+    capability = discovered_v2_capability()
+    job = connect.prepare_capability_job(capability, b"pdf", "application/pdf", "file.pdf")
+    calls = []
+
+    def handler(request):
+        calls.append(request.method)
+        return httpx.Response(status, content=payload)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        client = connect.ConnectV2Client(capability, client=http_client)
+        with pytest.raises(connect.ConnectError) as raised:
+            client.submit(job, b"pdf")
+    assert raised.value.code == "PROVIDER_REQUEST_FAILED"
+    assert raised.value.retryable is (status >= 500)
+    assert calls == ["POST"]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"error": {"code": "FIXED_PARAMETER_MISMATCH", "message": "Refused", "retryable": False}},
+        {
+            "protocol_version": 1,
+            "error": {"code": "FIXED_PARAMETER_MISMATCH", "message": "Refused", "retryable": False},
+        },
+        {
+            "protocol_version": 2,
+            "error": {"code": "FIXED_PARAMETER_MISMATCH", "message": 0, "retryable": False},
+        },
+        {
+            "protocol_version": 2,
+            "error": {
+                "code": "FIXED_PARAMETER_MISMATCH",
+                "message": "Refused",
+                "retryable": False,
+                "extra": 0,
+            },
+        },
+    ],
+)
+def test_identifiable_malformed_fixed_envelopes_remain_permanent(payload):
+    capability = discovered_v2_capability()
+    job = connect.prepare_capability_job(capability, b"pdf", "application/pdf", "file.pdf")
+    with httpx.Client(
+        transport=httpx.MockTransport(lambda request: httpx.Response(503, json=payload))
+    ) as client, pytest.raises(connect.ConnectError) as raised:
+        connect.ConnectV2Client(capability, client=client).submit(job, b"pdf")
+    assert raised.value.code == "RESPONSE_INVALID"
+    assert raised.value.retryable is False

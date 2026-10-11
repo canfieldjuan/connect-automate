@@ -365,9 +365,13 @@ class _JobResultV2(_WireModel):
 
 
 class _JobErrorV2(_JobError):
+    @staticmethod
+    def is_fixed_refusal_code(code: object) -> bool:
+        return type(code) is str and code == "FIXED_PARAMETER_MISMATCH"
+
     @model_validator(mode="after")
     def validate_fixed_refusal(self) -> _JobErrorV2:
-        if self.code == "FIXED_PARAMETER_MISMATCH" and self.retryable:
+        if self.is_fixed_refusal_code(self.code) and self.retryable:
             raise ValueError("fixed parameter refusal must be permanent")
         return self
 
@@ -932,14 +936,24 @@ def _http_error(response: httpx.Response) -> ConnectError:
 
 
 def _http_error_v2(response: httpx.Response) -> ConnectError:
+    fixed_refusal = False
     try:
         value = _response_json(response, 64 * 1024)
+        error = value.get("error") if isinstance(value, dict) else None
+        fixed_refusal = isinstance(error, dict) and _JobErrorV2.is_fixed_refusal_code(
+            error.get("code")
+        )
         envelope = _ErrorEnvelopeV2.model_validate(value)
     except (ConnectError, ValueError, TypeError):
+        if fixed_refusal:
+            return ConnectError(
+                "RESPONSE_INVALID",
+                "The local capability provider returned an invalid fixed refusal.",
+            )
         return ConnectError(
-            "RESPONSE_INVALID",
-            "The local capability provider returned an invalid error envelope.",
-            retryable=False,
+            "PROVIDER_REQUEST_FAILED",
+            "The local capability provider rejected the request.",
+            retryable=response.status_code >= 500,
         )
     return ConnectError(
         envelope.error.code,
@@ -1302,11 +1316,9 @@ def _discover_capabilities(
                 with response_stream as response:
                     if response.status_code != 200:
                         continue
-                    acknowledged = ()
-                    if required_manifest_features or _manifest_policy.HEADER in response.headers:
-                        acknowledged = _admitted_manifest_features(
-                            response, required_manifest_features
-                        )
+                    acknowledged = _admitted_manifest_features(
+                        response, required_manifest_features
+                    )
                     decoder = _FixedAppManifestV2 if acknowledged else _AppManifestV2
                     manifest = decoder.model_validate(
                         _response_json(response, MAX_MANIFEST_BYTES)
