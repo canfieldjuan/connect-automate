@@ -434,3 +434,50 @@ def test_windows_owner_rights_ace_is_not_an_untrusted_principal(
     )
 
     assert local_app_data_root(str(private_root)) == private_root
+
+
+def test_windows_negotiated_discovery_preserves_false_fixed_value(
+    private_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(private_root))
+    monkeypatch.setattr(
+        connect.entitlement,
+        "connect_entitlement_decision",
+        lambda: entitlement.EntitlementDecision.ACTIVE,
+    )
+    providers = private_root / "LocalConnect/runtime/v2/providers"
+    providers.mkdir(parents=True)
+    (providers / "provider.json").write_text(json.dumps(_registration()), encoding="utf-8")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["authorization"] == f"Bearer {TOKEN}"
+        assert request.headers["local-connect-manifest-features"] == "fixed-parameters-v1"
+        manifest = _manifest()
+        manifest["capabilities"][0]["parameters"] = [
+            {
+                "name": "flag",
+                "value_type": "boolean",
+                "required": True,
+                "label": "Flag",
+                "description": "Fixed flag",
+                "fixed_value": False,
+            }
+        ]
+        return httpx.Response(
+            200,
+            json=manifest,
+            headers={
+                "Local-Connect-Manifest-Features": "fixed-parameters-v1",
+                "Cache-Control": "no-store",
+                "Vary": "Local-Connect-Manifest-Features",
+            },
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        catalog = connect.discover_capabilities(
+            client=client, required_manifest_features=("fixed-parameters-v1",)
+        )
+    capability = catalog.items[0]
+    assert capability.acknowledged_manifest_features == ("fixed-parameters-v1",)
+    assert capability.parameters[0].public_dict()["fixed_value"] is False
