@@ -1,0 +1,11 @@
+{
+  "repository": "canfieldjuan/connect-contracts",
+  "revision": "0f77f8a77e6fb014f0d563645ebdbb83ce6dbc3b",
+  "sources": {
+    "tests/fixed_parameters.py": "33ceecc7f0877d6e798a640edf26d2582ec8919228b050def170370cba0e4bb4",
+    "fixtures/v2/features/fixed-parameters-v1/README.md": "ee4430b539495b80de8682017340f30f36736699faa332cce4e25b0b63704e79",
+    "fixtures/v2/features/fixed-parameters-v1/golden-fixtures.json": "047c49bb35e79e3756da05dc8b9750d1d62277bfc7eba59c29523e63c2215d9c"
+  },
+  "extraction": "header_values through freshness_fields copied verbatim from tests/fixed_parameters.py",
+  "extracted_segment_sha256": "c521cb840e26c1c815a3c9e096bfa63646a51f74abe5783377e5e7bb9188ebb0"
+}

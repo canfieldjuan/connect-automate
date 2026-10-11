@@ -29,7 +29,7 @@ from pydantic import (
     model_validator,
 )
 
-from . import entitlement
+from . import _manifest_policy, entitlement
 from .connect_windows import (
     local_app_data_root,
     read_bounded_regular_file,
@@ -172,6 +172,34 @@ class _ParameterDeclaration(_WireModel):
     description: Annotated[StrictStr, Field(min_length=1, max_length=500)]
 
 
+def _parameter_value_valid(value: object, value_type: str) -> bool:
+    integer = (
+        type(value) is int
+        and -9_007_199_254_740_991 <= value <= 9_007_199_254_740_991
+    ) or (
+        type(value) is float and math.isfinite(value) and value.is_integer()
+        and -9_007_199_254_740_991 <= value <= 9_007_199_254_740_991
+    )
+    return (
+        value_type == "string" and isinstance(value, str) and len(value) <= 1000
+    ) or (value_type == "integer" and integer) or (
+        value_type == "boolean" and type(value) is bool
+    )
+
+
+class _FixedParameterDeclaration(_ParameterDeclaration):
+    # model_fields_set owns presence; None is never an admitted fixed value.
+    fixed_value: object = None
+
+    @model_validator(mode="after")
+    def validate_fixed_value(self) -> _FixedParameterDeclaration:
+        if "fixed_value" in self.model_fields_set and (
+            not self.required or not _parameter_value_valid(self.fixed_value, self.value_type)
+        ):
+            raise ValueError("fixed value must be required and match its declared primitive type")
+        return self
+
+
 class _CapabilityEffects(_WireModel):
     external: StrictBool
     confirmation_required: StrictBool
@@ -209,6 +237,14 @@ class _AppManifestV2(_WireModel):
         if len(references) != len(set(references)):
             raise ValueError("capability identifiers and versions must be unique")
         return self
+
+
+class _FixedCapabilityDeclarationV2(_CapabilityDeclarationV2):
+    parameters: Annotated[list[_FixedParameterDeclaration], Field(max_length=16)]
+
+
+class _FixedAppManifestV2(_AppManifestV2):
+    capabilities: Annotated[list[_FixedCapabilityDeclarationV2], Field(min_length=1, max_length=64)]
 
 
 class _CapabilityRef(_WireModel):
@@ -328,6 +364,14 @@ class _JobResultV2(_WireModel):
     outputs: Annotated[list[_GenericOutputV2], Field(min_length=1, max_length=8)]
 
 
+class _JobErrorV2(_JobError):
+    @model_validator(mode="after")
+    def validate_fixed_refusal(self) -> _JobErrorV2:
+        if self.code == "FIXED_PARAMETER_MISMATCH" and self.retryable:
+            raise ValueError("fixed parameter refusal must be permanent")
+        return self
+
+
 class _JobStatusV2(_WireModel):
     protocol_version: Literal[2]
     job_id: UuidV4
@@ -340,7 +384,7 @@ class _JobStatusV2(_WireModel):
         list[_ArtifactProvenanceV2], Field(min_length=1, max_length=1)
     ]
     result: _JobResultV2 | None = None
-    error: _JobError | None = None
+    error: _JobErrorV2 | None = None
 
     _created_timestamp = field_validator("created_at")(_validate_timestamp)
     _updated_timestamp = field_validator("updated_at")(_validate_timestamp)
@@ -364,7 +408,7 @@ class _JobStatusV2(_WireModel):
 
 class _ErrorEnvelopeV2(_WireModel):
     protocol_version: Literal[2]
-    error: _JobError
+    error: _JobErrorV2
 
 
 @dataclass(frozen=True)
@@ -421,14 +465,20 @@ class CapabilityParameter:
     label: str
     description: str
 
+    has_fixed_value: bool = False
+    fixed_value: object = None
+
     def public_dict(self) -> dict[str, object]:
-        return {
+        value = {
             "name": self.name,
             "value_type": self.value_type,
             "required": self.required,
             "label": self.label,
             "description": self.description,
         }
+        if self.has_fixed_value:
+            value["fixed_value"] = self.fixed_value
+        return value
 
 
 @dataclass(frozen=True)
@@ -450,6 +500,8 @@ class DiscoveredCapability:
     external_effects: bool
     confirmation_required: bool
 
+    acknowledged_manifest_features: tuple[str, ...] = ()
+
     def accepts_artifact(self, media_type: str, byte_size: int) -> bool:
         if byte_size < 0 or byte_size > MAX_INPUT_BYTES:
             return False
@@ -462,6 +514,7 @@ class DiscoveredCapability:
     def public_dict(self) -> dict[str, object]:
         return {
             "protocol_version": self.protocol_version,
+            "acknowledged_manifest_features": list(self.acknowledged_manifest_features),
             "provider": {
                 "app_id": self.app_id,
                 "name": self.app_name,
@@ -884,9 +937,9 @@ def _http_error_v2(response: httpx.Response) -> ConnectError:
         envelope = _ErrorEnvelopeV2.model_validate(value)
     except (ConnectError, ValueError, TypeError):
         return ConnectError(
-            "PROVIDER_REQUEST_FAILED",
-            "The local capability provider rejected the request.",
-            retryable=response.status_code >= 500,
+            "RESPONSE_INVALID",
+            "The local capability provider returned an invalid error envelope.",
+            retryable=False,
         )
     return ConnectError(
         envelope.error.code,
@@ -1028,6 +1081,7 @@ def _generic_capabilities(
     registration: _RuntimeRegistrationV2,
     manifest: _AppManifestV2,
     base_url: str,
+    acknowledged_features: tuple[str, ...] = (),
 ) -> tuple[DiscoveredCapability, ...]:
     capabilities = [
         DiscoveredCapability(
@@ -1057,9 +1111,12 @@ def _generic_capabilities(
                     required=parameter.required,
                     label=parameter.label,
                     description=parameter.description,
+                    has_fixed_value="fixed_value" in parameter.model_fields_set,
+                    fixed_value=getattr(parameter, "fixed_value", None),
                 )
                 for parameter in capability.parameters
             ),
+            acknowledged_manifest_features=acknowledged_features,
             external_effects=capability.effects.external,
             confirmation_required=capability.effects.confirmation_required,
         )
@@ -1135,6 +1192,38 @@ def registered_capability_for_reconciliation(
     return next(iter(matches)), None
 
 
+def validate_manifest_features(value: object) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)) or len(value) > 1 or any(
+        type(item) is not str or item != _manifest_policy.FEATURE for item in value
+    ):
+        raise ConnectError("PARAMETERS_INVALID", "Invalid required manifest features.")
+    return tuple(value)
+
+
+def _admitted_manifest_features(
+    response: httpx.Response, requested: tuple[str, ...],
+) -> tuple[str, ...]:
+    # Preserve raw field multiplicity; Headers.get would silently join duplicate acknowledgments.
+    headers = {}
+    for name, value in response.headers.multi_items():
+        name = name.lower()
+        if name in headers:
+            raise ValueError("ambiguous duplicate response header")
+        headers[name] = value
+    ack = headers.get(_manifest_policy.HEADER)
+    if ack is not None and (not requested or ack != _manifest_policy.FEATURE):
+        raise ValueError("acknowledgment does not match supported request")
+    extended = ack == _manifest_policy.FEATURE
+    errors, directives, vary = _manifest_policy.freshness_fields(headers, "consumer_admission")
+    if (extended or "cache-control" in headers) and "no-store" not in directives:
+        errors.append("manifest response must forbid storage")
+    if extended and _manifest_policy.HEADER not in vary:
+        errors.append("manifest Vary must include feature")
+    if errors:
+        raise ValueError("invalid manifest freshness fields")
+    return (_manifest_policy.FEATURE,) if extended else ()
+
+
 def _discover_capabilities(
     runtime_dir: Path | None = None,
     *,
@@ -1143,7 +1232,9 @@ def _discover_capabilities(
     require_entitlement: bool = True,
     timeout_seconds: float | None = None,
     remaining_timeout: Callable[[], float] | None = None,
+    required_manifest_features: tuple[str, ...] = (),
 ) -> CapabilityCatalog:
+    required_manifest_features = validate_manifest_features(required_manifest_features)
     if timeout_seconds is not None and remaining_timeout is not None:
         raise ValueError("Connect discovery accepts one timeout source")
     fixed_timeout = (
@@ -1188,6 +1279,8 @@ def _discover_capabilities(
                     "Accept": "application/json",
                     "Authorization": f"Bearer {registration.auth.token}",
                 }
+                if required_manifest_features:
+                    headers[_manifest_policy.HEADER] = _manifest_policy.FEATURE
                 request_timeout = (
                     _http_timeout(remaining_timeout())
                     if remaining_timeout is not None
@@ -1209,7 +1302,13 @@ def _discover_capabilities(
                 with response_stream as response:
                     if response.status_code != 200:
                         continue
-                    manifest = _AppManifestV2.model_validate(
+                    acknowledged = ()
+                    if required_manifest_features or _manifest_policy.HEADER in response.headers:
+                        acknowledged = _admitted_manifest_features(
+                            response, required_manifest_features
+                        )
+                    decoder = _FixedAppManifestV2 if acknowledged else _AppManifestV2
+                    manifest = decoder.model_validate(
                         _response_json(response, MAX_MANIFEST_BYTES)
                     )
             except (httpx.HTTPError, ConnectError, ValueError, TypeError):
@@ -1219,7 +1318,7 @@ def _discover_capabilities(
                 or manifest.app.id != registration.app_id
             ):
                 continue
-            capabilities = _generic_capabilities(registration, manifest, base_url)
+            capabilities = _generic_capabilities(registration, manifest, base_url, acknowledged)
             existing = providers.get(manifest.instance_id)
             if existing is not None and existing != capabilities:
                 providers.pop(manifest.instance_id)
@@ -1259,6 +1358,7 @@ def discover_capabilities(
     provider_instance_id: str | None = None,
     timeout_seconds: float | None = None,
     remaining_timeout: Callable[[], float] | None = None,
+    required_manifest_features: tuple[str, ...] = (),
 ) -> CapabilityCatalog:
     return _discover_capabilities(
         runtime_dir,
@@ -1267,6 +1367,7 @@ def discover_capabilities(
         require_entitlement=True,
         timeout_seconds=timeout_seconds,
         remaining_timeout=remaining_timeout,
+        required_manifest_features=required_manifest_features,
     )
 
 
@@ -1275,12 +1376,14 @@ def discover_capabilities_for_reconciliation(
     *,
     client: httpx.Client | None = None,
     provider_instance_id: str,
+    required_manifest_features: tuple[str, ...] = (),
 ) -> CapabilityCatalog:
     return _discover_capabilities(
         runtime_dir,
         client=client,
         provider_instance_id=provider_instance_id,
         require_entitlement=False,
+        required_manifest_features=required_manifest_features,
     )
 
 
@@ -1357,22 +1460,7 @@ def _validated_parameters(
     for name in sorted(supplied):
         value = supplied[name]
         value_type = declarations[name].value_type
-        integral_number = (
-            type(value) is int
-            and -9_007_199_254_740_991 <= value <= 9_007_199_254_740_991
-        ) or (
-            type(value) is float
-            and math.isfinite(value)
-            and value.is_integer()
-            and -9_007_199_254_740_991 <= value <= 9_007_199_254_740_991
-        )
-        valid = (
-            value_type == "string"
-            and isinstance(value, str)
-            and len(value) <= 1000
-        ) or (value_type == "integer" and integral_number) or (
-            value_type == "boolean" and type(value) is bool
-        )
+        valid = _parameter_value_valid(value, value_type)
         if not valid:
             raise ConnectError(
                 "PARAMETERS_INVALID",
@@ -1382,11 +1470,29 @@ def _validated_parameters(
     return validated
 
 
+def _bound_parameters(
+    capability: DiscoveredCapability, values: dict[str, object] | None,
+) -> dict[str, str | int | bool]:
+    supplied = dict(values) if values is not None else {}
+    for parameter in capability.parameters:
+        if not parameter.has_fixed_value:
+            continue
+        fixed = parameter.fixed_value
+        if not parameter.required or not _parameter_value_valid(fixed, parameter.value_type):
+            raise ConnectError("PARAMETERS_INVALID", "Invalid fixed declaration.")
+        if parameter.name in supplied:
+            value = supplied[parameter.name]
+            if not _parameter_value_valid(value, parameter.value_type) or value != fixed:
+                raise ConnectError("PARAMETERS_INVALID", "A fixed parameter cannot be overridden.")
+        supplied[parameter.name] = fixed
+    return _validated_parameters(capability, supplied)
+
+
 def validate_capability_parameters(
     capability: DiscoveredCapability,
     values: dict[str, object] | None,
 ) -> dict[str, str | int | bool]:
-    return _validated_parameters(capability, values)
+    return _bound_parameters(capability, values)
 
 
 def _build_capability_job(
@@ -1613,7 +1719,7 @@ def prepare_capability_job(
         byte_size=len(content),
         sha256=hashlib.sha256(content).hexdigest(),
         filename=filename,
-        parameters=parameters,
+        parameters=_bound_parameters(capability, parameters),
     )
 
 

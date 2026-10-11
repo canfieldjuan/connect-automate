@@ -38,8 +38,10 @@ from .connect import (
     ConnectV2Client,
     DiscoveredCapability,
     discover_capabilities,
+    prepare_capability_job,
     restore_capability_job,
     validate_job_id,
+    validate_manifest_features,
 )
 
 _REQUEST_INVALID = "CONNECT_INVOKE_REQUEST_INVALID"
@@ -56,6 +58,7 @@ class _InvokeRequest:
     media_type: str
     filename: str
     parameters: dict[str, object]
+    required_manifest_features: tuple[str, ...]
     confirmed: bool
     content: bytes = field(repr=False)
 
@@ -116,6 +119,14 @@ def _parse_request(request: Mapping[str, object]) -> _InvokeRequest:
         parameters = {}
     parameters = _require_mapping(parameters, "parameters")
 
+    feature_value = request.get("required_manifest_features", [])
+    if not isinstance(feature_value, list):
+        raise ConnectError(_REQUEST_INVALID, "Required manifest features must be an array.")
+    try:
+        required_features = validate_manifest_features(feature_value)
+    except ConnectError as exc:
+        raise ConnectError(_REQUEST_INVALID, str(exc)) from exc
+
     confirmed = request.get("confirmed", False)
     if not isinstance(confirmed, bool):
         raise ConnectError(_REQUEST_INVALID, "The connect.invoke confirmed flag must be a boolean.")
@@ -128,14 +139,54 @@ def _parse_request(request: Mapping[str, object]) -> _InvokeRequest:
         media_type=media_type,
         filename=filename,
         parameters=dict(parameters),
+        required_manifest_features=required_features,
         confirmed=confirmed,
         content=content,
     )
 
 
-def _select_capability(
-    catalog: CapabilityCatalog, request: _InvokeRequest
-) -> DiscoveredCapability:
+def prepare_capability_invocation(
+    capability: DiscoveredCapability,
+    content: bytes,
+    media_type: str,
+    filename: str,
+    *,
+    parameters: dict[str, object] | None = None,
+    confirmed: bool = False,
+    artifact_id: str | None = None,
+) -> dict[str, object]:
+    """Bind a newly selected declaration once, before the caller persists an action."""
+    features = validate_manifest_features(capability.acknowledged_manifest_features)
+    if any(parameter.has_fixed_value for parameter in capability.parameters) and not features:
+        raise ConnectError(_REQUEST_INVALID, "Fixed declaration lacks verified acknowledgment.")
+    job = prepare_capability_job(
+        capability,
+        content,
+        media_type,
+        filename,
+        parameters=parameters,
+        confirmed=confirmed,
+        artifact_id=artifact_id,
+    )
+    request = {
+        "capability": {"id": capability.capability_id, "version": capability.capability_version},
+        "provider": {"instance_id": capability.instance_id},
+        "input": {
+            "artifact_id": job.artifact.artifact_id,
+            "media_type": job.artifact.media_type,
+            "filename": job.display_name,
+            "content_base64": base64.b64encode(content).decode(),
+        },
+        "parameters": dict(job.parameters),
+        "confirmed": confirmed,
+    }
+    if features:
+        request["required_manifest_features"] = list(features)
+    _parse_request(request)
+    return request
+
+
+def _select_capability(catalog: CapabilityCatalog, request: _InvokeRequest) -> DiscoveredCapability:
     """Match the frozen capability against the discovered catalog, never widening the target.
 
     The frozen request pins capability id and version (and optionally the provider instance);
@@ -147,6 +198,9 @@ def _select_capability(
         for capability in catalog.items
         if capability.capability_id == request.capability_id
         and capability.capability_version == request.capability_version
+        and set(request.required_manifest_features).issubset(
+            capability.acknowledged_manifest_features
+        )
         and (
             request.provider_instance_id is None
             or capability.instance_id == request.provider_instance_id
@@ -234,10 +288,14 @@ class ConnectV2CapabilityInvoker:
         # it here so a non-conforming identity fails before any provider is contacted.
         validate_job_id(job_id)
 
+        discovery_options = {}
+        if parsed.required_manifest_features:
+            discovery_options["required_manifest_features"] = parsed.required_manifest_features
         catalog = self._discover(
             self._runtime_dir,
             client=self._client,
             provider_instance_id=parsed.provider_instance_id,
+            **discovery_options,
         )
         capability = _select_capability(catalog, parsed)
 
