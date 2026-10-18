@@ -883,3 +883,139 @@ def test_operator_decision_cannot_impersonate_source_event(tmp_path):
     assert not result.outcome.matched
     assert store.get_record(record.record_id).stage == "waiting"
     assert counts(store) == (0, 1, 1, 0)
+
+
+@pytest.mark.parametrize("operator", ["equals", "contains"])
+def test_subject_filters_are_case_sensitive_through_real_admission(tmp_path, operator):
+    trigger = mail_trigger()
+    trigger["filters"] = [{"field": "subject", "op": operator, "value": "Invoice"}]
+    runtime, store, _ = event_runtime(tmp_path, workflow=event_workflow(trigger))
+    subject = "Invoice" if operator == "equals" else "Review Invoice today"
+    assert runtime.submit_event(
+        binding="inbox", event=encoded(mail_event(subject=subject)), now=NOW
+    ).applied
+    assert not runtime.submit_event(
+        binding="inbox",
+        event=encoded(mail_event(message_id="second", subject=subject.lower())),
+        now=NOW,
+    ).matched
+    assert counts(store) == (2, 1, 2, 1)
+
+
+def test_before_anchor_is_no_match_and_clock_rollback_is_invalid(tmp_path):
+    from connect_automate.automate import EventInputError
+
+    trigger = {
+        "source_kind": "schedule.tick",
+        "binding": "timer",
+        "anchor": "2026-01-01T00:00:00Z",
+        "every_seconds": 60,
+    }
+    runtime, store, _ = event_runtime(
+        tmp_path,
+        workflow=event_workflow(trigger),
+        bindings={"timer": source_binding("schedule.tick")},
+    )
+    early = encoded({"source_kind": "schedule.tick", "scheduled_at": "2025-12-31T23:59:59Z"})
+    due = encoded({"source_kind": "schedule.tick", "scheduled_at": trigger["anchor"]})
+    assert not runtime.submit_event(binding="timer", event=early, now=NOW).matched
+    assert runtime.submit_event(binding="timer", event=due, now=NOW).applied
+    for clock in [datetime(2025, 12, 31, tzinfo=UTC), datetime(2026, 1, 2), False, "", None]:
+        with pytest.raises(EventInputError):
+            runtime.submit_event(binding="timer", event=due, now=clock)
+    assert counts(store) == (2, 1, 2, 1)
+
+
+def test_timer_policy_cannot_be_rebound_by_an_upgrade(tmp_path):
+    from connect_automate.automate import EventBindingError
+
+    trigger = {
+        "source_kind": "schedule.tick",
+        "binding": "timer",
+        "anchor": "2026-01-01T00:00:00Z",
+        "every_seconds": 60,
+    }
+    bindings = {"timer": source_binding("schedule.tick")}
+    runtime, store, host = event_runtime(
+        tmp_path, workflow=event_workflow(trigger), bindings=bindings
+    )
+    with pytest.raises(EventBindingError):
+        event_runtime(
+            tmp_path,
+            workflow=event_workflow({**trigger, "every_seconds": 120}),
+            version=2,
+            bindings=bindings,
+            store=store,
+            host=host,
+        )
+    due = encoded({"source_kind": "schedule.tick", "scheduled_at": trigger["anchor"]})
+    assert runtime.submit_event(binding="timer", event=due, now=NOW).applied
+
+
+def test_source_and_pack_components_keep_occurrences_independent(tmp_path):
+    from connect_automate.automate import AdapterRegistry, PackRuntime
+
+    workflow = event_workflow()
+    other = deepcopy(workflow["definitions"][0])
+    other["name"], other["trigger"]["binding"] = "other-intake", "second"
+    workflow["definitions"].append(other)
+    bindings = {
+        "inbox": source_binding(),
+        "second": source_binding(
+            source_id="22222222-2222-4222-8222-222222222222", scope="second-source"
+        ),
+    }
+    runtime, store, host = event_runtime(tmp_path, workflow=workflow, bindings=bindings)
+    raw = encoded(mail_event())
+    first = runtime.submit_event(binding="inbox", event=raw, now=NOW)
+    second = runtime.submit_event(binding="second", event=raw, now=NOW)
+    assert first.record.record_id != second.record.record_id
+    publisher = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
+    issuer = Ed25519PrivateKey.from_private_bytes(bytes(range(1, 33)))
+    other_pack = "33333333-3333-4333-8333-333333333333"
+    grant = {
+        "format_version": 1,
+        "grant_id": "44444444-4444-4444-8444-444444444444",
+        "pack_id": other_pack,
+        "subject": SUBJECT,
+        "issued_at": "2026-01-01T00:00:00Z",
+        "not_before": "2026-01-01T00:00:00Z",
+        "expires_at": "2027-01-01T00:00:00Z",
+    }
+    another = PackRuntime.load(
+        _envelope(
+            publisher,
+            encoded(
+                {
+                    "format_version": 2,
+                    "pack_id": other_pack,
+                    "pack_version": 1,
+                    "workflow": workflow,
+                }
+            ),
+        ),
+        _envelope(issuer, encoded(grant)),
+        store=store,
+        host=host,
+        registry=AdapterRegistry.with_defaults(),
+        publisher_keys=_pack_keys(publisher),
+        grant_keys=_pack_keys(issuer),
+        subject=SUBJECT,
+        now=NOW,
+        event_bindings=bindings,
+    )
+    assert another.submit_event(binding="inbox", event=raw, now=NOW).record.pack_id == other_pack
+    assert counts(store) == (3, 3, 6, 3)
+
+
+def test_license_withdrawal_precedes_event_decode_and_replay(tmp_path):
+    from connect_automate.automate import AutomateLicenseError
+
+    runtime, store, host = event_runtime(tmp_path)
+    raw = encoded(mail_event())
+    runtime.submit_event(binding="inbox", event=raw, now=NOW)
+    host.entitlement.path.write_bytes(b"withdrawn synthetic license")
+    for payload in [b"", raw]:
+        with pytest.raises(AutomateLicenseError):
+            runtime.submit_event(binding="inbox", event=payload, now=NOW)
+    assert counts(store) == (1, 1, 2, 1)

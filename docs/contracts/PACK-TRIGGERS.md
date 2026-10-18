@@ -416,15 +416,23 @@ alias and SHA256. Do not commit private mail or production credentials.
 
 ## Implementation summary, cold diff audit and gap audit
 
-Implementation summary: contract proposal only; no source, tests, kit behavior,
-dependencies, app repositories, pins or milestones changed by this phase.
+Implementation summary: the accepted v2 intake, durable receipts, shared action
+delivery lock and two kit archetypes are implemented. Existing v1 test files,
+goldens and model schemas are unchanged. The native Windows CI test job now
+includes the new event/store/locking and kit lanes. No app repository, pin,
+dependency, package version or release workflow changed.
 
-Cold diff audit: this file records the operator's direction, current-source
-inventory, explicit compatibility and release boundaries, proposed event and
-receipt semantics, delivery ownership, archetypes and required proof. It does
-not report any new runtime behavior as implemented or verified.
+Cold diff audit: the implementation is confined to the declared library and kit
+owners, new synthetic fixtures/tests, this status record and test-CI routing.
+Local Linux evidence includes the full suite (851 passed, 16 skipped), a final
+event/runtime regression slice (91 passed), six additional admission boundary
+checks, the isolated mutation control and
+all required mutants, v1 database/schema parity and an isolated wheel-contents
+proof. A warning from the new migration fixture was traced to its raw SQLite
+connection and fixed with a closure regression. Public API annotation follow-ups
+were verified to leave the executable production AST unchanged.
 
 Gap audit: **NOT DONE**. Exact-revision contract review and operator acceptance
-are recorded above. Implementation, v1 parity, v2 qualification, native
-Windows evidence, exact-head PR review and merge remain. Application adoption
-and the excluded aggregation/result features require separate accepted scope.
+are recorded above; implementation and local Linux qualification are complete.
+Native Windows CI evidence, exact-head PR review and merge remain. Application
+adoption and the excluded aggregation/result features require separate accepted scope.
