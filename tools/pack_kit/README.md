@@ -75,3 +75,57 @@ Golden files under `tests/fixtures/pack_kit/` are frozen review inputs. Tests
 compare full bytes; they do not regenerate expected outputs. The golden seed
 is defined only in tests. Durable mutation and wheel comparison evidence is
 kept outside worktrees and referenced by alias/hash in review material.
+
+## Mail and schedule intake (v2)
+
+[PACK-TRIGGERS.md](../../docs/contracts/PACK-TRIGGERS.md) adds
+`mail-review-then-act` and `schedule-review-then-act`. A matching source event
+creates an item ready for review and a local notification. The app call still
+requires `approve`; outcome review still requires `complete` and `finish`.
+Event fields do not become invocation parameters, bodies or attachments.
+Digests, aggregation and automatic result routing are outside this slice.
+
+```sh
+uv run python -m tools.pack_kit new --archetype mail-review-then-act \
+  --pack-id 11111111-1111-4111-8111-111111111111 --name mail-review --out mail.toml
+uv run python -m tools.pack_kit build mail.toml --out mail-build.json
+uv run python -m tools.pack_kit check mail-build.json \
+  --fake-apps tests/fixtures/pack_kit/fake-apps.json \
+  --fake-events tests/fixtures/pack_events/mail-review-then-act.events.json
+uv run python -m tools.pack_kit sign mail-build.json \
+  --fake-apps tests/fixtures/pack_kit/fake-apps.json \
+  --fake-events tests/fixtures/pack_events/mail-review-then-act.events.json \
+  --key-id development --public-key-base64url PUBLIC --out mail-pack.json
+```
+
+Signing uses the same caller-supplied binary stdin seed described above. For
+schedule intake, select `schedule-review-then-act` and its corresponding
+`schedule-review-then-act.events.json` fixture. Edit the generated UTC anchor,
+whole-second period, binding name and business fields. Periods are between 60
+and 604800 seconds. Mail filters use exact case-sensitive sender/subject matches
+or subject substrings; explicit `match_all = true` is required for no filters.
+
+These archetypes use spec/artifact version 2, workflow vocabulary 2 and manifest
+2. Envelope and grant versions remain 1. Existing approve-then-act specs and
+goldens remain version 1. V2 check/sign requires `--fake-events`; v1 rejects an
+unused catalogue. With readable inputs, catalogue-schema errors exit 3. After
+artifact validation, missing required or unused catalogues also exit 3. Input
+file I/O failures exit 7; an inconsistent artifact exits 4 before the catalogue
+presence check. A valid catalogue that cannot run its declared positive event
+fails check with exit 5. No accepting source is invented from a candidate spec.
+
+The catalogue declares one synthetic named source and a matching event. A real
+host must supply its own authenticated source mapping to `PackRuntime.load`
+and call `submit_event(binding=..., event=..., now=...)`. Source bindings are
+frozen across restarts and pack revisions; replacing a mailbox/timer requires
+separately specified migration. Mail occurrence identity is the stable provider
+message key within that source. Timer identity is the due UTC instant, with no
+local-time/DST interpretation, catch-up generator or delivery-time substitution.
+
+The library installs no listener or scheduler, changes no application pin and
+does not move Email Watcher's built-in automations onto packs. Application
+adoption remains separate. The offline checker reuses the v1 lifecycle lane
+and adds source rejection, durable no-match, event replay and conflict checks.
+Native process race/crash/locking tests and the v2 golden artifacts are under
+`tests/test_automate_events.py`, `tests/test_pack_kit_events.py` and
+`tests/fixtures/pack_events/`.

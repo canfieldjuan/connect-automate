@@ -21,11 +21,13 @@ policy, and retry are deferred hardening; this slice provides admit, dispatch, a
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol, runtime_checkable
 
+from ..locking import OperationLockBusy, operation_lock, prepare_private_lock_path
 from .host import AutomateHost
 from .store import ACTION_PENDING, ActionView, InvalidEffect, WorkflowStore
 
@@ -230,13 +232,7 @@ class ActionRunner:
         request: Mapping[str, object],
         now: datetime,
     ) -> ActionOutcome:
-        """Admit, dispatch, and settle an action, gated by the license.
-
-        Idempotent by ``dedupe_key``: an already-settled or already-failed action replays its
-        recorded outcome without re-dispatching, and without needing the adapter still
-        configured. The adapter is resolved only for a newly admitted action; if none is
-        configured the pending row is released so its dedupe key is not poisoned.
-        """
+        """Admit and deliver, preserving the legacy direct-run error contract."""
         self._host.require_license()
         if kind not in ACTION_KINDS:
             raise ValueError(f"unknown action kind {kind!r}")
@@ -244,84 +240,86 @@ class ActionRunner:
             record_id, kind=kind, dedupe_key=dedupe_key, request=request, now=now
         )
         if not admission.admitted:
-            # A terminal (settled or failed) action replays its recorded outcome; a replay
-            # must not depend on the current adapter configuration.
             return _outcome(admission.view, delivered=False)
-        action_id = admission.view.action_id
-        try:
-            adapter = self._registry.resolve(kind)
-        except AdapterNotConfigured:
-            self._store.release_action(action_id)
-            raise
-        try:
-            # Dispatch the committed canonical snapshot, not the caller's mapping: the durable
-            # row and the dedupe identity are this snapshot, so the adapter must act on exactly
-            # what was recorded. Feeding it the still-mutable caller object could let the side
-            # effect diverge from the recorded intent, and a retry would then conflict.
-            result = _invoke_adapter(adapter, admission.view.request, _context(admission.view))
-        except Exception as exc:
-            self._store.fail_action(action_id, error=str(exc), now=now)
-            raise ActionDeliveryError(f"adapter for {kind!r} failed: {exc}") from exc
-        if not isinstance(result, Mapping):
-            self._store.fail_action(
-                action_id, error="adapter returned a non-mapping result", now=now
-            )
-            raise ActionDeliveryError(f"adapter for {kind!r} returned a non-mapping result")
-        try:
-            settled = self._store.settle_action(action_id, result=result, now=now)
-        except InvalidEffect as exc:
-            # The side effect ran but its result cannot be persisted (oversized or not
-            # canonical JSON); terminalize as failed rather than leave the action pending.
-            self._store.fail_action(
-                action_id, error=f"adapter result could not be persisted: {exc}", now=now
-            )
-            raise ActionDeliveryError(
-                f"adapter for {kind!r} returned an unpersistable result: {exc}"
-            ) from exc
-        return _outcome(settled, delivered=True)
+        return self._deliver(admission.view, now=now, legacy_run=True)
 
-    def dispatch(self, view: ActionView, *, now: datetime) -> ActionOutcome:
-        """Deliver and settle an already-admitted pending action: the resume path.
-
-        Unlike :meth:`run`, this does not admit -- the intent was durably admitted with the
-        decision -- so it only resolves the adapter, delivers the committed request, and
-        settles or fails. It never raises for a per-action failure (a batch of a decision's
-        actions must not be aborted by one), reporting the outcome instead:
-
-        - a terminal row replays its recorded outcome with no delivery;
-        - a pending row whose kind has no configured adapter is left pending (durable intent)
-          and reported as pending, so a later dispatch once the adapter is configured resumes
-          it -- it is never released;
-        - a delivery error, a non-mapping result, or an unpersistable result terminalizes the
-          row as ``failed``.
-        """
+    def dispatch(
+        self, view: ActionView, *, now: datetime, safe_replay: bool = False
+    ) -> ActionOutcome:
+        """Deliver the persisted request under the same lock as every other entry point."""
         self._host.require_license()
-        # Reload the persisted row and act only on the durable kind/request/status. A caller
-        # cannot dispatch a mutated in-memory ActionView and have the adapter run a different
-        # side effect than the one the outbox records as settled.
+        return self._deliver(view, now=now, safe_replay=safe_replay)
+
+    def _deliver(self, view, *, now, safe_replay=False, legacy_run=False):
         view = self._store.get_action(view.action_id)
         if view.status != ACTION_PENDING:
             return _outcome(view, delivered=False)
+        adapter = None
+        if safe_replay:
+            try:
+                adapter = self._registry.resolve(view.kind)
+            except AdapterNotConfigured:
+                return _outcome(self._store.get_action(view.action_id), delivered=False)
+            if not self._auto_recoverable(adapter):
+                return _outcome(self._store.get_action(view.action_id), delivered=False)
+        # Names and paths come only from the trusted store path and a hashed persisted ID.
+        digest = hashlib.sha256(view.action_id.encode("utf-8")).hexdigest()
+        path = self._store.path.resolve().parent / ".automate-action-locks" / (digest + ".lock")
+        prepare_private_lock_path(path)
         try:
-            adapter = self._registry.resolve(view.kind)
+            with operation_lock(path, "action delivery busy", timeout_seconds=0):
+                self._host.require_license()
+                return self._deliver_locked(
+                    view.action_id,
+                    now=now,
+                    safe_replay=safe_replay,
+                    legacy_run=legacy_run,
+                    adapter=adapter,
+                )
+        except OperationLockBusy:
+            return _outcome(self._store.get_action(view.action_id), delivered=False)
+
+    def _deliver_locked(self, action_id, *, now, safe_replay, legacy_run, adapter=None):
+        # Reload only after lock acquisition: a waiter must observe the winner's terminal row.
+        view = self._store.get_action(action_id)
+        if view.status != ACTION_PENDING:
+            return _outcome(view, delivered=False)
+        try:
+            if adapter is None:
+                adapter = self._registry.resolve(view.kind)
         except AdapterNotConfigured:
+            if legacy_run:
+                self._store.release_action(action_id)
+                raise
+            return _outcome(view, delivered=False)
+        if safe_replay and not self._auto_recoverable(adapter):
             return _outcome(view, delivered=False)
         try:
             result = _invoke_adapter(adapter, view.request, _context(view))
         except Exception as exc:
-            failed = self._store.fail_action(view.action_id, error=str(exc), now=now)
+            failed = self._store.fail_action(action_id, error=str(exc), now=now)
+            if legacy_run:
+                raise ActionDeliveryError(f"adapter for {view.kind!r} failed: {exc}") from exc
             return _outcome(failed, delivered=False)
         if not isinstance(result, Mapping):
             failed = self._store.fail_action(
-                view.action_id, error="adapter returned a non-mapping result", now=now
+                action_id, error="adapter returned a non-mapping result", now=now
             )
+            if legacy_run:
+                raise ActionDeliveryError(
+                    f"adapter for {view.kind!r} returned a non-mapping result"
+                )
             return _outcome(failed, delivered=False)
         try:
-            settled = self._store.settle_action(view.action_id, result=result, now=now)
+            settled = self._store.settle_action(action_id, result=result, now=now)
         except InvalidEffect as exc:
             failed = self._store.fail_action(
-                view.action_id, error=f"adapter result could not be persisted: {exc}", now=now
+                action_id, error=f"adapter result could not be persisted: {exc}", now=now
             )
+            if legacy_run:
+                raise ActionDeliveryError(
+                    f"adapter for {view.kind!r} returned an unpersistable result: {exc}"
+                ) from exc
             return _outcome(failed, delivered=False)
         return _outcome(settled, delivered=True)
 
@@ -355,29 +353,12 @@ class ActionRunner:
         self._host.require_license()
         outcomes: list[ActionOutcome] = []
         for view in self._store.list_pending_actions():
-            if not self._auto_recoverable(view.kind):
-                # No adapter configured for the kind yet, or a configured but non-idempotent
-                # one: leave the row pending (never released) rather than risk a duplicate
-                # external send. A later sweep resumes it once an adapter is configured, or the
-                # deferred reconciliation settles it with a provider identity.
-                outcomes.append(_outcome(view, delivered=False))
-                continue
-            outcomes.append(self.dispatch(view, now=now))
+            outcomes.append(self.dispatch(view, now=now, safe_replay=True))
         return outcomes
 
-    def _auto_recoverable(self, kind: str) -> bool:
-        """Whether a stranded ``pending`` row of this kind is safe to auto-redeliver.
-
-        True only for a configured adapter that declares ``idempotent = True``; a kind with no
-        configured adapter, and an adapter that does not declare it, are both treated as not
-        recoverable (the safe default), so the sweep never auto-repeats a non-idempotent
-        external effect.
-        """
-        try:
-            adapter = self._registry.resolve(kind)
-        except AdapterNotConfigured:
-            return False
-        return bool(getattr(adapter, "idempotent", False))
+    def _auto_recoverable(self, adapter: Adapter) -> bool:
+        """Policy applies to the resolved adapter held through this delivery attempt."""
+        return getattr(adapter, "idempotent", False) is True
 
 
 def _outcome(view: ActionView, *, delivered: bool) -> ActionOutcome:

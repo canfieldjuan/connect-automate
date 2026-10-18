@@ -38,6 +38,9 @@ jobs:
           enable-cache: true
       - run: uv sync --locked --all-groups
       - run: >-
-          uv run pytest
+          uv run pytest -rP
           tests/test_locking.py
           tests/test_windows_connect.py
+          tests/test_automate_events.py
+          tests/test_automate_review.py
+          tests/test_pack_kit_events.py

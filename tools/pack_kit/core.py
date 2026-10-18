@@ -27,10 +27,13 @@ from connect_automate.automate import (
     ConnectInvokeCapability,
     ConnectInvokeRequest,
     DefinitionError,
-    PackManifest,
+    MailTrigger,
+    PackError,
+    ScheduleTrigger,
     canonical_workflow,
     load_pack,
     parse_workflow,
+    validate_manifest,
 )
 from connect_automate.automate.definition import (
     ALLOWED_OPS,
@@ -43,6 +46,15 @@ from connect_automate.entitlement import KeyId, UuidV4
 SPEC_LIMIT = 64 * 1024
 ARTIFACT_LIMIT = 128 * 1024
 ARCHETYPE = "approve-then-act"
+ARCHETYPES = {
+    ARCHETYPE: None,
+    "mail-review-then-act": "mail.received",
+    "schedule-review-then-act": "schedule.tick",
+}
+INTAKE_REQUEST = {
+    "title": "Pack ready for review",
+    "body": "Inspect the source event before approving this record.",
+}
 STAGES = ["ready", "acting", "reporting", "completed", "failed", "declined"]
 FAILURE_REQUEST = {
     "title": "Pack action failed",
@@ -82,6 +94,11 @@ class Spec(StrictModel):
     conditions: list[Condition] = Field(default_factory=list, max_length=MAX_CONDITIONS - 1)
     invoke: InvokeSpec
     result_action: ActionEmit
+
+
+class SpecV2(Spec):
+    format_version: Annotated[StrictInt, Field(ge=2, le=2)]
+    trigger: Annotated[MailTrigger | ScheduleTrigger, Field(discriminator="source_kind")]
 
 
 def canonical(value: object) -> bytes:
@@ -159,11 +176,14 @@ def _vocabulary(value: dict) -> None:
 def _spec(value: dict) -> Spec:
     if not isinstance(value, dict):
         raise KitError(3, "invalid input")
-    if isinstance(value.get("archetype"), str) and value["archetype"] != ARCHETYPE:
+    if isinstance(value.get("archetype"), str) and value["archetype"] not in ARCHETYPES:
         raise KitError(3, "unknown archetype")
     _vocabulary(value)
     try:
-        spec = Spec.model_validate(value)
+        model = Spec if value.get("archetype") == ARCHETYPE else SpecV2
+        spec = model.model_validate(value)
+        if isinstance(spec, SpecV2) and spec.trigger.source_kind != ARCHETYPES[spec.archetype]:
+            raise KitError(3, "unsupported vocabulary")
         # Business result templates are literal: an overlay object may not bind runtime data.
         if spec.result_action.action == "connect.invoke":
             request = spec.result_action.request
@@ -176,7 +196,12 @@ def _spec(value: dict) -> Spec:
         message = (
             "unsupported vocabulary"
             if any(
-                e["loc"][:1] == ("result_action",) and e["type"] != "missing" for e in exc.errors()
+                (e["loc"][:1] == ("result_action",) and e["type"] != "missing")
+                or (
+                    e["loc"][:1] == ("trigger",)
+                    and e["type"] in ("literal_error", "union_tag_invalid")
+                )
+                for e in exc.errors()
             )
             else "invalid input"
         )
@@ -241,27 +266,41 @@ def build(value: dict) -> bytes:
                 "actions": actions,
             }
         )
-    try:
-        workflow = parse_workflow(
-            canonical(
-                {
-                    "name": spec.name,
-                    "stages": STAGES,
-                    "initial_stage": "ready",
-                    "definitions": definitions,
-                }
-            )
+    workflow_data = {
+        "name": spec.name,
+        "stages": STAGES,
+        "initial_stage": "ready",
+        "definitions": definitions,
+    }
+    if isinstance(spec, SpecV2):
+        intake = {
+            "name": "intake",
+            "trigger": spec.trigger.model_dump(mode="json"),
+            "conditions": [{"field": "record.stage", "op": "equals", "value": "waiting"}],
+            "effects": [
+                {"kind": "record.transition", "to_stage": "ready"},
+                {"kind": "overlay.set", "key": "pack-kit.status", "value": "ready"},
+            ],
+            "actions": [{"action": "notify.local", "request": INTAKE_REQUEST}],
+        }
+        workflow_data.update(
+            vocabulary_version=2,
+            stages=["waiting", *STAGES],
+            initial_stage="waiting",
+            definitions=[intake, *definitions],
         )
+    try:
+        workflow = parse_workflow(canonical(workflow_data))
         workflow_data = json.loads(canonical_workflow(workflow))
-        manifest = PackManifest.model_validate(
+        manifest = validate_manifest(
             {
-                "format_version": 1,
+                "format_version": spec.format_version,
                 "pack_id": spec.pack_id,
                 "pack_version": spec.pack_version,
                 "workflow": workflow_data,
             }
         )
-    except (DefinitionError, ValidationError) as exc:
+    except (DefinitionError, ValidationError, PackError) as exc:
         message = (
             "input too large"
             if f"exceeds {MAX_DEFINITION_BYTES} bytes" in str(exc)
@@ -270,8 +309,8 @@ def build(value: dict) -> bytes:
         raise KitError(3, message) from exc
     return canonical(
         {
-            "kit_format_version": 1,
-            "archetype": ARCHETYPE,
+            "kit_format_version": spec.format_version,
+            "archetype": spec.archetype,
             "spec": spec.model_dump(mode="json"),
             "manifest": manifest.model_dump(mode="json"),
         }
@@ -280,7 +319,7 @@ def build(value: dict) -> bytes:
 
 def validate_artifact(raw: bytes) -> dict:
     data = json_object(raw, ARTIFACT_LIMIT)
-    if type(data.get("kit_format_version")) is not int or data["kit_format_version"] != 1:
+    if type(data.get("kit_format_version")) is not int or data["kit_format_version"] not in (1, 2):
         raise KitError(3, "invalid input")
     candidate = build(data.get("spec"))
     if candidate != raw:
@@ -303,16 +342,27 @@ def _envelope(payload: bytes, key: Ed25519PrivateKey, key_id: str) -> bytes:
     return raw
 
 
-def check(raw: bytes, catalogue: bytes) -> dict:
+def check(raw: bytes, catalogue: bytes, event_catalogue: bytes | None = None) -> dict:
     # Lazy import keeps the compiler independent of the test harness.
     from .sandbox import run_check
 
-    return run_check(raw, catalogue)
+    return run_check(raw, catalogue, event_catalogue)
 
 
-def sign(raw: bytes, catalogue: bytes, key_id: str, public: str, seed_stream: BinaryIO) -> bytes:
+def sign(
+    raw: bytes,
+    catalogue: bytes,
+    key_id: str,
+    public: str,
+    seed_stream: BinaryIO,
+    *,
+    event_catalogue: bytes | None = None,
+) -> bytes:
     # No receipt/cache/flag may authorize this step. Hold and check the exact bytes signed.
-    check(raw, catalogue)
+    if event_catalogue is None:
+        check(raw, catalogue)
+    else:
+        check(raw, catalogue, event_catalogue)
     data = validate_artifact(raw)
     try:
         TypeAdapter(KeyId).validate_python(key_id)
@@ -344,8 +394,11 @@ def new_spec(archetype: str, pack_id: str, name: str, pack_version: int) -> byte
     def quoted(value):
         return canonical(value).decode("utf-8")
 
+    if archetype not in ARCHETYPES:
+        raise KitError(3, "unknown archetype")
+    version = 1 if archetype == ARCHETYPE else 2
     text = (
-        f"format_version = 1\narchetype = {quoted(archetype)}\n"
+        f"format_version = {version}\narchetype = {quoted(archetype)}\n"
         f"pack_id = {quoted(pack_id)}\npack_version = {pack_version}\nname = {quoted(name)}\n"
         "# Edit the business fields below; the lifecycle is generated.\nconditions = []\n\n"
         '[invoke.capability]\nid = "sample.process"\nversion = "1.0"\n\n'
@@ -355,5 +408,30 @@ def new_spec(archetype: str, pack_id: str, name: str, pack_version: int) -> byte
         '[result_action.request]\ntitle = "Result reviewed"\n'
         'body = "The operator reviewed the action outcome."\n'
     ).encode()
+    if version == 2:
+        if ARCHETYPES[archetype] == "mail.received":
+            text += (
+                b"\n"
+                b"# Bind this name to an explicit host source.\n"
+                b"[trigger]\n"
+                b'source_kind = "mail.received"\n'
+                b'binding = "incoming-mail"\n'
+                b"match_all = false\n"
+                b"\n"
+                b"[[trigger.filters]]\n"
+                b'field = "sender"\n'
+                b'op = "equals"\n'
+                b'value = "sender@example.invalid"\n'
+            )
+        else:
+            text += (
+                b"\n"
+                b"# UTC interval sample; no running scheduler is installed.\n"
+                b"[trigger]\n"
+                b'source_kind = "schedule.tick"\n'
+                b'binding = "timer"\n'
+                b'anchor = "2026-01-01T00:00:00Z"\n'
+                b"every_seconds = 86400\n"
+            )
     build(parse_spec(text))
     return text

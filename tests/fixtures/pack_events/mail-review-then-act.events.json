@@ -1,0 +1,1 @@
+{"binding":{"name":"incoming-mail","scope":"synthetic-source","source_id":"22222222-2222-4222-8222-222222222222","source_kind":"mail.received"},"format_version":1,"matching_event":{"message_id":"synthetic-message-1","received_at":"2026-01-01T00:00:00Z","sender":"sender@example.invalid","source_kind":"mail.received","subject":"Synthetic input"}}
