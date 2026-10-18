@@ -134,9 +134,7 @@ def source_signing_bytes(source: UntrustedSource) -> bytes:
     hashed; host and key are bound here from that same snapshot.
     """
     try:
-        if not isinstance(source, UntrustedSource):
-            raise ValueError("expected parsed source model")
-        source, _ = _validate_source(source)
+        source, _ = _validate_source(source, model_only=True)
         digest = payload_digest(source)
         return "\n".join(
             [SIGNING_CONTEXT, source.authorization.host_id, source.authorization.key_id, digest]
