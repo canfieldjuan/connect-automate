@@ -112,6 +112,13 @@ def test_unsafe_sweep_does_not_obstruct_fresh_dispatch(tmp_path, entry):
     assert store.get_action(view.action_id).status == "settled"
 
 
+def test_intake_operation_key_preserves_persisted_bytes():
+    identity = ("subject", "pack", "source", "mail.received", "é-message")
+    assert store_module._event_operation_key(identity) == (
+        "pack.event:b2ee9d2cfba9603df64af74c9ab6ca9a6094e2301cbfdf955fa484362273ad68"
+    )
+
+
 def test_receipt_refuses_event_from_another_record(tmp_path):
     runtime, store, _ = event_runtime(tmp_path)
     raw = encoded(mail_event())
