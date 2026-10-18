@@ -292,16 +292,156 @@ def test_nested_models_frozen():
         parsed.payload.snapshot.body.text = "changed"
 
 
-def test_errors_never_echo_message_content():
-    from connect_automate.lead_intake import SourceInputError
+def assert_safe_error(exc):
+    assert str(exc) == "invalid lead source input"
+    assert exc.args == ("invalid lead source input",)
+    assert exc.__cause__ is None
+    assert exc.__context__ is None
+    assert vars(exc) == {}
 
-    data = envelope("CONFIDENTIAL-SYNTHETIC-NARRATIVE")
-    data["payload"]["snapshot"]["body"]["sha256"] = "bad"
+
+@pytest.mark.parametrize("kind", ["digest", "identifier", "utf8", "json", "duplicate"])
+def test_errors_never_echo_message_content(kind):
+    from connect_automate.lead_intake import SourceInputError, parse_untrusted_source
+
+    marker = "CONFIDENTIAL-SYNTHETIC-NARRATIVE"
+    data = envelope(marker)
+    if kind == "digest":
+        data["payload"]["snapshot"]["body"]["sha256"] = "bad"
+    elif kind == "identifier":
+        data["payload"]["source"]["account_id"] = marker * 100
+    raw = encode(data)
+    if kind == "utf8":
+        raw += b"\xff"
+    elif kind == "json":
+        raw = raw[:-1]
+    elif kind == "duplicate":
+        raw = raw.replace(b'"payload":', b'"payload":null,"payload":', 1)
     with pytest.raises(SourceInputError) as caught:
-        parse(data)
-    assert str(caught.value) == "invalid lead source input"
-    assert caught.value.__cause__ is None
-    assert caught.value.__suppress_context__
+        parse_untrusted_source(raw)
+    assert_safe_error(caught.value)
+
+
+def test_decoder_exhaustion_at_raw_cap():
+    from connect_automate.lead_intake import SourceInputError, parse_untrusted_source
+
+    raw = b"[" * 1048576 + b"]" * 1048576
+    # Prove this is decoder exhaustion, not an unrelated shape/size rejection.
+    with pytest.raises(RecursionError):
+        json.loads(raw)
+    with pytest.raises(SourceInputError) as caught:
+        parse_untrusted_source(raw)
+    assert_safe_error(caught.value)
+
+
+@pytest.mark.parametrize("field", ["source_chars", "attachment_count"])
+@pytest.mark.parametrize(
+    "value,valid",
+    [
+        (None, True),
+        (0, True),
+        (9007199254740990, True),
+        (9007199254740991, True),
+        (9007199254740992, False),
+        (-1, False),
+        (False, False),
+        ("", False),
+        (1.0, False),
+        (10**4000, False),
+    ],
+    ids=[
+        "null",
+        "zero",
+        "max-minus-one",
+        "max",
+        "max-plus-one",
+        "negative",
+        "false",
+        "empty",
+        "float",
+        "huge",
+    ],
+)
+def test_metadata_count_boundaries(field, value, valid):
+    from connect_automate.lead_intake import SourceInputError, canonical_payload
+
+    data = envelope("")
+    if field == "source_chars":
+        body = data["payload"]["snapshot"]["body"]
+        body["source_chars"] = value
+        body["completeness"] = (
+            "unknown" if value is None else "complete" if value == 0 else "truncated"
+        )
+    else:
+        data["payload"]["snapshot"]["attachments"]["count"] = value
+    if not valid:
+        with pytest.raises(SourceInputError):
+            parse(data)
+        return
+    payload = json.loads(canonical_payload(parse(data)))
+    actual = (
+        payload["snapshot"]["body"]["source_chars"]
+        if field == "source_chars"
+        else payload["snapshot"]["attachments"]["count"]
+    )
+    assert actual == value
+
+
+@pytest.mark.parametrize("text", ["😀" * 200000, "\x01" * 200000], ids=["emoji", "control"])
+def test_canonical_source_encoder_round_trip(text):
+    from connect_automate.lead_intake import canonical_source, parse_untrusted_source
+
+    data = envelope(text)
+    parsed = parse(data)
+    raw = canonical_source(parsed)
+    expected = json.dumps(data, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
+    assert raw == expected
+    assert len(raw) <= 2097152
+    assert parse_untrusted_source(raw).model_dump(by_alias=True) == data
+
+
+def test_ascii_expansion_above_cap_rejected():
+    from connect_automate.lead_intake import (
+        SourceInputError,
+        canonical_source,
+        parse_untrusted_source,
+    )
+
+    data = envelope("😀" * 200000)
+    raw = json.dumps(data).encode()
+    assert len(raw) > 2097152
+    with pytest.raises(SourceInputError) as caught:
+        parse_untrusted_source(raw)
+    assert_safe_error(caught.value)
+    assert parse_untrusted_source(canonical_source(parse(data)))
+
+
+@pytest.mark.parametrize("kind", ["copy", "construct", "nested-copy", "mapping"])
+def test_public_encoders_revalidate_models(kind):
+    from connect_automate.lead_intake import (
+        SourceInputError,
+        UntrustedSource,
+        canonical_payload,
+        canonical_source,
+        payload_digest,
+    )
+
+    parsed = parse(envelope())
+    if kind == "copy":
+        bad = parsed.model_copy(update={"payload": {"private": "SYNTHETIC-MARKER"}})
+    elif kind == "construct":
+        bad = UntrustedSource.model_construct(payload=None, authorization=None)
+    elif kind == "nested-copy":
+        body = parsed.payload.snapshot.body.model_copy(update={"text": "changed"})
+        snapshot = parsed.payload.snapshot.model_copy(update={"body": body})
+        payload = parsed.payload.model_copy(update={"snapshot": snapshot})
+        bad = parsed.model_copy(update={"payload": payload})
+    else:
+        bad = envelope()
+    for encoder in (canonical_source, canonical_payload, payload_digest):
+        with pytest.raises(SourceInputError) as caught:
+            encoder(bad)
+        assert_safe_error(caught.value)
 
 
 def test_canonical_vector_from_contract():
