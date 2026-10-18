@@ -1,0 +1,27 @@
+[
+  {
+    "file": "ascii.json",
+    "envelope_sha256": "d8b55415011a39f91b9a91616da399171ab013d750588121b48647f32b5727d0",
+    "payload_sha256": "ff230be9d99eeed78bae750205dbc2b8fd8ba23cc376ba5165e5d74e484f309e"
+  },
+  {
+    "file": "canonical-envelope.json",
+    "envelope_sha256": "7e2627d054889484ba8487969df7a6149dfc9ec7f3bffc375a732e5ecb1de6c1",
+    "payload_sha256": "e75658e5b05dd1c5e3d776ebffe564896fd8ad57e0e0a983d7ba29e4dbc9da6f"
+  },
+  {
+    "file": "controls.json",
+    "envelope_sha256": "a5a6f15a58cd2f0fa265cb2ec17e09fbd002dc276a5b082b662e0b04ad255948",
+    "payload_sha256": "4e723676848d68ff3ec785fec1429d898843d752dcf7b9344c4ddf7224f2376d"
+  },
+  {
+    "file": "emoji-limit.json",
+    "envelope_sha256": "da289ded65869dcb28f8a5a56912177a0c9f82853aae0fdfdd3571cf85236796",
+    "payload_sha256": "4102e522046dccdfc10d91be3bc6b66bb5861f72d0ce62c994c322f9c4b0e184"
+  },
+  {
+    "file": "unavailable.json",
+    "envelope_sha256": "e2f1d9dde50e4930f16d30e2e63a6356c2b7f33c7c74df017031ff20294a1982",
+    "payload_sha256": "2f021a70e00694bcde92c2064db766a62f8587b5b4b927bf40cb5b987987ffdf"
+  }
+]
