@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 from copy import deepcopy
+from pathlib import Path
 
 import pytest
 
@@ -414,6 +415,31 @@ def test_ascii_expansion_above_cap_rejected():
         parse_untrusted_source(raw)
     assert_safe_error(caught.value)
     assert parse_untrusted_source(canonical_source(parse(data)))
+
+
+def test_internal_field_name_is_not_a_wire_alias():
+    from connect_automate.lead_intake import SourceInputError
+
+    data = envelope()
+    data["payload"]["schema_name"] = data["payload"].pop("schema")
+    with pytest.raises(SourceInputError):
+        parse(data)
+
+
+def test_published_sender_vectors():
+    from connect_automate.lead_intake import (
+        canonical_source,
+        parse_untrusted_source,
+        payload_digest,
+    )
+
+    root = Path(__file__).parent / "fixtures" / "lead_source"
+    for vector in json.loads((root / "vectors.json").read_text()):
+        raw = (root / vector["file"]).read_bytes()
+        assert hashlib.sha256(raw).hexdigest() == vector["envelope_sha256"]
+        source = parse_untrusted_source(raw)
+        assert canonical_source(source) == raw
+        assert payload_digest(source) == vector["payload_sha256"]
 
 
 @pytest.mark.parametrize("kind", ["copy", "construct", "nested-copy", "mapping"])
