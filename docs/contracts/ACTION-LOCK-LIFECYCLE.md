@@ -105,6 +105,26 @@ Do not remove an inode with a live native owner, even if its action is terminal.
 
 ## Implementation summary, cold diff audit and gap audit
 
-NOT DONE: contract recorded before implementation. Source, fail-first regression,
-native interleaving/crash proof, exact-head CI/review and merge remain. Issue #9
-continues to block app adoption and pin changes until these gates pass.
+The contract-only commit precedes source and tests. `ActionRunner._deliver`
+opts into the lifecycle at its existing hashed action path; its redundant
+directory preparation moves to the lifecycle owner. `locking.operation_lock`
+retains its default persistent mode and delegates ephemeral acquisition and
+cleanup to one helper. Its idle-file sweep probes native ownership under the
+same gate. No store or adapter repair compensates for retention downstream.
+
+The focused regression file exercises the real runner, native spawn processes,
+entry/exit failure and crash paths. The CI change adds that same file to the
+existing Windows lane; Linux already collects it. Existing tests, store and
+kit code, schema, dependency and version files are unchanged.
+
+Local implementation qualification: the fifty-action reproduction changes from
+fifty retained files to one fixed namespace gate. The adjacent lane passes
+228 tests, with one known legacy unclosed-stdout warning in unchanged
+`test_locking.py`. Six causal mutants are killed. The wheel's twenty library
+source files equal the checkout, and kit/test files are excluded.
+
+The publishing PR records the exact tested head, cold diff audit, artifact
+hashes and final DONE/NOT DONE gap audit. Local evidence alone does not close
+issue #9: native Windows CI, independent exact-head review, resolved findings
+and the verified merge receipt remain mandatory. App adoption and pin changes
+require their own accepted scope even after this technical blocker is resolved.

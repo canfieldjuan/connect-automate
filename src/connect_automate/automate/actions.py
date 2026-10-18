@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol, runtime_checkable
 
-from ..locking import OperationLockBusy, operation_lock, prepare_private_lock_path
+from ..locking import OperationLockBusy, operation_lock
 from .host import AutomateHost
 from .store import ACTION_PENDING, ActionView, InvalidEffect, WorkflowStore
 
@@ -265,9 +265,8 @@ class ActionRunner:
         # Names and paths come only from the trusted store path and a hashed persisted ID.
         digest = hashlib.sha256(view.action_id.encode("utf-8")).hexdigest()
         path = self._store.path.resolve().parent / ".automate-action-locks" / (digest + ".lock")
-        prepare_private_lock_path(path)
         try:
-            with operation_lock(path, "action delivery busy", timeout_seconds=0):
+            with operation_lock(path, "action delivery busy", timeout_seconds=0, ephemeral=True):
                 self._host.require_license()
                 return self._deliver_locked(
                     view.action_id,
