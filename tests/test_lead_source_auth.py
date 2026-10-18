@@ -624,3 +624,55 @@ def test_public_exports_use_the_authentication_owner():
     assert public.source_signing_bytes is source_signing_bytes
     assert public.SourceTrustSnapshot is SourceTrustSnapshot
     assert public.SourceAuthenticationError is SourceAuthenticationError
+
+
+@pytest.mark.parametrize("part", ["authorization", "payload", "both"])
+@pytest.mark.parametrize("construction", ["copy", "construct"])
+def test_preimage_consumes_validated_snapshot(part, construction):
+    source = parse_untrusted_source(encode(envelope()))
+    fields = {"payload": source.payload, "authorization": source.authorization}
+    for name in fields:
+        if part in {name, "both"}:
+            fields[name] = fields[name].model_dump(by_alias=True)
+    supplied = (
+        source.model_copy(update=fields)
+        if construction == "copy"
+        else type(source).model_construct(**fields)
+    )
+    # The existing encoder accepts this representation and preserves its meaning.
+    assert canonical_source(supplied) == canonical_source(source)
+    assert source_signing_bytes(supplied) == bytes.fromhex(VECTORS[0]["preimage_hex"])
+    if part in {"authorization", "both"}:
+        assert isinstance(supplied.authorization, dict)  # Caller input was not rewritten.
+
+
+@pytest.mark.parametrize("construction", ["copy", "construct"])
+def test_preimage_rejects_invalid_nested_dictionary(construction):
+    from connect_automate.lead_intake import SourceInputError
+
+    source = parse_untrusted_source(encode(envelope()))
+    fields = {
+        "payload": source.payload,
+        "authorization": {**source.authorization.model_dump(), "host_id": "sensitive-sentinel"},
+    }
+    supplied = (
+        source.model_copy(update=fields)
+        if construction == "copy"
+        else type(source).model_construct(**fields)
+    )
+    with pytest.raises(SourceInputError) as caught:
+        source_signing_bytes(supplied)
+    assert caught.value.args == ("invalid lead source input",)
+    assert caught.value.__context__ is None
+    assert caught.value.__cause__ is None
+
+
+@pytest.mark.parametrize("supplied", [None, False, envelope(), encode(envelope())])
+def test_preimage_requires_source_model(supplied):
+    from connect_automate.lead_intake import SourceInputError
+
+    with pytest.raises(SourceInputError) as caught:
+        source_signing_bytes(supplied)
+    assert caught.value.args == ("invalid lead source input",)
+    assert caught.value.__context__ is None
+    assert caught.value.__cause__ is None

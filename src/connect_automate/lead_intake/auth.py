@@ -21,8 +21,10 @@ from .source import (
     Instant,
     Opaque,
     Revision,
+    SourceInputError,
     UntrustedSource,
     _Closed,
+    _validate_source,
     parse_untrusted_source,
     payload_digest,
 )
@@ -127,13 +129,21 @@ class AuthenticatedSource:
 def source_signing_bytes(source: UntrustedSource) -> bytes:
     """Validated signing preimage; malformed models raise SourceInputError.
 
-    The existing digest owner revalidates the entire model, including constructed
-    or copied instances. Only the payload is hashed; host and key are bound here.
+    Consume a fresh snapshot from the existing source validation owner,
+    not attributes of a caller-constructed or copied model. Only the payload is
+    hashed; host and key are bound here from that same snapshot.
     """
-    digest = payload_digest(source)
-    return "\n".join(
-        [SIGNING_CONTEXT, source.authorization.host_id, source.authorization.key_id, digest]
-    ).encode("ascii")
+    try:
+        if not isinstance(source, UntrustedSource):
+            raise ValueError("expected parsed source model")
+        source, _ = _validate_source(source)
+        digest = payload_digest(source)
+        return "\n".join(
+            [SIGNING_CONTEXT, source.authorization.host_id, source.authorization.key_id, digest]
+        ).encode("ascii")
+    except (ValueError, TypeError, RecursionError):
+        pass
+    raise SourceInputError()
 
 
 def _instant(value: str) -> datetime:
