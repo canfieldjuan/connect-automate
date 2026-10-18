@@ -21,6 +21,7 @@ MAX_SOURCE_BYTES = 2097152
 MAX_BODY_CHARS = 200000
 MAX_OPAQUE_BYTES = 256
 MAX_DEPTH = 16
+MAX_METADATA_COUNT = 9007199254740991
 
 
 class SourceInputError(ValueError):
@@ -60,7 +61,7 @@ Instant = Annotated[str, BeforeValidator(_time)]
 Signature = Annotated[str, BeforeValidator(_signature)]
 Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 Revision = Annotated[int, Field(ge=1, le=2147483647)]
-Count = Annotated[int, Field(ge=0)]
+Count = Annotated[int, Field(ge=0, le=MAX_METADATA_COUNT)]
 
 
 class _Closed(BaseModel):
@@ -208,6 +209,20 @@ def _canonical(value) -> bytes:
     ).encode("utf-8")
 
 
+def _validate_source(value) -> tuple[UntrustedSource, bytes]:
+    """One validation and envelope serialization owner for both public boundaries."""
+    _shape(value)
+    # Revalidated models expose Python field names (schema_name); raw envelopes
+    # must still use wire aliases (schema). Never relax the raw-input contract.
+    source = UntrustedSource.model_validate(value, by_name=isinstance(value, UntrustedSource))
+    data = source.model_dump(by_alias=True)
+    _shape(data)
+    wire = _canonical(data)
+    if len(wire) > MAX_SOURCE_BYTES:
+        raise ValueError("excess canonical size")
+    return source, wire
+
+
 def parse_untrusted_source(raw: bytes) -> UntrustedSource:
     """Validate only. Never log input or mistake success for authenticated admission."""
     try:
@@ -219,18 +234,34 @@ def parse_untrusted_source(raw: bytes) -> UntrustedSource:
             parse_float=_no_number,
             parse_constant=_no_number,
         )
-        _shape(value)
-        source = UntrustedSource.model_validate(value)
-        if len(_canonical(source.model_dump(by_alias=True))) > MAX_SOURCE_BYTES:
-            raise ValueError("excess canonical size")
+        source, _ = _validate_source(value)
         return source
     except (ValueError, TypeError, RecursionError):
-        raise SourceInputError() from None
+        pass
+    # Leaving the handler releases the internal exception instead of merely
+    # suppressing its printed traceback. Caller-owned frames are not erased.
+    raise SourceInputError()
+
+
+def _encode_source(source: UntrustedSource, *, payload_only: bool) -> bytes:
+    try:
+        if not isinstance(source, UntrustedSource):
+            raise ValueError("expected parsed source model")
+        validated, wire = _validate_source(source)
+        return _canonical(validated.payload.model_dump(by_alias=True)) if payload_only else wire
+    except (ValueError, TypeError, RecursionError):
+        pass
+    raise SourceInputError()
+
+
+def canonical_source(source: UntrustedSource) -> bytes:
+    """Validated compact UTF-8 envelope for senders; not a signature or admission."""
+    return _encode_source(source, payload_only=False)
 
 
 def canonical_payload(source: UntrustedSource) -> bytes:
     """Canonical payload only. Not a signing preimage or authorization proof."""
-    return _canonical(source.payload.model_dump(by_alias=True))
+    return _encode_source(source, payload_only=True)
 
 
 def payload_digest(source: UntrustedSource) -> str:
