@@ -23,7 +23,8 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from .actions import ACTION_KINDS, CONNECT_INVOKE
+from .actions import ACTION_KINDS, CONNECT_INVOKE, NOTIFY_LOCAL
+from .events import MAX_MAIL_FILTERS, MAX_PERIOD_SECONDS, MIN_PERIOD_SECONDS, MailFilter, UtcInstant
 from .store import MAX_ACTIONS_PER_DECISION, MAX_EFFECTS_PER_BATCH, OVERLAY_SET, RECORD_TRANSITION
 
 MAX_DEFINITION_BYTES = 16 * 1024
@@ -292,9 +293,7 @@ class ActionEmit(_Strict):
         else:
             for value in self.request.values():
                 if not isinstance(value, str | int | bool):
-                    raise ValueError(
-                        f"action kind {self.action!r} requires a flat scalar request"
-                    )
+                    raise ValueError(f"action kind {self.action!r} requires a flat scalar request")
         return self
 
 
@@ -371,7 +370,88 @@ class Workflow(_Strict):
         return self
 
 
-def canonical_workflow(workflow: Workflow) -> bytes:
+class MailTrigger(_Strict):
+    source_kind: Literal["mail.received"]
+    binding: _Name
+    filters: list[MailFilter] = Field(default_factory=list, max_length=MAX_MAIL_FILTERS)
+    match_all: Annotated[bool, Field(strict=True)] = False
+
+    @model_validator(mode="after")
+    def _validate(self):
+        if self.match_all == bool(self.filters):
+            raise ValueError("declare either filters or explicit match_all")
+        return self
+
+
+class ScheduleTrigger(_Strict):
+    source_kind: Literal["schedule.tick"]
+    binding: _Name
+    anchor: UtcInstant
+    every_seconds: Annotated[int, Field(strict=True, ge=MIN_PERIOD_SECONDS, le=MAX_PERIOD_SECONDS)]
+
+
+class WorkflowDefinitionV2(_Strict):
+    # Separate models prevent a v2 instance from satisfying a v1 model's isinstance check.
+    name: _Name
+    trigger: Annotated[Trigger | MailTrigger | ScheduleTrigger, Field(discriminator="source_kind")]
+    conditions: list[Condition] = Field(default_factory=list, max_length=MAX_CONDITIONS)
+    effects: list[Effect] = Field(min_length=1, max_length=MAX_EFFECTS)
+    actions: list[ActionEmit] = Field(default_factory=list, max_length=MAX_ACTIONS)
+
+    @model_validator(mode="after")
+    def _validate(self):
+        # The original validator remains the single owner of shared effect rules.
+        WorkflowDefinition._validate(self)
+        if self.trigger.source_kind != "operator.decision" and any(
+            action.action != NOTIFY_LOCAL for action in self.actions
+        ):
+            raise ValueError("event definitions may emit only notify.local")
+        return self
+
+
+class WorkflowV2(_Strict):
+    vocabulary_version: Annotated[int, Field(strict=True, ge=2, le=2)]
+    name: _Name
+    stages: list[_Stage] = Field(min_length=1, max_length=MAX_STAGES)
+    initial_stage: _Stage
+    definitions: list[WorkflowDefinitionV2] = Field(min_length=1, max_length=MAX_DEFINITIONS)
+
+    @model_validator(mode="after")
+    def _validate(self):
+        Workflow._validate(self)
+        for definition in self.definitions:
+            if definition.trigger.source_kind == "operator.decision":
+                continue
+            if not any(
+                condition.field == "record.stage"
+                and (
+                    condition.op == "equals"
+                    and condition.value == self.initial_stage
+                    or condition.op == "in"
+                    and condition.value == [self.initial_stage]
+                )
+                for condition in definition.conditions
+            ):
+                raise ValueError("event requires an initial-stage guard")
+            transitions = [
+                effect for effect in definition.effects if effect.kind == RECORD_TRANSITION
+            ]
+            if len(transitions) != 1 or transitions[0].to_stage == self.initial_stage:
+                raise ValueError("event requires a transition out of the initial stage")
+        return self
+
+
+def validate_workflow(data: object) -> Workflow | WorkflowV2:
+    """Dispatch once on the explicit vocabulary selector; never retry another model."""
+    if isinstance(data, Mapping) and "vocabulary_version" in data:
+        try:
+            return WorkflowV2.model_validate(data)
+        except ValidationError:
+            raise DefinitionError("invalid v2 workflow") from None
+    return Workflow.model_validate(data)
+
+
+def canonical_workflow(workflow: Workflow | WorkflowV2) -> bytes:
     """Materialize defaults and encode the contracted canonical JSON bytes.
 
     Defaults are materialized (not dropped) and keys are sorted with fixed separators so a
@@ -413,7 +493,7 @@ def _reject_duplicate_members(pairs: list[tuple[str, object]]) -> dict[str, obje
     return result
 
 
-def parse_workflow(raw: bytes | str) -> Workflow:
+def parse_workflow(raw: bytes | str) -> Workflow | WorkflowV2:
     """Parse and strictly validate a workflow definition from JSON.
 
     This is the trust boundary for an untrusted definition. Every malformed document has a
@@ -427,7 +507,7 @@ def parse_workflow(raw: bytes | str) -> Workflow:
     except (ValueError, RecursionError) as exc:
         raise DefinitionError(f"invalid workflow JSON: {exc}") from exc
     try:
-        workflow = Workflow.model_validate(data)
+        workflow = validate_workflow(data)
     except ValidationError as exc:
         raise DefinitionError(str(exc)) from exc
     canonical_workflow(workflow)  # raises DefinitionError if it exceeds MAX_DEFINITION_BYTES

@@ -64,6 +64,7 @@ def main(argv=None) -> int:
                 child.add_argument("--out", required=True, type=Path)
             if command != "build":
                 child.add_argument("--fake-apps", required=True, type=Path)
+                child.add_argument("--fake-events", type=Path)
             if command == "sign":
                 child.add_argument("--key-id", required=True)
                 child.add_argument("--public-key-base64url", required=True)
@@ -81,14 +82,30 @@ def main(argv=None) -> int:
                 message = "built unsigned artifact"
             else:
                 catalogue = read_input(args.fake_apps, core.SPEC_LIMIT)
+                events = (
+                    read_input(args.fake_events, core.SPEC_LIMIT)
+                    if args.fake_events is not None
+                    else None
+                )
                 if args.command == "check":
-                    core.check(raw, catalogue)
+                    if events is None:
+                        core.check(raw, catalogue)
+                    else:
+                        core.check(raw, catalogue, events)
                     print("pack-kit: check passed (offline only)")
                     return 0
+                signing = {} if events is None else {"event_catalogue": events}
                 result = core.sign(
-                    raw, catalogue, args.key_id, args.public_key_base64url, sys.stdin.buffer
+                    raw,
+                    catalogue,
+                    args.key_id,
+                    args.public_key_base64url,
+                    sys.stdin.buffer,
+                    **signing,
                 )
                 inputs += (args.fake_apps,)
+                if args.fake_events is not None:
+                    inputs += (args.fake_events,)
                 message = "signed pack"
         # Register ownership before linking and retain it through the final announcement.
         publication = Publication(args.out)

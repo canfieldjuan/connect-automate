@@ -23,9 +23,22 @@ from .actions import ACTION_KINDS, CONNECT_INVOKE
 from .definition import (
     MAX_NAME_LENGTH,
     Condition,
+    MailTrigger,
+    ScheduleTrigger,
     Workflow,
     WorkflowDefinition,
+    WorkflowDefinitionV2,
+    WorkflowV2,
     render_connect_invoke_request,
+)
+from .events import (
+    AmbiguousEvent,
+    Event,
+    MailEvent,
+    SourceBinding,
+    canonical_event,
+    occurrence,
+    timestamp,
 )
 from .host import AutomateHost
 from .store import (
@@ -34,6 +47,7 @@ from .store import (
     RecordView,
     StaleRecord,
     WorkflowStore,
+    _EventVersionConflict,
     request_fingerprint,
 )
 
@@ -83,9 +97,9 @@ class DecisionOutcome:
     event_id: str | None
 
 
-def _condition_matches(condition: Condition, record: RecordView) -> bool:
+def _condition_matches(condition: Condition, stage: str) -> bool:
     if condition.field == "record.stage":
-        actual = record.stage
+        actual = stage
     else:  # pragma: no cover - the closed enum has no other field yet
         return False
     if condition.op == "equals":
@@ -98,7 +112,7 @@ def _definition_matches(definition: WorkflowDefinition, decision: str, record: R
         return False
     if definition.trigger.decision != decision:
         return False
-    return all(_condition_matches(condition, record) for condition in definition.conditions)
+    return all(_condition_matches(condition, record.stage) for condition in definition.conditions)
 
 
 class WorkflowEngine:
@@ -110,7 +124,7 @@ class WorkflowEngine:
 
     def create_record(
         self,
-        workflow: Workflow,
+        workflow: Workflow | WorkflowV2,
         *,
         now: datetime,
         pack_id: str | None = None,
@@ -135,7 +149,7 @@ class WorkflowEngine:
 
     def submit_decision(
         self,
-        workflow: Workflow,
+        workflow: Workflow | WorkflowV2,
         record_id: str,
         *,
         decision: str,
@@ -299,8 +313,82 @@ class WorkflowEngine:
             event_id=outcome.event_id,
         )
 
+    def submit_event(
+        self,
+        workflow: WorkflowV2,
+        *,
+        subject: str,
+        pack_id: str,
+        pack_version: int,
+        binding: str,
+        source: SourceBinding,
+        event: Event,
+        now: datetime,
+    ):
+        self._host.require_license()
+
+        def select():
+            matches = []
+            for definition in workflow.definitions:
+                trigger = definition.trigger
+                if trigger.source_kind != event.source_kind or trigger.binding != binding:
+                    continue
+                if not all(
+                    _condition_matches(condition, workflow.initial_stage)
+                    for condition in definition.conditions
+                ):
+                    continue
+                if isinstance(trigger, MailTrigger) and isinstance(event, MailEvent):
+                    matched = trigger.match_all or all(
+                        (
+                            getattr(event, item.field) == item.value
+                            if item.op == "equals"
+                            else item.value in getattr(event, item.field)
+                        )
+                        for item in trigger.filters
+                    )
+                elif isinstance(trigger, ScheduleTrigger):
+                    seconds = int(
+                        (timestamp(event.scheduled_at) - timestamp(trigger.anchor)).total_seconds()
+                    )
+                    matched = seconds >= 0 and seconds % trigger.every_seconds == 0
+                else:
+                    matched = False
+                if matched:
+                    matches.append(definition)
+            if len(matches) > 1:
+                raise AmbiguousEvent()
+            if not matches:
+                return None
+            definition = matches[0]
+            return (
+                definition.name,
+                [effect.model_dump(mode="json") for effect in definition.effects],
+                self._render_actions(None, definition),
+            )
+
+        try:
+            return self._store.admit_event(
+                subject=subject,
+                pack_id=pack_id,
+                pack_version=pack_version,
+                binding=binding,
+                source_id=source.source_id,
+                source_kind=event.source_kind,
+                occurrence=occurrence(event),
+                payload=canonical_event(event),
+                workflow=workflow.name,
+                initial_stage=workflow.initial_stage,
+                allowed_stages=frozenset(workflow.stages),
+                allowed_action_kinds=ACTION_KINDS,
+                now=now,
+                select=select,
+            )
+        except _EventVersionConflict:
+            raise PackVersionError("event belongs to another pack revision") from None
+
     def _render_actions(
-        self, record_id: str, definition: WorkflowDefinition
+        self, record_id: str | None, definition: WorkflowDefinition | WorkflowDefinitionV2
     ) -> list[dict[str, object]]:
         """Build the decision's action intents, resolving connect.invoke overlay bindings.
 
@@ -316,6 +404,8 @@ class WorkflowEngine:
         needs_overlays = any(emit.action == CONNECT_INVOKE for emit in definition.actions)
         overlays: dict[str, object] = {}
         if needs_overlays:
+            if record_id is None:
+                raise ValueError("event cannot bind record overlays")
             overlays = self._store.get_overlays(record_id)
             for effect in definition.effects:
                 if effect.kind == OVERLAY_SET:
