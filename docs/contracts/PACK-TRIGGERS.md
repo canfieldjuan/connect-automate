@@ -1,9 +1,20 @@
 # Pack vocabulary: mail and schedule intake
 
-Status: DRAFT; contract review and explicit acceptance required before code.
+Status: ACCEPTED at revision `3dd9121bc90cd462bde9c8a5803d24c1938dc864`.
+Juan answered **"Accept (Recommended)"** on 2026-10-18; oversight relayed it
+verbatim in mailbox message `e59f058f`. Acceptance is recorded separately
+before implementation; the behavioral requirements below are unchanged.
 Work: issue #5. This document does not authorize application adoption.
 
 ## Operator decision and acceptance boundary
+
+The accepted question was:
+
+> Accept the Connect Automate contract for issue #5, mail and schedule triggers (commit 3dd9121)? Three limits to know: (1) a matching email or a scheduled time only puts a new item into 'ready for review' and shows a notification on this machine; the actual action still waits for your approval, so this is not hands-free yet. (2) It is library groundwork only: no app listens for mail or runs a schedule until a separate adoption decision. (3) The connect-automate package code itself changes, but the apps stay pinned to their current version, so app releases are unaffected.
+
+The relayed selected option was:
+
+> I relay this word for word. The pack-kit session records your acceptance in its own commit, keeps the existing pack format and its tests byte-identical, then builds test-first with Linux and native Windows proof. It opens one PR for my review. No app changes, no version-pin bump, no First Public Release milestone.
 
 On 2026-10-18, Juan said **"lets continue"** in response to the recommendation
 to keep Email Watcher's existing automations built in and use packs for add-on
@@ -413,7 +424,7 @@ inventory, explicit compatibility and release boundaries, proposed event and
 receipt semantics, delivery ownership, archetypes and required proof. It does
 not report any new runtime behavior as implemented or verified.
 
-Gap audit: **NOT DONE**. Await exact-revision contract review and explicit
-operator acceptance. Implementation, v1 parity, v2 qualification, native
+Gap audit: **NOT DONE**. Exact-revision contract review and operator acceptance
+are recorded above. Implementation, v1 parity, v2 qualification, native
 Windows evidence, exact-head PR review and merge remain. Application adoption
 and the excluded aggregation/result features require separate accepted scope.
