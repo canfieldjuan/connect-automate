@@ -24,6 +24,11 @@ if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
 
 
+def fixed_key(index=0):
+    """Public deterministic development seeds; never used by kit authorities."""
+    return Ed25519PrivateKey.from_private_bytes(index.to_bytes(32, "big"))
+
+
 def kit():
     return importlib.import_module("tools.pack_kit.core")
 
@@ -246,7 +251,7 @@ def test_skipped_check_never_signs(monkeypatch):
 
     monkeypatch.setattr(k, "check", failed)
     with pytest.raises(k.KitError, match="check failed"):
-        key = Ed25519PrivateKey.generate()
+        key = fixed_key()
         public = k.encoded(key.public_key().public_bytes_raw())
         k.sign(k.build(spec()), catalog(), "development", public, UnreadableSeed())
     assert called == []

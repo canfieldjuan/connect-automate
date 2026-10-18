@@ -32,7 +32,12 @@ from connect_automate.automate import (
     load_pack,
     parse_workflow,
 )
-from connect_automate.automate.definition import ALLOWED_OPS, MAX_CONDITIONS, Condition
+from connect_automate.automate.definition import (
+    ALLOWED_OPS,
+    MAX_CONDITIONS,
+    MAX_DEFINITION_BYTES,
+    Condition,
+)
 from connect_automate.entitlement import KeyId, UuidV4
 
 SPEC_LIMIT = 64 * 1024
@@ -257,7 +262,11 @@ def build(value: dict) -> bytes:
             }
         )
     except (DefinitionError, ValidationError) as exc:
-        message = "input too large" if "exceeds 16384 bytes" in str(exc) else "invalid input"
+        message = (
+            "input too large"
+            if f"exceeds {MAX_DEFINITION_BYTES} bytes" in str(exc)
+            else "invalid input"
+        )
         raise KitError(3, message) from exc
     return canonical(
         {
@@ -303,8 +312,8 @@ def check(raw: bytes, catalogue: bytes) -> dict:
 
 def sign(raw: bytes, catalogue: bytes, key_id: str, public: str, seed_stream: BinaryIO) -> bytes:
     # No receipt/cache/flag may authorize this step. Hold and check the exact bytes signed.
-    data = validate_artifact(raw)
     check(raw, catalogue)
+    data = validate_artifact(raw)
     try:
         TypeAdapter(KeyId).validate_python(key_id)
         if not isinstance(public, str):

@@ -26,7 +26,16 @@ from connect_automate.automate import (
 )
 from connect_automate.automate_connect import ConnectV2CapabilityInvoker
 
-from .core import FAILURE_REQUEST, KitError, _envelope, canonical, encoded, validate_artifact
+from .core import (
+    ARTIFACT_LIMIT,
+    FAILURE_REQUEST,
+    KitError,
+    _envelope,
+    canonical,
+    encoded,
+    json_object,
+    validate_artifact,
+)
 from .fakeapps import FakeApps, parse_catalogue
 
 NOW = datetime(2026, 6, 1, tzinfo=UTC)
@@ -308,8 +317,10 @@ def _load_refusals(env, data):
 
 
 def run_check(raw: bytes, catalogue_bytes: bytes) -> dict:
-    data = validate_artifact(raw)
+    # Bounded decoding precedes schemas, and catalogue schema precedes artifact consistency.
+    json_object(raw, ARTIFACT_LIMIT)
     catalogue = parse_catalogue(catalogue_bytes)
+    data = validate_artifact(raw)
     scenarios = [
         ("success", _success),
         ("decline", _decline),

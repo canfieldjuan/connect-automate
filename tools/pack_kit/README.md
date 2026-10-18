@@ -67,8 +67,8 @@ Unexpected failure exits 1; interrupt exits 130. See the contract for messages.
 Focused verification:
 
 ```sh
-uv run ruff check tools/pack_kit tests/test_pack_kit.py tests/test_pack_kit_boundaries.py
-uv run python -m pytest tests/test_pack_kit.py tests/test_pack_kit_boundaries.py
+uv run ruff check tools/pack_kit tests/test_pack_kit*.py
+uv run python -m pytest tests/test_pack_kit*.py
 ```
 
 Golden files under `tests/fixtures/pack_kit/` are frozen review inputs. Tests

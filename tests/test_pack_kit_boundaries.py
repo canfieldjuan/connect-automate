@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from test_pack_kit import FIXTURES, ROOT, catalog, cli, kit, spec
+from test_pack_kit import FIXTURES, ROOT, catalog, cli, fixed_key, kit, spec
 
 
 def test_unknown_action_rejected_at_authoring_boundary():
@@ -195,7 +195,7 @@ def test_snapshot_replacement_does_not_change_signed_candidate(tmp_path, monkeyp
         return result
 
     monkeypatch.setattr(k, "check", replace)
-    key = Ed25519PrivateKey.generate()
+    key = fixed_key()
     signed = k.sign(
         path.read_bytes(),
         catalog(),
@@ -298,7 +298,7 @@ def test_sign_cli_failure_never_creates_output(tmp_path):
     k = kit()
     raw = tmp_path / "build"
     raw.write_bytes(k.build(spec()))
-    key = Ed25519PrivateKey.generate()
+    key = fixed_key()
     public = k.encoded(key.public_key().public_bytes_raw())
     target = tmp_path / "signed"
     for seed in [b"", b"x" * 31, b"x" * 33]:
@@ -350,11 +350,10 @@ def test_private_seeds_never_persist_or_log(monkeypatch, capsys):
 
     k = kit()
     secrets = []
-    original = Ed25519PrivateKey.generate
     directory = sandbox.TemporaryDirectory
 
     def generate():
-        key = original()
+        key = fixed_key(100 + len(secrets))
         secrets.append(key.private_bytes_raw())
         return key
 
@@ -445,7 +444,7 @@ def test_final_cli_pack_runs_under_real_runtime(tmp_path):
         b"pack-kit: check passed (offline only)\n",
         b"",
     )
-    key = Ed25519PrivateKey.generate()
+    key = fixed_key()
     public = key.public_key().public_bytes_raw()
     result = cli(
         "sign",
@@ -472,7 +471,7 @@ def test_final_cli_pack_runs_under_real_runtime(tmp_path):
 def test_tampered_final_signature_rejected():
     from connect_automate.automate import PackError, load_pack
 
-    key = Ed25519PrivateKey.generate()
+    key = fixed_key()
     k = kit()
     envelope = json.loads(
         k.sign(
@@ -491,7 +490,7 @@ def test_tampered_final_signature_rejected():
 def test_final_encoded_envelope_bound():
     from tools.pack_kit.core import _envelope
 
-    key = Ed25519PrivateKey.generate()
+    key = fixed_key()
     k = kit()
     base_size = len(_envelope(b"", key, "development"))
     boundary = max(n for n in range(32768) if base_size + (4 * n + 2) // 3 <= 32768)

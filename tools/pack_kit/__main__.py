@@ -7,16 +7,47 @@ import sys
 from pathlib import Path
 
 from . import core
-from .files import publish, read_input
+from .files import Publication, read_input
 
 
 class Parser(argparse.ArgumentParser):
+    def __init__(self, *args, **kwargs):
+        self._value_options = set()
+        kwargs["allow_abbrev"] = False
+        super().__init__(*args, **kwargs)
+
+    def add_argument(self, *args, **kwargs):
+        action = super().add_argument(*args, **kwargs)
+        if action.option_strings and action.nargs is None:
+            self._value_options.update(action.option_strings)
+        return action
+
+    def parse_known_args(self, args=None, namespace=None):
+        # Every declared single-value option owns its next token, even "--help".
+        # Derive arity from add_argument rather than maintaining another option list.
+        tokens = list(sys.argv[1:] if args is None else args)
+        normalized = []
+        index = 0
+        while index < len(tokens):
+            token = tokens[index]
+            if token == "--":
+                normalized.extend(tokens[index:])
+                break
+            if token in self._value_options and index + 1 < len(tokens):
+                normalized.append(f"{token}={tokens[index + 1]}")
+                index += 2
+            else:
+                normalized.append(token)
+                index += 1
+        return super().parse_known_args(normalized, namespace)
+
     def error(self, message):
         # argparse messages can echo input values. Keep diagnostics entirely structural.
         raise core.KitError(2, "usage:")
 
 
 def main(argv=None) -> int:
+    publication = None
     try:
         parser = Parser(prog="pack-kit")
         commands = parser.add_subparsers(dest="command", required=True, parser_class=Parser)
@@ -59,18 +90,30 @@ def main(argv=None) -> int:
                 )
                 inputs += (args.fake_apps,)
                 message = "signed pack"
-        publish(args.out, result, inputs=inputs)
+        # Register ownership before linking and retain it through the final announcement.
+        publication = Publication(args.out)
+        publication.write(result, inputs=inputs)
         print(f"pack-kit: {message}")
         return 0
-    except core.KitError as exc:
-        print(f"pack-kit: {exc.message}", file=sys.stderr)
-        return exc.code
-    except KeyboardInterrupt:
-        print("pack-kit: interrupted", file=sys.stderr)
-        return 130
-    except Exception:
-        print("pack-kit: internal error", file=sys.stderr)
-        return 1
+    except BaseException as caught:
+        failure = caught
+        try:
+            if publication is not None:
+                publication.rollback()
+        except OSError:
+            failure = core.KitError(7, "I/O error")
+        if isinstance(failure, core.KitError):
+            code, message = failure.code, failure.message
+        elif isinstance(failure, KeyboardInterrupt):
+            code, message = 130, "interrupted"
+        elif isinstance(failure, OSError):
+            code, message = 7, "I/O error"
+        elif isinstance(failure, Exception):
+            code, message = 1, "internal error"
+        else:
+            raise
+        print(f"pack-kit: {message}", file=sys.stderr)
+        return code
 
 
 if __name__ == "__main__":
