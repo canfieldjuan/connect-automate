@@ -1,0 +1,1 @@
+{"format_version":1,"capabilities":[{"id":"sample.process","version":"1.0","accepts":[{"media_type":"text/plain","max_bytes":1024}],"produces":["application/json"],"parameters":[{"name":"mode","value_type":"string","required":true,"label":"Mode","description":"Synthetic processing mode"}],"external_effects":true,"confirmation_required":true}]}

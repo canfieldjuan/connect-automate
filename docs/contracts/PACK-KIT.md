@@ -410,8 +410,12 @@ reviewed head. After a push/PR/review request, record the exact head and defer
 the next PR check for fifteen minutes unless a real exact-head notification or
 operator message arrives. Never poll or use a waiting agent as the timer.
 
-Implementation summary: no implementation in this phase; contract only.
-Cold diff audit: this file declares the authoring boundary, command contract,
-existing-runtime limits, release isolation and future proof obligations.
-Gap audit: NOT DONE. Acceptance, implementation, settling evidence, CI,
-oversight PASS and merge remain outstanding.
+Implementation summary: acceptance is recorded above. The repository-only
+`tools/pack_kit/` implements the commands and offline harness, with frozen
+fixtures and focused behavioral tests. Durable qualification evidence is
+retained outside the checkout and identified by alias/hash in the PR.
+Cold diff audit: shipped source, dependency/configuration files and application
+pins are unchanged. The command behavior and operator-attestation limits above
+remain the accepted contract; this status update adds no behavior.
+Gap audit: NOT DONE. Required CI, exact-head oversight PASS and merge remain
+outstanding until recorded by the implementation PR.
