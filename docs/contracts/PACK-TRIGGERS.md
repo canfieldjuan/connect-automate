@@ -467,7 +467,7 @@ Review repair contract (`537aa0c`, oversight `6254268336`):
   verify all new table keys, foreign keys, CHECK constraints and immutability
   triggers in one initialization transaction; reject partial/incompatible shapes
   without repairing them. Legacy stores with none of the new tables initialize
-  additively. Receipt replay must bind its event to its own record. Reproduce
+  additively. Receipt replay must bind its event to its own record and intake operation (derived key, source-kind name and canonical request fingerprint). Reproduce
   malformed schemas and cross-record receipts using synthetic on-disk databases.
 - Binding registration (`3056cc1`): consolidate alias rejection at its persisted
   owner and prove both distinct-source admission and duplicate-scope refusal.
