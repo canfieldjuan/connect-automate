@@ -34,6 +34,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 
 from .events import EventBindingError, EventConflict
@@ -78,7 +79,6 @@ ACTION_SETTLED = "settled"
 ACTION_FAILED = "failed"
 
 _SCHEMA = """
-BEGIN IMMEDIATE;
 CREATE TABLE IF NOT EXISTS workflow_records (
     record_id TEXT PRIMARY KEY CHECK (length(record_id) = 36),
     workflow TEXT NOT NULL CHECK (workflow <> ''),
@@ -218,12 +218,71 @@ BEFORE DELETE ON workflow_events
 BEGIN
     SELECT RAISE(ABORT, 'workflow_events are immutable');
 END;
-COMMIT;
 """
+
+_EVENT_TABLES = frozenset(
+    {"workflow_binding_sets", "workflow_source_bindings", "workflow_event_receipts"}
+)
 
 
 class WorkflowStoreError(RuntimeError):
     """Base class for workflow store errors."""
+
+
+def _event_schema_shape(db, expected_names=frozenset()):
+    objects = tuple(
+        sorted(
+            (kind, name, table, " ".join(sql.split()) if sql else None)
+            for kind, name, table, sql in db.execute(
+                "SELECT type, name, tbl_name, sql FROM sqlite_master"
+            )
+            if name in _EVENT_TABLES or table in _EVENT_TABLES or name in expected_names
+        )
+    )
+    tables = []
+    for table in sorted(_EVENT_TABLES):
+        columns = tuple(tuple(row) for row in db.execute(f'PRAGMA table_info("{table}")'))
+        foreign_keys = tuple(
+            sorted(tuple(row) for row in db.execute(f'PRAGMA foreign_key_list("{table}")'))
+        )
+        indexes = []
+        for row in db.execute(f'PRAGMA index_list("{table}")'):
+            name = row[1]
+            # Index names are SQLite schema data, so bind them as a table-valued pragma.
+            keys = tuple(
+                tuple(item) for item in db.execute("SELECT * FROM pragma_index_info(?)", (name,))
+            )
+            indexes.append((row[2], row[3], row[4], keys))
+        tables.append((table, columns, foreign_keys, tuple(sorted(indexes))))
+    return objects, tuple(tables)
+
+
+@lru_cache(maxsize=1)
+def _expected_event_schema():
+    # Derive the shape from the one DDL owner, using this SQLite version's own metadata.
+    with contextlib.closing(sqlite3.connect(":memory:")) as reference:
+        reference.executescript(_SCHEMA)
+        return _event_schema_shape(reference)
+
+
+def _verify_event_schema(db, *, allow_absent=False):
+    expected = _expected_event_schema()
+    actual = _event_schema_shape(db, frozenset(item[1] for item in expected[0]))
+    if allow_absent and not actual[0]:
+        return
+    if actual != expected:
+        raise WorkflowStoreError("incompatible event schema")
+
+
+def _schema_statements():
+    statement = ""
+    for line in _SCHEMA.splitlines(keepends=True):
+        statement += line
+        if sqlite3.complete_statement(statement):
+            yield statement
+            statement = ""
+    if statement.strip():
+        raise WorkflowStoreError("incomplete workflow schema")
 
 
 class _EventVersionConflict(WorkflowStoreError):
@@ -664,7 +723,11 @@ class WorkflowStore:
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         with self.connection() as db:
             db.execute("PRAGMA journal_mode=WAL")
-            db.executescript(_SCHEMA)
+            db.execute("BEGIN IMMEDIATE")
+            _verify_event_schema(db, allow_absent=True)
+            for statement in _schema_statements():
+                db.execute(statement)
+            _verify_event_schema(db)
         _restrict(self.path, 0o600)
         for suffix in ("-wal", "-shm"):
             sidecar = self.path.with_name(self.path.name + suffix)
@@ -678,6 +741,24 @@ class WorkflowStore:
         )
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
+            sources = list(bindings.values())
+            if len({source["source_id"] for source in sources}) != len(sources) or len(
+                {(source["source_kind"], source["scope"]) for source in sources}
+            ) != len(sources):
+                raise EventBindingError()
+            for binding in sources:
+                owners = db.execute(
+                    "SELECT source_id, source_kind, scope, policy FROM workflow_source_bindings "
+                    "WHERE subject = ? AND (source_id = ? OR (source_kind = ? AND scope = ?))",
+                    (subject, binding["source_id"], binding["source_kind"], binding["scope"]),
+                ).fetchall()
+                policy = json.dumps(binding["policy"], sort_keys=True, separators=(",", ":"))
+                if any(
+                    (row["source_id"], row["source_kind"], row["scope"], row["policy"])
+                    != (binding["source_id"], binding["source_kind"], binding["scope"], policy)
+                    for row in owners
+                ):
+                    raise EventBindingError()
             prior = db.execute(
                 "SELECT bindings_json FROM workflow_binding_sets WHERE subject = ? AND pack_id = ?",
                 (subject, pack_id),
@@ -701,21 +782,6 @@ class WorkflowStore:
                 return
             if rows:
                 raise EventBindingError()
-            for binding in bindings.values():
-                owners = db.execute(
-                    (
-                        "SELECT source_kind, scope, policy FROM workflow_source_bindings WHERE "
-                        "subject = ? AND source_id = ?"
-                    ),
-                    (subject, binding["source_id"]),
-                ).fetchall()
-                policy = json.dumps(binding["policy"], sort_keys=True, separators=(",", ":"))
-                if any(
-                    (row["source_kind"], row["scope"], row["policy"])
-                    != (binding["source_kind"], binding["scope"], policy)
-                    for row in owners
-                ):
-                    raise EventBindingError()
             db.execute(
                 "INSERT INTO workflow_binding_sets VALUES (?, ?, ?)", (subject, pack_id, canonical)
             )
@@ -793,6 +859,7 @@ class WorkflowStore:
                 if (
                     record is None
                     or event is None
+                    or event["record_id"] != prior["record_id"]
                     or record["pack_id"] != pack_id
                     or record["pack_version"] != pack_version
                 ):

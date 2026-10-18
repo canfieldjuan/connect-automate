@@ -107,10 +107,12 @@ or subject substrings; explicit `match_all = true` is required for no filters.
 
 These archetypes use spec/artifact version 2, workflow vocabulary 2 and manifest
 2. Envelope and grant versions remain 1. Existing approve-then-act specs and
-goldens remain version 1. Only v2 check/sign accepts and requires `--fake-events`;
-missing, malformed or unused catalogues exit 3. A valid catalogue that cannot
-run its declared positive event fails check with exit 5. No accepting source is
-invented from a candidate spec.
+goldens remain version 1. V2 check/sign requires `--fake-events`; v1 rejects an
+unused catalogue. With readable inputs, catalogue-schema errors exit 3. After
+artifact validation, missing required or unused catalogues also exit 3. Input
+file I/O failures exit 7; an inconsistent artifact exits 4 before the catalogue
+presence check. A valid catalogue that cannot run its declared positive event
+fails check with exit 5. No accepting source is invented from a candidate spec.
 
 The catalogue declares one synthetic named source and a matching event. A real
 host must supply its own authenticated source mapping to `PackRuntime.load`

@@ -138,7 +138,8 @@ def parse_event(raw: bytes) -> Event:
         data = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique)
         return _EVENT.validate_python(data)
     except (ValueError, TypeError, RecursionError):
-        raise EventInputError() from None
+        pass
+    raise EventInputError()
 
 
 def check_event_time(event: Event, now: datetime) -> None:

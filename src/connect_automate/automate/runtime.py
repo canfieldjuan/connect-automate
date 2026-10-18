@@ -168,8 +168,6 @@ class PackRuntime:
                 )
                 for name, value in supplied.items()
             }
-            if len({value.source_id for value in bindings.values()}) != len(bindings):
-                raise ValueError("source aliases are ambiguous")
             configuration = {}
             for name, source in bindings.items():
                 matching = [trigger for trigger in triggers if trigger.binding == name]
@@ -190,7 +188,8 @@ class PackRuntime:
                 configuration[name] = {**source.model_dump(mode="json"), "policy": policy}
             return bindings, configuration
         except (ValueError, TypeError, RecursionError):
-            raise EventBindingError() from None
+            pass
+        raise EventBindingError()
 
     def submit_event(self, *, binding: str, event: bytes, now: datetime) -> EventRun:
         self._host.require_license()

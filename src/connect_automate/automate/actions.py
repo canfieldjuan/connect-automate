@@ -254,6 +254,14 @@ class ActionRunner:
         view = self._store.get_action(view.action_id)
         if view.status != ACTION_PENDING:
             return _outcome(view, delivered=False)
+        adapter = None
+        if safe_replay:
+            try:
+                adapter = self._registry.resolve(view.kind)
+            except AdapterNotConfigured:
+                return _outcome(self._store.get_action(view.action_id), delivered=False)
+            if not self._auto_recoverable(adapter):
+                return _outcome(self._store.get_action(view.action_id), delivered=False)
         # Names and paths come only from the trusted store path and a hashed persisted ID.
         digest = hashlib.sha256(view.action_id.encode("utf-8")).hexdigest()
         path = self._store.path.resolve().parent / ".automate-action-locks" / (digest + ".lock")
@@ -262,18 +270,23 @@ class ActionRunner:
             with operation_lock(path, "action delivery busy", timeout_seconds=0):
                 self._host.require_license()
                 return self._deliver_locked(
-                    view.action_id, now=now, safe_replay=safe_replay, legacy_run=legacy_run
+                    view.action_id,
+                    now=now,
+                    safe_replay=safe_replay,
+                    legacy_run=legacy_run,
+                    adapter=adapter,
                 )
         except OperationLockBusy:
             return _outcome(self._store.get_action(view.action_id), delivered=False)
 
-    def _deliver_locked(self, action_id, *, now, safe_replay, legacy_run):
+    def _deliver_locked(self, action_id, *, now, safe_replay, legacy_run, adapter=None):
         # Reload only after lock acquisition: a waiter must observe the winner's terminal row.
         view = self._store.get_action(action_id)
         if view.status != ACTION_PENDING:
             return _outcome(view, delivered=False)
         try:
-            adapter = self._registry.resolve(view.kind)
+            if adapter is None:
+                adapter = self._registry.resolve(view.kind)
         except AdapterNotConfigured:
             if legacy_run:
                 self._store.release_action(action_id)

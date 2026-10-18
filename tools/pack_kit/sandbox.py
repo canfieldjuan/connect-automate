@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import base64
 import os
+import shutil
+import uuid
 from contextlib import contextmanager
 from copy import deepcopy
 from datetime import UTC, datetime
@@ -118,13 +120,21 @@ def _host(root: Path, key: Ed25519PrivateKey, *, valid=True):
 
 @contextmanager
 def _sandbox_root():
-    # The Windows entitlement reader validates the entire chain under Local AppData.
-    parent = connect_windows.local_app_data_root() if os.name == "nt" else None
-    with TemporaryDirectory(prefix="pack-kit-", dir=parent) as name:
-        root = Path(name)
-        if os.name == "nt":
-            connect_windows._protect_windows_directory(root)
+    if os.name != "nt":
+        with TemporaryDirectory(prefix="pack-kit-") as name:
+            yield Path(name)
+        return
+    # The public creator must create the root itself in order to protect its ACL.
+    parent = connect_windows.local_app_data_root()
+    root = parent / ("pack-kit-" + uuid.uuid4().hex)
+    if root.exists():
+        raise FileExistsError("sandbox root already exists")
+    try:
+        connect_windows.ensure_private_directory(root, root=parent)
         yield root
+    finally:
+        if root.exists():
+            shutil.rmtree(root)
 
 
 @contextmanager
@@ -411,9 +421,12 @@ def _event_replay(env, data):
 def _event_boundaries(env, data):
     catalogue = env["event_catalogue"]
     event = catalogue.matching_event.model_dump(mode="json")
+    unbound = "unconfigured-source"
+    while unbound in catalogue.bindings():
+        unbound += "-"
     cases = [
         (catalogue.binding.name, {**event, "confirmed": True}, EventInputError),
-        ("unconfigured-source", event, EventBindingError),
+        (unbound, event, EventBindingError),
     ]
     for name, candidate, error in cases:
         try:
@@ -422,6 +435,9 @@ def _event_boundaries(env, data):
             pass
         else:
             raise KitError(5, "check failed")
+    with env["store"].connection() as db:
+        require(db.execute("SELECT count(*) FROM workflow_records").fetchone()[0] == 0)
+        require(db.execute("SELECT count(*) FROM workflow_event_receipts").fetchone()[0] == 0)
     trigger = data["spec"]["trigger"]
     nonmatch = deepcopy(event)
     if isinstance(catalogue.matching_event, MailEvent):

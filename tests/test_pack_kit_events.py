@@ -1,10 +1,12 @@
 """The v2 authoring lanes reuse the real offline pack-kit harness."""
 
+import ast
 import errno
 import io
 import json
 import os
 import subprocess
+from contextlib import nullcontext
 from pathlib import Path
 
 import pytest
@@ -18,6 +20,63 @@ k = kit()
 PACK_ID = "11111111-1111-4111-8111-111111111111"
 APPS = (Path(__file__).parent / "fixtures" / "pack_kit" / "fake-apps.json").read_bytes()
 GOLDENS = Path(__file__).parent / "fixtures" / "pack_events"
+
+
+def sdk_private_references(source):
+    tree = ast.parse(source)
+    names, violations = set(), []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("connect_automate"):
+            for alias in node.names:
+                names.add(alias.asname or alias.name)
+                if alias.name.startswith("_") or any(
+                    part.startswith("_") for part in node.module.split(".")
+                ):
+                    violations.append((node.lineno, alias.name))
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.startswith("connect_automate"):
+                    names.add(alias.asname or alias.name.split(".")[0])
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and node.attr.startswith("_"):
+            base = node.value
+            while isinstance(base, ast.Attribute):
+                base = base.value
+            if isinstance(base, ast.Name) and base.id in names:
+                violations.append((node.lineno, node.attr))
+    return violations
+
+
+def test_kit_uses_only_public_sdk_owners():
+    violations = {
+        path.name: sdk_private_references(path.read_text())
+        for path in (ROOT / "tools" / "pack_kit").glob("*.py")
+    }
+    assert not {name: refs for name, refs in violations.items() if refs}
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "from connect_automate.automate import _VERIFIED",
+        "from connect_automate import connect_windows as cw\ncw._protect_windows_directory(root)",
+        "import connect_automate as sdk\nsdk.connect_windows._protect_windows_directory(root)",
+    ],
+)
+def test_sdk_ownership_guard_detects_private_import_and_attribute(source):
+    assert sdk_private_references(source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "from tools.pack_kit.core import _envelope",
+        "from connect_automate import connect_windows as cw\n"
+        "cw.ensure_private_directory(root, root=parent)",
+    ],
+)
+def test_sdk_ownership_guard_allows_public_sdk_and_kit_internals(source):
+    assert sdk_private_references(source) == []
 
 
 def test_fixture_bytes_survive_windows_git_checkout():
@@ -121,18 +180,63 @@ def test_windows_storage_protection_failure_blocks_check_and_cleans_up(tmp_path,
 
     attempted = []
 
-    def deny(path):
+    def deny(path, *, root):
+        path.mkdir(mode=0o700)
         attempted.append(path)
         raise OSError(errno.EACCES, "injected private storage refusal")
 
     monkeypatch.setattr(sandbox, "os", SimpleNamespace(name="nt"))
     monkeypatch.setattr(connect_windows, "local_app_data_root", lambda: tmp_path)
-    monkeypatch.setattr(connect_windows, "_protect_windows_directory", deny)
+    monkeypatch.setattr(connect_windows, "ensure_private_directory", deny)
     raw = k.build(k.parse_spec(k.new_spec("approve-then-act", PACK_ID, "Event proof", 1)))
     with pytest.raises(k.KitError) as caught:
         k.check(raw, APPS)
     assert caught.value.code == 5
     assert len(attempted) == 1 and not attempted[0].exists()
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_windows_scratch_tree_is_removed_on_success_and_failure(tmp_path, monkeypatch, fail):
+    from types import SimpleNamespace
+
+    from connect_automate import connect_windows
+    from tools.pack_kit import sandbox
+
+    def create(path, *, root):
+        path.mkdir(mode=0o700)
+        return path
+
+    monkeypatch.setattr(sandbox, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(connect_windows, "local_app_data_root", lambda: tmp_path)
+    monkeypatch.setattr(connect_windows, "ensure_private_directory", create)
+    with (
+        pytest.raises(RuntimeError) if fail else nullcontext(),
+        sandbox._sandbox_root() as root,
+    ):
+        child = root / "child"
+        child.mkdir()
+        (child / "synthetic.txt").write_text("synthetic")
+        if fail:
+            raise RuntimeError("injected scenario failure")
+    assert not root.exists()
+
+
+def test_windows_scratch_collision_preserves_existing_tree(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from connect_automate import connect_windows
+    from tools.pack_kit import sandbox
+
+    existing = tmp_path / "pack-kit-existing"
+    existing.mkdir()
+    marker = existing / "keep.txt"
+    marker.write_text("preserve")
+    monkeypatch.setattr(sandbox, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(connect_windows, "local_app_data_root", lambda: tmp_path)
+    monkeypatch.setattr(sandbox.uuid, "uuid4", lambda: SimpleNamespace(hex="existing"))
+    with pytest.raises(FileExistsError), sandbox._sandbox_root():
+        pytest.fail("existing scratch name must not be adopted")
+    assert marker.read_text() == "preserve"
 
 
 def event_catalogue(archetype):
@@ -215,10 +319,99 @@ def test_missing_or_incompatible_event_catalogue_precedes_seed():
         def read(self, size):
             raise AssertionError("publisher seed was read before check")
 
-    for events in [None, b"{}", event_catalogue("schedule-review-then-act")]:
+    for events, code in [
+        (None, 3),
+        (b"{}", 3),
+        (event_catalogue("schedule-review-then-act"), 5),
+    ]:
         with pytest.raises(k.KitError) as caught:
             k.sign(raw, APPS, "development", "invalid", Unreadable(), event_catalogue=events)
-        assert caught.value.code in (3, 5)
+        assert caught.value.code == code
+
+
+@pytest.mark.parametrize("scenario", ["_event_replay", "_event_boundaries"])
+def test_event_checker_scenario_rejects_broken_runtime(monkeypatch, scenario):
+    from connect_automate.automate import PackRuntime
+    from tools.pack_kit import sandbox
+
+    original_scenario = getattr(sandbox, scenario)
+    submit = PackRuntime.submit_event
+
+    def exercise_fault(env, data):
+        def broken(runtime, *, binding, event, now):
+            if scenario == "_event_boundaries" and binding != env["event_catalogue"].binding.name:
+                binding = env["event_catalogue"].binding.name
+            result = submit(runtime, binding=binding, event=event, now=now)
+            if scenario == "_event_replay" and not result.applied and result.record is not None:
+                changed = json.loads(event)
+                changed["message_id"] += "-broken-replay"
+                return submit(runtime, binding=binding, event=k.canonical(changed), now=now)
+            return result
+
+        with monkeypatch.context() as patch:
+            patch.setattr(PackRuntime, "submit_event", broken)
+            original_scenario(env, data)
+
+    monkeypatch.setattr(sandbox, scenario, exercise_fault)
+    raw = k.build(k.parse_spec(k.new_spec("mail-review-then-act", PACK_ID, "Event proof", 1)))
+    with pytest.raises(k.KitError) as caught:
+        k.check(raw, APPS, event_catalogue("mail-review-then-act"))
+    assert caught.value.code == 5
+
+
+@pytest.mark.parametrize("archetype", ["mail-review-then-act", "schedule-review-then-act"])
+@pytest.mark.parametrize("binding", ["unconfigured-source", "x" * 80])
+def test_event_checker_accepts_every_valid_binding_name(archetype, binding):
+    spec = k.parse_spec(k.new_spec(archetype, PACK_ID, "Event proof", 1))
+    spec["trigger"]["binding"] = binding
+    catalogue = json.loads(event_catalogue(archetype))
+    catalogue["binding"]["name"] = binding
+    assert "event-boundaries" in k.check(k.build(spec), APPS, k.canonical(catalogue))["scenarios"]
+
+
+def test_match_all_checker_refuses_writes_from_rejected_events(monkeypatch):
+    from connect_automate.automate import PackRuntime
+    from connect_automate.automate.events import EventInputError
+    from tools.pack_kit import sandbox
+
+    original_scenario = sandbox._event_boundaries
+    submit = PackRuntime.submit_event
+
+    def exercise_fault(env, data):
+        def broken(runtime, *, binding, event, now):
+            try:
+                return submit(runtime, binding=binding, event=event, now=now)
+            except EventInputError:
+                changed = json.loads(event)
+                changed.pop("confirmed")
+                submit(runtime, binding=binding, event=k.canonical(changed), now=now)
+                raise
+
+        with monkeypatch.context() as patch:
+            patch.setattr(PackRuntime, "submit_event", broken)
+            original_scenario(env, data)
+
+    monkeypatch.setattr(sandbox, "_event_boundaries", exercise_fault)
+    spec = k.parse_spec(k.new_spec("mail-review-then-act", PACK_ID, "Event proof", 1))
+    spec["trigger"].update(match_all=True, filters=[])
+    with pytest.raises(k.KitError) as caught:
+        k.check(k.build(spec), APPS, event_catalogue("mail-review-then-act"))
+    assert caught.value.code == 5
+
+
+def test_catalogue_cli_error_precedence(tmp_path):
+    apps = ROOT / "tests" / "fixtures" / "pack_kit" / "fake-apps.json"
+    v1 = ROOT / "tests" / "fixtures" / "pack_kit" / "build.json"
+    missing = cli("check", v1, "--fake-apps", apps, "--fake-events", tmp_path / "absent.json")
+    assert missing.returncode == 7
+    assert missing.stderr == ("pack-kit: I/O error" + os.linesep).encode()
+    raw = k.build(k.parse_spec(k.new_spec("mail-review-then-act", PACK_ID, "Event proof", 1)))
+    artifact = json.loads(raw)
+    artifact["manifest"]["pack_version"] += 1
+    path = tmp_path / "inconsistent.json"
+    path.write_bytes(k.canonical(artifact))
+    inconsistent = cli("check", path, "--fake-apps", apps)
+    assert inconsistent.returncode == 4
 
 
 def test_nonmatching_positive_catalogue_is_not_repaired():

@@ -141,7 +141,9 @@ binding names to immutable `SourceBinding` values: `source_id` (canonical UUID4)
 `source_kind` and a nonempty opaque host scope (at most 512 UTF-8 bytes). Names
 obey the existing name bound. An event cannot register or override a binding.
 Missing/extra bindings, kind mismatches or aliases that make one source ambiguous
-are errors. A v1 runtime needs no bindings and cannot accept events.
+are errors. Two names for one source ID, or two source IDs for the same kind and
+scope, are aliases. The store owns this invariant, including registrations under
+other packs for the same subject. A v1 runtime needs no bindings and cannot accept events.
 Freeze defensive copies at load; later mutation of the caller's mapping cannot
 change source ownership. Take the subject from verified runtime construction,
 never from an event or a caller-supplied receipt key.
@@ -309,6 +311,15 @@ The new idempotence restriction applies to v2 automatic continuation/replay;
 the common lock applies to all deliveries. Do not change v1 replay policy as
 an incidental part of this extension or claim v2 crash guarantees for v1.
 
+The common recovery sweep deliberately requires `adapter.idempotent is True`,
+including for v1 actions: a truthy non-boolean declaration no longer authorizes
+automatic recovery. This is a fail-safe tightening of the adapter declaration,
+separate from the unchanged v1 decision-replay continuation above. Safe replay
+and recovery refuse an unrecoverable adapter before acquiring the delivery lock,
+so a sweep cannot obstruct a fresh authorized delivery. The checked adapter
+instance is retained through lock acquisition; status, persisted request and
+recoverability are checked again under the lock before any invocation.
+
 ## Observable errors and kit archetypes
 
 New event errors are domain exceptions with stable, payload-free messages:
@@ -446,6 +457,51 @@ The new CLI test expects the platform's text newline for diagnostics while
 continuing to compare artifacts as exact bytes. No old test file, fixture,
 library implementation, dependency, app or release behavior changes in this
 correction. Native Windows qualification remains a required pending gate.
+
+Review repair contract (`537aa0c`, oversight `6254268336`):
+
+- Delivery owner `ActionRunner._deliver/_deliver_locked` (`3056cc1`): prove the
+  stale pre-lock reader cannot deliver after another caller settles, and reject
+  unsafe recovery before locking while retaining the deciding under-lock guard.
+- Store owners `initialize/admit_event` (new event schema/replay in `3056cc1`):
+  verify all new table keys, foreign keys, CHECK constraints and immutability
+  triggers in one initialization transaction; reject partial/incompatible shapes
+  without repairing them. Legacy stores with none of the new tables initialize
+  additively. Receipt replay must bind its event to its own record. Reproduce
+  malformed schemas and cross-record receipts using synthetic on-disk databases.
+- Binding registration (`3056cc1`): consolidate alias rejection at its persisted
+  owner and prove both distinct-source admission and duplicate-scope refusal.
+- Diagnostic owners `parse_event/_validate_bindings` (`3056cc1`): reject outside
+  exception handlers so neither the public message nor the exception chain
+  carries rejected event or binding payloads. Prove decode, JSON and schema cases.
+- Pin the existing event-replay safe-adapter and pre-anchor grid guards with
+  direct regressions and mutants, including on-grid ticks before the anchor.
+- Kit checker owners (`3056cc1`): prove both event scenarios reject a broken
+  runtime, construct the unbound probe outside the declared binding, and check
+  rejected submissions leave zero records/receipts even for match-all mail.
+  Pin exact catalogue error codes and describe the existing read/schema/artifact
+  error precedence truthfully; do not reorder validation from an untrusted header.
+- Kit scratch-root owner (`537aa0c`): use public SDK directory creation only,
+  remove each owned scratch tree on success and failure, and enforce the public
+  SDK boundary structurally. No new SDK seam or private SDK call is authorized.
+- Each defect gets a fail-before/pass-after regression and a causal mutant.
+  Preserve old tests/goldens, run affected lanes and applicable lint, and publish
+  one grouped repair. Native Windows CI and exact-head review remain merge gates.
+
+The low operational lock-file retention finding is explicitly deferred by
+oversight to issue #9. One small file remains per action; serialization is
+unchanged. Issue #9 requires a safe lifecycle design and native Linux/Windows
+process proof **before any application adopts this revision or bumps its pin**.
+Do not describe retention as fixed or remove lock inodes as an incidental repair.
+
+Review repair qualification: the full Linux suite passed with the required CI
+warning policy (922 passed, 16 skipped), and the affected kit slice passed under
+strict resource warnings (142 passed). The changed-file strict gate and all
+required/review causal mutants passed. A stricter whole-suite experiment also
+exposed the original lock test's unclosed subprocess stdout; the exact published
+baseline reproduces that warning and the original test remains byte-identical.
+The new library source matches the full-suite-tested snapshot; later changes
+are confined to the kit, its tests and documentation and have their own gates.
 
 Gap audit: **NOT DONE**. Exact-revision contract review and operator acceptance
 are recorded above; implementation and local Linux qualification are complete.
