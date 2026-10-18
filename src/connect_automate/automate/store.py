@@ -29,12 +29,16 @@ import contextlib
 import hashlib
 import json
 import sqlite3
+import time
 import uuid
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
+
+from .events import EventBindingError, EventConflict
 
 CREATE_OPERATION_NAME = "create"
 
@@ -76,7 +80,6 @@ ACTION_SETTLED = "settled"
 ACTION_FAILED = "failed"
 
 _SCHEMA = """
-BEGIN IMMEDIATE;
 CREATE TABLE IF NOT EXISTS workflow_records (
     record_id TEXT PRIMARY KEY CHECK (length(record_id) = 36),
     workflow TEXT NOT NULL CHECK (workflow <> ''),
@@ -158,6 +161,54 @@ CREATE TABLE IF NOT EXISTS workflow_actions (
 );
 CREATE INDEX IF NOT EXISTS idx_workflow_actions_record
     ON workflow_actions(record_id, created_at);
+CREATE TABLE IF NOT EXISTS workflow_binding_sets (
+    subject TEXT NOT NULL,
+    pack_id TEXT NOT NULL,
+    bindings_json TEXT NOT NULL,
+    PRIMARY KEY (subject, pack_id)
+);
+CREATE TABLE IF NOT EXISTS workflow_source_bindings (
+    subject TEXT NOT NULL,
+    pack_id TEXT NOT NULL,
+    binding TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    source_kind TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    policy TEXT NOT NULL,
+    PRIMARY KEY (subject, pack_id, binding),
+    UNIQUE (subject, pack_id, source_id),
+    FOREIGN KEY (subject, pack_id) REFERENCES workflow_binding_sets(subject, pack_id)
+);
+CREATE TABLE IF NOT EXISTS workflow_event_receipts (
+    subject TEXT NOT NULL,
+    pack_id TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    source_kind TEXT NOT NULL,
+    occurrence TEXT NOT NULL CHECK (occurrence <> ''),
+    pack_version INTEGER NOT NULL CHECK (pack_version >= 1),
+    binding TEXT NOT NULL,
+    fingerprint TEXT NOT NULL CHECK (length(fingerprint) = 64),
+    payload TEXT NOT NULL,
+    record_id TEXT REFERENCES workflow_records(record_id),
+    event_id TEXT REFERENCES workflow_events(event_id),
+    created_at TEXT NOT NULL,
+    CHECK ((record_id IS NULL) = (event_id IS NULL)),
+    PRIMARY KEY (subject, pack_id, source_id, source_kind, occurrence),
+    FOREIGN KEY (subject, pack_id, binding)
+        REFERENCES workflow_source_bindings(subject, pack_id, binding)
+);
+CREATE TRIGGER IF NOT EXISTS workflow_receipts_no_update
+BEFORE UPDATE ON workflow_event_receipts BEGIN SELECT RAISE(ABORT, 'immutable receipt'); END;
+CREATE TRIGGER IF NOT EXISTS workflow_receipts_no_delete
+BEFORE DELETE ON workflow_event_receipts BEGIN SELECT RAISE(ABORT, 'immutable receipt'); END;
+CREATE TRIGGER IF NOT EXISTS workflow_bindings_no_update
+BEFORE UPDATE ON workflow_source_bindings BEGIN SELECT RAISE(ABORT, 'immutable source'); END;
+CREATE TRIGGER IF NOT EXISTS workflow_bindings_no_delete
+BEFORE DELETE ON workflow_source_bindings BEGIN SELECT RAISE(ABORT, 'immutable source'); END;
+CREATE TRIGGER IF NOT EXISTS workflow_binding_sets_no_update
+BEFORE UPDATE ON workflow_binding_sets BEGIN SELECT RAISE(ABORT, 'immutable binding set'); END;
+CREATE TRIGGER IF NOT EXISTS workflow_binding_sets_no_delete
+BEFORE DELETE ON workflow_binding_sets BEGIN SELECT RAISE(ABORT, 'immutable binding set'); END;
 CREATE TRIGGER IF NOT EXISTS workflow_events_no_update
 BEFORE UPDATE ON workflow_events
 BEGIN
@@ -168,12 +219,75 @@ BEFORE DELETE ON workflow_events
 BEGIN
     SELECT RAISE(ABORT, 'workflow_events are immutable');
 END;
-COMMIT;
 """
+
+_EVENT_TABLES = frozenset(
+    {"workflow_binding_sets", "workflow_source_bindings", "workflow_event_receipts"}
+)
 
 
 class WorkflowStoreError(RuntimeError):
     """Base class for workflow store errors."""
+
+
+def _event_schema_shape(db, expected_names=frozenset()):
+    objects = tuple(
+        sorted(
+            (kind, name, table, " ".join(sql.split()) if sql else None)
+            for kind, name, table, sql in db.execute(
+                "SELECT type, name, tbl_name, sql FROM sqlite_master"
+            )
+            if name in _EVENT_TABLES or table in _EVENT_TABLES or name in expected_names
+        )
+    )
+    tables = []
+    for table in sorted(_EVENT_TABLES):
+        columns = tuple(tuple(row) for row in db.execute(f'PRAGMA table_info("{table}")'))
+        foreign_keys = tuple(
+            sorted(tuple(row) for row in db.execute(f'PRAGMA foreign_key_list("{table}")'))
+        )
+        indexes = []
+        for row in db.execute(f'PRAGMA index_list("{table}")'):
+            name = row[1]
+            # Index names are SQLite schema data, so bind them as a table-valued pragma.
+            keys = tuple(
+                tuple(item) for item in db.execute("SELECT * FROM pragma_index_info(?)", (name,))
+            )
+            indexes.append((row[2], row[3], row[4], keys))
+        tables.append((table, columns, foreign_keys, tuple(sorted(indexes))))
+    return objects, tuple(tables)
+
+
+@lru_cache(maxsize=1)
+def _expected_event_schema():
+    # Derive the shape from the one DDL owner, using this SQLite version's own metadata.
+    with contextlib.closing(sqlite3.connect(":memory:")) as reference:
+        reference.executescript(_SCHEMA)
+        return _event_schema_shape(reference)
+
+
+def _verify_event_schema(db, *, allow_absent=False):
+    expected = _expected_event_schema()
+    actual = _event_schema_shape(db, frozenset(item[1] for item in expected[0]))
+    if allow_absent and not actual[0]:
+        return
+    if actual != expected:
+        raise WorkflowStoreError("incompatible event schema")
+
+
+def _schema_statements():
+    statement = ""
+    for line in _SCHEMA.splitlines(keepends=True):
+        statement += line
+        if sqlite3.complete_statement(statement):
+            yield statement
+            statement = ""
+    if statement.strip():
+        raise WorkflowStoreError("incomplete workflow schema")
+
+
+class _EventVersionConflict(WorkflowStoreError):
+    """Origin signal translated to the existing pack-version error by the engine."""
 
 
 class UnknownRecord(WorkflowStoreError):
@@ -261,6 +375,14 @@ class TransitionOutcome:
 
 
 @dataclass(frozen=True)
+class EventAdmission:
+    matched: bool
+    applied: bool
+    record: RecordView | None
+    event_id: str | None
+
+
+@dataclass(frozen=True)
 class OperationReplay:
     """The recorded outcome of a prior operation, for replay-before-matching lookups.
 
@@ -314,6 +436,12 @@ def request_fingerprint(request: Mapping[str, object]) -> str:
         raise ValueError("request must be a mapping")
     canonical = json.dumps(dict(request), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _event_operation_key(identity: tuple[str, str, str, str, str]) -> str:
+    """Bind both receipt replay and creation to the same intake operation."""
+    canonical = json.dumps(identity, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return "pack.event:" + hashlib.sha256(canonical).hexdigest()
 
 
 def _normalize_effects(effects: Sequence[Mapping[str, object]]) -> list[dict[str, object]]:
@@ -601,16 +729,263 @@ class WorkflowStore:
         # parent without changing that parent's permissions.
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         with self.connection() as db:
-            db.execute("PRAGMA journal_mode=WAL")
-            db.executescript(_SCHEMA)
+            # WAL negotiation cannot run in a transaction, and SQLite may skip its
+            # busy handler during the required lock upgrade. Own this phase's retry
+            # budget here, without multiplying it by a native wait on each attempt.
+            busy_timeout_ms = db.execute("PRAGMA busy_timeout").fetchone()[0]
+            deadline = time.monotonic() + busy_timeout_ms / 1000
+            last_busy: sqlite3.OperationalError | None = None
+            db.execute("PRAGMA busy_timeout=0")
+            try:
+                while True:
+                    if last_busy is not None and time.monotonic() >= deadline:
+                        raise WorkflowStoreError(
+                            "workflow store initialization busy"
+                        ) from last_busy
+                    try:
+                        mode = db.execute("PRAGMA journal_mode=WAL").fetchone()
+                    except sqlite3.OperationalError as exc:
+                        code = getattr(exc, "sqlite_errorcode", None)
+                        if code is None or (code & 0xFF) not in (
+                            sqlite3.SQLITE_BUSY,
+                            sqlite3.SQLITE_LOCKED,
+                        ):
+                            raise
+                        last_busy = exc
+                        remaining = deadline - time.monotonic()
+                        if remaining > 0:
+                            time.sleep(min(0.01, remaining))
+                    else:
+                        if mode is None or mode[0] != "wal":
+                            raise WorkflowStoreError("workflow store WAL mode unavailable")
+                        break
+            finally:
+                db.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
+            db.execute("BEGIN IMMEDIATE")
+            _verify_event_schema(db, allow_absent=True)
+            for statement in _schema_statements():
+                db.execute(statement)
+            # Internal postcondition: the preflight above owns malformed-store refusal;
+            # absent event objects have just been created from the expected schema.
+            _verify_event_schema(db)
         _restrict(self.path, 0o600)
         for suffix in ("-wal", "-shm"):
             sidecar = self.path.with_name(self.path.name + suffix)
             if sidecar.exists():
                 _restrict(sidecar, 0o600)
 
+    def register_bindings(self, subject: str, pack_id: str, bindings: Mapping[str, dict]) -> None:
+        """Freeze the complete configuration, atomically, across runtime revisions."""
+        canonical = json.dumps(
+            dict(bindings), sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        )
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            sources = list(bindings.values())
+            if len({source["source_id"] for source in sources}) != len(sources) or len(
+                {(source["source_kind"], source["scope"]) for source in sources}
+            ) != len(sources):
+                raise EventBindingError()
+            for binding in sources:
+                owners = db.execute(
+                    "SELECT source_id, source_kind, scope, policy FROM workflow_source_bindings "
+                    "WHERE subject = ? AND (source_id = ? OR (source_kind = ? AND scope = ?))",
+                    (subject, binding["source_id"], binding["source_kind"], binding["scope"]),
+                ).fetchall()
+                policy = json.dumps(binding["policy"], sort_keys=True, separators=(",", ":"))
+                if any(
+                    (row["source_id"], row["source_kind"], row["scope"], row["policy"])
+                    != (binding["source_id"], binding["source_kind"], binding["scope"], policy)
+                    for row in owners
+                ):
+                    raise EventBindingError()
+            prior = db.execute(
+                "SELECT bindings_json FROM workflow_binding_sets WHERE subject = ? AND pack_id = ?",
+                (subject, pack_id),
+            ).fetchone()
+            rows = db.execute(
+                "SELECT * FROM workflow_source_bindings WHERE subject = ? AND pack_id = ?",
+                (subject, pack_id),
+            ).fetchall()
+            if prior is not None:
+                actual = {
+                    row["binding"]: {
+                        "source_id": row["source_id"],
+                        "source_kind": row["source_kind"],
+                        "scope": row["scope"],
+                        "policy": json.loads(row["policy"]),
+                    }
+                    for row in rows
+                }
+                if prior["bindings_json"] != canonical or actual != dict(bindings):
+                    raise EventBindingError()
+                return
+            if rows:
+                raise EventBindingError()
+            db.execute(
+                "INSERT INTO workflow_binding_sets VALUES (?, ?, ?)", (subject, pack_id, canonical)
+            )
+            for name, binding in bindings.items():
+                db.execute(
+                    "INSERT INTO workflow_source_bindings VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        subject,
+                        pack_id,
+                        name,
+                        binding["source_id"],
+                        binding["source_kind"],
+                        binding["scope"],
+                        json.dumps(binding["policy"], sort_keys=True, separators=(",", ":")),
+                    ),
+                )
+
+    def admit_event(
+        self,
+        *,
+        subject: str,
+        pack_id: str,
+        pack_version: int,
+        binding: str,
+        source_id: str,
+        source_kind: str,
+        occurrence: str,
+        payload: bytes,
+        workflow: str,
+        initial_stage: str,
+        allowed_stages: frozenset[str],
+        allowed_action_kinds: frozenset[str],
+        now: datetime,
+        select: Callable[
+            [], tuple[str, Sequence[Mapping[str, object]], Sequence[Mapping[str, object]]] | None
+        ],
+    ) -> EventAdmission:
+        """One commit owns the receipt, record, effect ledger and action outbox."""
+        fingerprint = hashlib.sha256(payload).hexdigest()
+        identity = (subject, pack_id, source_id, source_kind, occurrence)
+        operation_key = _event_operation_key(identity)
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            owner = db.execute(
+                (
+                    "SELECT source_id, source_kind FROM workflow_source_bindings WHERE "
+                    "subject = ? AND pack_id = ? AND binding = ?"
+                ),
+                (subject, pack_id, binding),
+            ).fetchone()
+            if owner is None or (owner["source_id"], owner["source_kind"]) != (
+                source_id,
+                source_kind,
+            ):
+                raise EventBindingError()
+            prior = db.execute(
+                (
+                    "SELECT * FROM workflow_event_receipts WHERE subject = ? AND pack_id = ? "
+                    "AND source_id = ? AND source_kind = ? AND occurrence = ?"
+                ),
+                identity,
+            ).fetchone()
+            if prior is not None:
+                if prior["pack_version"] != pack_version:
+                    raise _EventVersionConflict("event belongs to another pack revision")
+                if prior["fingerprint"] != fingerprint or prior["binding"] != binding:
+                    raise EventConflict()
+                if prior["record_id"] is None:
+                    return EventAdmission(False, False, None, None)
+                record = db.execute(
+                    "SELECT * FROM workflow_records WHERE record_id = ?", (prior["record_id"],)
+                ).fetchone()
+                event = db.execute(
+                    "SELECT * FROM workflow_events WHERE event_id = ?", (prior["event_id"],)
+                ).fetchone()
+                if (
+                    record is None
+                    or event is None
+                    or event["record_id"] != prior["record_id"]
+                    or event["operation_key"] != operation_key
+                    or event["operation_name"] != source_kind
+                    or event["request_fingerprint"] != request_fingerprint(json.loads(payload))
+                    or record["pack_id"] != pack_id
+                    or record["pack_version"] != pack_version
+                ):
+                    raise WorkflowStoreError("invalid event receipt ownership")
+                return EventAdmission(True, False, _replay_view(record, event), prior["event_id"])
+            selection = select()
+            outcome = None
+            if selection is not None:
+                _, effects, actions = selection
+                record = self._create_record(
+                    db,
+                    workflow,
+                    initial_stage,
+                    now=now,
+                    allowed_stages=allowed_stages,
+                    pack_id=pack_id,
+                    pack_version=pack_version,
+                )
+                outcome = self._apply_effects(
+                    db,
+                    record.record_id,
+                    effects,
+                    operation_key=operation_key,
+                    operation_name=source_kind,
+                    request=json.loads(payload),
+                    expected_version=1,
+                    now=now,
+                    allowed_stages=allowed_stages,
+                    actions=actions,
+                    allowed_action_kinds=allowed_action_kinds,
+                )
+            db.execute(
+                (
+                    "INSERT INTO workflow_event_receipts (subject, pack_id, source_id, "
+                    "source_kind, occurrence, pack_version, binding, fingerprint, payload, "
+                    "record_id, event_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+                    "?, ?)"
+                ),
+                (
+                    *identity,
+                    pack_version,
+                    binding,
+                    fingerprint,
+                    payload.decode(),
+                    outcome.record.record_id if outcome else None,
+                    outcome.event_id if outcome else None,
+                    now.isoformat(),
+                ),
+            )
+            return EventAdmission(
+                outcome is not None,
+                outcome is not None,
+                outcome.record if outcome else None,
+                outcome.event_id if outcome else None,
+            )
+
     def create_record(
         self,
+        workflow: str,
+        initial_stage: str,
+        *,
+        now: datetime,
+        allowed_stages: frozenset[str] | None = None,
+        pack_id: str | None = None,
+        pack_version: int | None = None,
+    ) -> RecordView:
+        """Create a record and bootstrap event under the shared transaction owner."""
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            return self._create_record(
+                db,
+                workflow,
+                initial_stage,
+                now=now,
+                allowed_stages=allowed_stages,
+                pack_id=pack_id,
+                pack_version=pack_version,
+            )
+
+    def _create_record(
+        self,
+        db: sqlite3.Connection,
         workflow: str,
         initial_stage: str,
         *,
@@ -637,26 +1012,24 @@ class WorkflowStore:
             raise ValueError("pack_id and pack_version must be given together or both omitted")
         record_id = _new_id()
         timestamp = now.isoformat()
-        with self.connection() as db:
-            db.execute("BEGIN IMMEDIATE")
-            db.execute(
-                "INSERT INTO workflow_records "
-                "(record_id, workflow, pack_id, pack_version, stage, state_version, "
-                "created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, 1, ?, ?)",
-                (record_id, workflow, pack_id, pack_version, initial_stage, timestamp, timestamp),
-            )
-            db.execute(
-                "INSERT INTO workflow_events "
-                "(event_id, record_id, sequence_no, previous_stage, next_stage, "
-                "state_version, operation_name, operation_key, request_fingerprint, "
-                "effects, created_at) "
-                "VALUES (?, ?, 0, NULL, ?, 1, ?, NULL, NULL, NULL, ?)",
-                (_new_id(), record_id, initial_stage, CREATE_OPERATION_NAME, timestamp),
-            )
-            row = db.execute(
-                "SELECT * FROM workflow_records WHERE record_id = ?", (record_id,)
-            ).fetchone()
+        db.execute(
+            "INSERT INTO workflow_records "
+            "(record_id, workflow, pack_id, pack_version, stage, state_version, "
+            "created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, 1, ?, ?)",
+            (record_id, workflow, pack_id, pack_version, initial_stage, timestamp, timestamp),
+        )
+        db.execute(
+            "INSERT INTO workflow_events "
+            "(event_id, record_id, sequence_no, previous_stage, next_stage, "
+            "state_version, operation_name, operation_key, request_fingerprint, "
+            "effects, created_at) "
+            "VALUES (?, ?, 0, NULL, ?, 1, ?, NULL, NULL, NULL, ?)",
+            (_new_id(), record_id, initial_stage, CREATE_OPERATION_NAME, timestamp),
+        )
+        row = db.execute(
+            "SELECT * FROM workflow_records WHERE record_id = ?", (record_id,)
+        ).fetchone()
         return _record_view(row)
 
     def get_record(self, record_id: str) -> RecordView:
@@ -855,6 +1228,38 @@ class WorkflowStore:
         actions: Sequence[Mapping[str, object]] | None = None,
         allowed_action_kinds: frozenset[str] | None = None,
     ) -> TransitionOutcome:
+        """Apply a batch using the same transaction owner as source-event admission."""
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            return self._apply_effects(
+                db,
+                record_id,
+                effects,
+                operation_key=operation_key,
+                operation_name=operation_name,
+                request=request,
+                expected_version=expected_version,
+                now=now,
+                allowed_stages=allowed_stages,
+                actions=actions,
+                allowed_action_kinds=allowed_action_kinds,
+            )
+
+    def _apply_effects(
+        self,
+        db: sqlite3.Connection,
+        record_id: str,
+        effects: Sequence[Mapping[str, object]],
+        *,
+        operation_key: str,
+        operation_name: str,
+        request: Mapping[str, object],
+        expected_version: int,
+        now: datetime,
+        allowed_stages: frozenset[str] | None = None,
+        actions: Sequence[Mapping[str, object]] | None = None,
+        allowed_action_kinds: frozenset[str] | None = None,
+    ) -> TransitionOutcome:
         """Apply an effect batch atomically under compare-and-set and operation-key rules.
 
         Ordering inside one ``BEGIN IMMEDIATE`` transaction:
@@ -894,156 +1299,146 @@ class WorkflowStore:
         if batch_bytes > MAX_EFFECT_BATCH_BYTES:
             raise InvalidEffect(f"the effect batch exceeds {MAX_EFFECT_BATCH_BYTES} bytes")
         fingerprint = request_fingerprint(request)
-        with self.connection() as db:
-            db.execute("BEGIN IMMEDIATE")
-            record = db.execute(
-                "SELECT * FROM workflow_records WHERE record_id = ?", (record_id,)
+        record = db.execute(
+            "SELECT * FROM workflow_records WHERE record_id = ?", (record_id,)
+        ).fetchone()
+        if record is None:
+            raise UnknownRecord(record_id)
+
+        prior = db.execute(
+            "SELECT operation_name, request_fingerprint, event_id "
+            "FROM workflow_operations WHERE record_id = ? AND operation_key = ?",
+            (record_id, operation_key),
+        ).fetchone()
+        if prior is not None:
+            if prior["event_id"] is None:
+                # The key was reserved as a no-match (no event). Reusing it to apply an
+                # effect batch is changed intent, so it conflicts rather than replaying.
+                raise OperationConflict(operation_key=operation_key)
+            prior_event = db.execute(
+                "SELECT next_stage, state_version, created_at, effects "
+                "FROM workflow_events WHERE event_id = ?",
+                (prior["event_id"],),
             ).fetchone()
-            if record is None:
-                raise UnknownRecord(record_id)
-
-            prior = db.execute(
-                "SELECT operation_name, request_fingerprint, event_id "
-                "FROM workflow_operations WHERE record_id = ? AND operation_key = ?",
-                (record_id, operation_key),
-            ).fetchone()
-            if prior is not None:
-                if prior["event_id"] is None:
-                    # The key was reserved as a no-match (no event). Reusing it to apply an
-                    # effect batch is changed intent, so it conflicts rather than replaying.
-                    raise OperationConflict(operation_key=operation_key)
-                prior_event = db.execute(
-                    "SELECT next_stage, state_version, created_at, effects "
-                    "FROM workflow_events WHERE event_id = ?",
-                    (prior["event_id"],),
-                ).fetchone()
-                # The effect batch is part of the operation's identity: the same key with a
-                # changed name, request, or effect batch is a different intent and must
-                # conflict rather than replay.
-                if (
-                    prior["operation_name"] != operation_name
-                    or prior["request_fingerprint"] != fingerprint
-                    or prior_event["effects"] != canonical_effects
-                ):
-                    raise OperationConflict(operation_key=operation_key)
-                # Return the prior outcome reconstructed from the event, not the current
-                # projection, so a replay after the record has advanced still reports the
-                # stage and version this operation produced.
-                return TransitionOutcome(
-                    record=_replay_view(record, prior_event),
-                    event_id=prior["event_id"],
-                    applied=False,
-                )
-
-            if record["state_version"] != expected_version:
-                raise StaleRecord(expected=expected_version, actual=record["state_version"])
-
-            to_stage = next(
-                (
-                    effect["to_stage"]
-                    for effect in normalized
-                    if effect["kind"] == RECORD_TRANSITION
-                ),
-                None,
-            )
+            # The effect batch is part of the operation's identity: the same key with a
+            # changed name, request, or effect batch is a different intent and must
+            # conflict rather than replay.
             if (
-                to_stage is not None
-                and allowed_stages is not None
-                and to_stage not in allowed_stages
+                prior["operation_name"] != operation_name
+                or prior["request_fingerprint"] != fingerprint
+                or prior_event["effects"] != canonical_effects
             ):
-                raise ValueError(f"stage {to_stage!r} is not in the allowed set")
-            # An overlay-only batch does not change the stage but still advances the record
-            # by one version so the ledger stays a total order and compare-and-set is
-            # meaningful for concurrent writers.
-            next_stage = to_stage if to_stage is not None else record["stage"]
+                raise OperationConflict(operation_key=operation_key)
+            # Return the prior outcome reconstructed from the event, not the current
+            # projection, so a replay after the record has advanced still reports the
+            # stage and version this operation produced.
+            return TransitionOutcome(
+                record=_replay_view(record, prior_event),
+                event_id=prior["event_id"],
+                applied=False,
+            )
 
-            next_version = record["state_version"] + 1
-            sequence_no = next_version - 1
-            event_id = _new_id()
-            timestamp = now.isoformat()
-            db.execute(
-                "INSERT INTO workflow_events "
-                "(event_id, record_id, sequence_no, previous_stage, next_stage, "
-                "state_version, operation_name, operation_key, request_fingerprint, "
-                "effects, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    event_id,
-                    record_id,
-                    sequence_no,
-                    record["stage"],
-                    next_stage,
-                    next_version,
-                    operation_name,
-                    operation_key,
-                    fingerprint,
-                    canonical_effects,
-                    timestamp,
-                ),
-            )
-            # Compare-and-set again in SQL so a concurrent writer cannot race between the
-            # read above and this update; BEGIN IMMEDIATE already serializes writers, and
-            # this makes the guard explicit and self-documenting.
-            updated = db.execute(
-                "UPDATE workflow_records SET stage = ?, state_version = ?, updated_at = ? "
-                "WHERE record_id = ? AND state_version = ?",
-                (next_stage, next_version, timestamp, record_id, expected_version),
-            )
-            if updated.rowcount != 1:
-                raise StaleRecord(expected=expected_version, actual=record["state_version"])
-            for effect in normalized:
-                if effect["kind"] == OVERLAY_SET:
-                    db.execute(
-                        "INSERT INTO workflow_overlays "
-                        "(record_id, key, value_json, state_version, updated_at) "
-                        "VALUES (?, ?, ?, ?, ?) "
-                        "ON CONFLICT(record_id, key) DO UPDATE SET "
-                        "value_json = excluded.value_json, "
-                        "state_version = excluded.state_version, "
-                        "updated_at = excluded.updated_at",
-                        (
-                            record_id,
-                            effect["key"],
-                            json.dumps(effect["value"]),
-                            next_version,
-                            timestamp,
-                        ),
-                    )
-            db.execute(
-                "INSERT INTO workflow_operations "
-                "(record_id, operation_key, operation_name, request_fingerprint, "
-                "event_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (
-                    record_id,
-                    operation_key,
-                    operation_name,
-                    fingerprint,
-                    event_id,
-                    timestamp,
-                ),
-            )
-            # Admit the decision's action intents in the same transaction as the ledger commit,
-            # keyed by the committed event id and their index. They cannot collide with a
-            # caller-minted outbox key (reserved namespace) and are unique to this decision.
-            for index, (kind, canonical_request) in enumerate(action_intents):
+        if record["state_version"] != expected_version:
+            raise StaleRecord(expected=expected_version, actual=record["state_version"])
+
+        to_stage = next(
+            (effect["to_stage"] for effect in normalized if effect["kind"] == RECORD_TRANSITION),
+            None,
+        )
+        if to_stage is not None and allowed_stages is not None and to_stage not in allowed_stages:
+            raise ValueError(f"stage {to_stage!r} is not in the allowed set")
+        # An overlay-only batch does not change the stage but still advances the record
+        # by one version so the ledger stays a total order and compare-and-set is
+        # meaningful for concurrent writers.
+        next_stage = to_stage if to_stage is not None else record["stage"]
+
+        next_version = record["state_version"] + 1
+        sequence_no = next_version - 1
+        event_id = _new_id()
+        timestamp = now.isoformat()
+        db.execute(
+            "INSERT INTO workflow_events "
+            "(event_id, record_id, sequence_no, previous_stage, next_stage, "
+            "state_version, operation_name, operation_key, request_fingerprint, "
+            "effects, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                event_id,
+                record_id,
+                sequence_no,
+                record["stage"],
+                next_stage,
+                next_version,
+                operation_name,
+                operation_key,
+                fingerprint,
+                canonical_effects,
+                timestamp,
+            ),
+        )
+        # Compare-and-set again in SQL so a concurrent writer cannot race between the
+        # read above and this update; BEGIN IMMEDIATE already serializes writers, and
+        # this makes the guard explicit and self-documenting.
+        updated = db.execute(
+            "UPDATE workflow_records SET stage = ?, state_version = ?, updated_at = ? "
+            "WHERE record_id = ? AND state_version = ?",
+            (next_stage, next_version, timestamp, record_id, expected_version),
+        )
+        if updated.rowcount != 1:
+            raise StaleRecord(expected=expected_version, actual=record["state_version"])
+        for effect in normalized:
+            if effect["kind"] == OVERLAY_SET:
                 db.execute(
-                    "INSERT INTO workflow_actions "
-                    "(action_id, record_id, dedupe_key, kind, request, status, result, "
-                    "last_error, created_at, updated_at) "
-                    "VALUES (?, ?, ?, ?, ?, 'pending', NULL, NULL, ?, ?)",
+                    "INSERT INTO workflow_overlays "
+                    "(record_id, key, value_json, state_version, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?) "
+                    "ON CONFLICT(record_id, key) DO UPDATE SET "
+                    "value_json = excluded.value_json, "
+                    "state_version = excluded.state_version, "
+                    "updated_at = excluded.updated_at",
                     (
-                        _new_id(),
                         record_id,
-                        f"{ACTION_DEDUPE_PREFIX}{event_id}:{index}",
-                        kind,
-                        canonical_request,
-                        timestamp,
+                        effect["key"],
+                        json.dumps(effect["value"]),
+                        next_version,
                         timestamp,
                     ),
                 )
-            refreshed = db.execute(
-                "SELECT * FROM workflow_records WHERE record_id = ?", (record_id,)
-            ).fetchone()
+        db.execute(
+            "INSERT INTO workflow_operations "
+            "(record_id, operation_key, operation_name, request_fingerprint, "
+            "event_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                record_id,
+                operation_key,
+                operation_name,
+                fingerprint,
+                event_id,
+                timestamp,
+            ),
+        )
+        # Admit the decision's action intents in the same transaction as the ledger commit,
+        # keyed by the committed event id and their index. They cannot collide with a
+        # caller-minted outbox key (reserved namespace) and are unique to this decision.
+        for index, (kind, canonical_request) in enumerate(action_intents):
+            db.execute(
+                "INSERT INTO workflow_actions "
+                "(action_id, record_id, dedupe_key, kind, request, status, result, "
+                "last_error, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, 'pending', NULL, NULL, ?, ?)",
+                (
+                    _new_id(),
+                    record_id,
+                    f"{ACTION_DEDUPE_PREFIX}{event_id}:{index}",
+                    kind,
+                    canonical_request,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+        refreshed = db.execute(
+            "SELECT * FROM workflow_records WHERE record_id = ?", (record_id,)
+        ).fetchone()
         return TransitionOutcome(record=_record_view(refreshed), event_id=event_id, applied=True)
 
     def admit_action(

@@ -1,16 +1,20 @@
-"""Real PackRuntime qualification with ephemeral authorities and isolated fake applications."""
+"Real PackRuntime qualification with ephemeral authorities and isolated fake applications."
 
 from __future__ import annotations
 
 import base64
+import os
+import shutil
+import uuid
 from contextlib import contextmanager
+from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from connect_automate import entitlement
+from connect_automate import connect_windows, entitlement
 from connect_automate.automate import (
     ACTION_KINDS,
     AdapterRegistry,
@@ -23,6 +27,13 @@ from connect_automate.automate import (
     WorkflowStore,
     load_pack,
     verify_grant,
+)
+from connect_automate.automate.events import (
+    EventBindingError,
+    EventConflict,
+    EventInputError,
+    MailEvent,
+    timestamp,
 )
 from connect_automate.automate_connect import ConnectV2CapabilityInvoker
 
@@ -37,6 +48,7 @@ from .core import (
     validate_artifact,
 )
 from .fakeapps import FakeApps, parse_catalogue
+from .fakeevents import parse_catalogue as parse_event_catalogue
 
 NOW = datetime(2026, 6, 1, tzinfo=UTC)
 KEY_ID = "pack-kit-development"
@@ -57,6 +69,7 @@ def require(condition):
 class RecordingAdapter:
     def __init__(self, kind, calls, *, fail=False):
         self.kind, self.calls, self.fail = kind, calls, fail
+        self.idempotent = kind == "notify.local"
 
     def deliver(self, request):
         self.calls.append((self.kind, dict(request)))
@@ -89,19 +102,44 @@ def _host(root: Path, key: Ed25519PrivateKey, *, valid=True):
     if valid:
         claims["features"].append(entitlement.AUTOMATIONS_FEATURE_ID)
     directory = root / "local-connect"
-    directory.mkdir(mode=0o700)
     path = directory / entitlement.ENTITLEMENT_FILE_NAME
-    path.write_bytes(_envelope(canonical(claims), key, KEY_ID))
-    path.chmod(0o600)
+    content = _envelope(canonical(claims), key, KEY_ID)
+    if os.name == "nt":
+        connect_windows.ensure_private_directory(
+            directory, root=connect_windows.local_app_data_root()
+        )
+        connect_windows.atomic_replace_bytes(path, content, entitlement.MAX_ENTITLEMENT_BYTES)
+    else:
+        directory.mkdir(mode=0o700)
+        path.write_bytes(content)
+        path.chmod(0o600)
     return AutomateHost(
         entitlement.EntitlementGate.for_test(path=path, keyring_document=keyring, now=NOW)
     )
 
 
 @contextmanager
-def environment(data, catalogue):
-    with TemporaryDirectory(prefix="pack-kit-") as name:
-        root = Path(name)
+def _sandbox_root():
+    if os.name != "nt":
+        with TemporaryDirectory(prefix="pack-kit-") as name:
+            yield Path(name)
+        return
+    # The public creator must create the root itself in order to protect its ACL.
+    parent = connect_windows.local_app_data_root()
+    root = parent / ("pack-kit-" + uuid.uuid4().hex)
+    if root.exists():
+        raise FileExistsError("sandbox root already exists")
+    try:
+        connect_windows.ensure_private_directory(root, root=parent)
+        yield root
+    finally:
+        if root.exists():
+            shutil.rmtree(root)
+
+
+@contextmanager
+def environment(data, catalogue, event_catalogue=None):
+    with _sandbox_root() as root:
         publisher, issuer, ent_key = (Ed25519PrivateKey.generate() for _ in range(3))
         pack = _envelope(canonical(data["manifest"]), publisher, KEY_ID)
         grant = {
@@ -146,6 +184,8 @@ def environment(data, catalogue):
             subject=SUBJECT,
             now=NOW,
         )
+        if event_catalogue is not None:
+            kwargs["event_bindings"] = event_catalogue.bindings()
         runtime = PackRuntime.load(pack, signed_grant, **kwargs)
         try:
             yield dict(
@@ -162,6 +202,9 @@ def environment(data, catalogue):
                 kwargs=kwargs,
                 root=root,
                 ent_key=ent_key,
+                event_catalogue=event_catalogue,
+                intake_actions=set(),
+                intake_call_count=0,
             )
         finally:
             apps.client.close()
@@ -182,18 +225,50 @@ def _state(env, record, stage, statuses):
     stored = env["store"].get_record(record.record_id)
     require(stored.stage == stage)
     require(env["store"].get_overlays(record.record_id)["pack-kit.status"] == stage)
-    require([a.status for a in env["store"].list_actions(record.record_id)] == statuses)
+    require([a.status for a in _business_actions(env, record)] == statuses)
     return stored
 
 
+def _business_actions(env, record):
+    return [
+        row
+        for row in env["store"].list_actions(record.record_id)
+        if row.action_id not in env["intake_actions"]
+    ]
+
+
+def _business_calls(env):
+    return env["calls"][env["intake_call_count"] :]
+
+
+def _ready(env):
+    catalogue = env["event_catalogue"]
+    if catalogue is None:
+        return env["runtime"].create_record(now=NOW)
+    result = env["runtime"].submit_event(
+        binding=catalogue.binding.name, event=catalogue.event_bytes(), now=NOW
+    )
+    require(result.matched and result.applied and result.record is not None)
+    require(result.record.stage == "ready" and result.record.state_version == 2)
+    require([row.status for row in result.actions] == ["settled"])
+    require(not env["apps"].submitted)
+    env["intake_actions"].update(row.action_id for row in result.actions)
+    env["intake_call_count"] = len(env["calls"])
+    require(env["intake_call_count"] == 1)
+    return result.record
+
+
 def _approve(env, data):
-    record = env["runtime"].create_record(now=NOW)
+    record = _ready(env)
     require(record.stage == "ready")
     run = _decision(env, record, "approve")
     require(run.outcome.matched and run.outcome.applied)
     require([a.status for a in run.actions] == ["settled"])
-    row = env["store"].list_actions(record.record_id)[0]
-    expected = data["manifest"]["workflow"]["definitions"][0]["actions"][0]["request"]
+    row = _business_actions(env, record)[0]
+    definition = next(
+        item for item in data["manifest"]["workflow"]["definitions"] if item["name"] == "approve"
+    )
+    expected = definition["actions"][0]["request"]
     require(row.request == expected and row.action_id == env["apps"].submitted[0]["job_id"])
     require(env["apps"].submitted[0]["parameters"] == expected["parameters"])
     require(
@@ -208,29 +283,26 @@ def _success(env, data):
     run = _decision(env, record, "complete")
     require([a.status for a in run.actions] == ["settled"])
     record = _state(env, record, "reporting", ["settled", "settled"])
-    require(
-        env["store"].list_actions(record.record_id)[1].request
-        == data["spec"]["result_action"]["request"]
-    )
+    require(_business_actions(env, record)[1].request == data["spec"]["result_action"]["request"])
     run = _decision(env, record, "finish")
     require(run.outcome.applied and not run.actions)
     _state(env, record, "completed", ["settled", "settled"])
 
 
 def _decline(env, data):
-    record = env["runtime"].create_record(now=NOW)
+    record = _ready(env)
     record = _decision(env, record, "decline").outcome.record
     _state(env, record, "declined", [])
     require(not _decision(env, record, "approve").outcome.matched)
-    require(not env["apps"].submitted and not env["calls"])
+    require(not env["apps"].submitted and not _business_calls(env))
 
 
 def _replay(env, data):
-    record = env["runtime"].create_record(now=NOW)
+    record = _ready(env)
     for decision in ["unknown", "complete", "finish", "fail"]:
         run = _decision(env, record, decision, key=f"early-{decision}")
         require(not run.outcome.matched and not run.actions)
-    require(not env["store"].list_actions(record.record_id))
+    require(not _business_actions(env, record))
     # Use the same record after unmatched decisions; no new version was created.
     run = _decision(env, record, "approve")
     require([a.status for a in run.actions] == ["settled"])
@@ -239,18 +311,18 @@ def _replay(env, data):
     require(len(env["apps"].submitted) == 1)
     later = _state(env, record, "acting", ["settled"])
     require(not _decision(env, later, "approve", key="fresh-approval").outcome.matched)
-    require(len(env["store"].list_actions(record.record_id)) == 1)
+    require(len(_business_actions(env, record)) == 1)
 
 
 def _fail_invocation(env, data):
     env["apps"].fail = True
-    record = env["runtime"].create_record(now=NOW)
+    record = _ready(env)
     run = _decision(env, record, "approve")
     require([a.status for a in run.actions] == ["failed"])
     record = _state(env, record, "acting", ["failed"])
     record = _decision(env, record, "fail").outcome.record
     _state(env, record, "failed", ["failed", "settled"])
-    require(env["calls"] == [("notify.local", FAILURE_REQUEST)])
+    require(_business_calls(env) == [("notify.local", FAILURE_REQUEST)])
 
 
 def _fail_result(env, data):
@@ -271,7 +343,7 @@ def _missing(env, data, *, result=False):
     if result:
         _, record = _approve(env, data)
     else:
-        record = env["runtime"].create_record(now=NOW)
+        record = _ready(env)
     # Registry replacement cannot mutate runtime internals: use the verified public loader again.
     registry = AdapterRegistry()  # None of the kinds configured.
     kwargs = {**env["kwargs"], "registry": registry}
@@ -316,11 +388,90 @@ def _load_refusals(env, data):
             require(db.execute("SELECT count(*) FROM workflow_records").fetchone()[0] == 0)
 
 
-def run_check(raw: bytes, catalogue_bytes: bytes) -> dict:
+def _event_replay(env, data):
+    record = _ready(env)
+    catalogue = env["event_catalogue"]
+    env["runtime"] = PackRuntime.load(env["pack"], env["signed_grant"], **env["kwargs"])
+    _decision(env, record, "approve")
+    result = env["runtime"].submit_event(
+        binding=catalogue.binding.name, event=catalogue.event_bytes(), now=NOW
+    )
+    require(
+        not result.applied
+        and result.record.record_id == record.record_id
+        and result.record.stage == "ready"
+    )
+    require(all(not action.delivered for action in result.actions))
+    with env["store"].connection() as db:
+        require(db.execute("SELECT count(*) FROM workflow_event_receipts").fetchone()[0] == 1)
+        require(db.execute("SELECT count(*) FROM workflow_records").fetchone()[0] == 1)
+    if isinstance(catalogue.matching_event, MailEvent):
+        changed = catalogue.matching_event.model_dump(mode="json")
+        changed["subject"] = "" if changed["subject"] else "changed"
+        try:
+            env["runtime"].submit_event(
+                binding=catalogue.binding.name, event=canonical(changed), now=NOW
+            )
+        except EventConflict:
+            pass
+        else:
+            raise KitError(5, "check failed")
+
+
+def _event_boundaries(env, data):
+    catalogue = env["event_catalogue"]
+    event = catalogue.matching_event.model_dump(mode="json")
+    unbound = "unconfigured-source"
+    while unbound in catalogue.bindings():
+        unbound += "-"
+    cases = [
+        (catalogue.binding.name, {**event, "confirmed": True}, EventInputError),
+        (unbound, event, EventBindingError),
+    ]
+    for name, candidate, error in cases:
+        try:
+            env["runtime"].submit_event(binding=name, event=canonical(candidate), now=NOW)
+        except error:
+            pass
+        else:
+            raise KitError(5, "check failed")
+    with env["store"].connection() as db:
+        require(db.execute("SELECT count(*) FROM workflow_records").fetchone()[0] == 0)
+        require(db.execute("SELECT count(*) FROM workflow_event_receipts").fetchone()[0] == 0)
+    trigger = data["spec"]["trigger"]
+    nonmatch = deepcopy(event)
+    if isinstance(catalogue.matching_event, MailEvent):
+        if trigger["match_all"]:
+            return
+        condition = trigger["filters"][0]
+        field = condition["field"]
+        nonmatch[field] = ("a" if condition["value"] != "a" else "b") if field == "sender" else ""
+    else:
+        from datetime import timedelta
+
+        due = timestamp(event["scheduled_at"])
+        due += timedelta(seconds=-1 if due.year > 1 else 1)
+        nonmatch["scheduled_at"] = due.isoformat(timespec="seconds").replace("+00:00", "Z")
+    first = env["runtime"].submit_event(
+        binding=catalogue.binding.name, event=canonical(nonmatch), now=NOW
+    )
+    replay = env["runtime"].submit_event(
+        binding=catalogue.binding.name, event=canonical(nonmatch), now=NOW
+    )
+    require(not first.matched and not replay.matched and first.record is None)
+    with env["store"].connection() as db:
+        require(db.execute("SELECT count(*) FROM workflow_records").fetchone()[0] == 0)
+        require(db.execute("SELECT count(*) FROM workflow_event_receipts").fetchone()[0] == 1)
+
+
+def run_check(raw: bytes, catalogue_bytes: bytes, event_bytes: bytes | None = None) -> dict:
     # Bounded decoding precedes schemas, and catalogue schema precedes artifact consistency.
     json_object(raw, ARTIFACT_LIMIT)
     catalogue = parse_catalogue(catalogue_bytes)
+    event_catalogue = parse_event_catalogue(event_bytes) if event_bytes is not None else None
     data = validate_artifact(raw)
+    if (data["kit_format_version"] == 2) != (event_catalogue is not None):
+        raise KitError(3, "invalid input")
     scenarios = [
         ("success", _success),
         ("decline", _decline),
@@ -331,10 +482,12 @@ def run_check(raw: bytes, catalogue_bytes: bytes) -> dict:
         ("missing-result", lambda e, d: _missing(e, d, result=True)),
         ("load-refusals", _load_refusals),
     ]
+    if event_catalogue is not None:
+        scenarios += [("event-replay", _event_replay), ("event-boundaries", _event_boundaries)]
     completed = []
     try:
         for name, scenario in scenarios:
-            with environment(data, catalogue) as env:
+            with environment(data, catalogue, event_catalogue) as env:
                 scenario(env, data)
             completed.append(name)
     except KitError:

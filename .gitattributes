@@ -1,0 +1,2 @@
+# Fixtures are byte-exact parser/signature inputs on every checkout platform.
+tests/fixtures/** -text

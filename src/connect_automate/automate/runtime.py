@@ -21,8 +21,9 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from .actions import ActionOutcome, ActionRunner, AdapterRegistry
-from .definition import Workflow
+from .definition import MAX_NAME_LENGTH, ScheduleTrigger, Workflow, WorkflowV2
 from .engine import DecisionOutcome, WorkflowEngine
+from .events import EventBindingError, SourceBinding, check_event_time, parse_event
 from .host import AutomateHost
 from .pack import LoadedPack, load_pack, verify_grant
 from .store import ACTION_DEDUPE_PREFIX, RecordView, WorkflowStore
@@ -33,6 +34,15 @@ class DecisionRun:
     """A decision's record outcome plus the action outcomes it dispatched."""
 
     outcome: DecisionOutcome
+    actions: list[ActionOutcome]
+
+
+@dataclass(frozen=True)
+class EventRun:
+    matched: bool
+    applied: bool
+    record: RecordView | None
+    event_id: str | None
     actions: list[ActionOutcome]
 
 
@@ -57,6 +67,8 @@ class PackRuntime:
         store: WorkflowStore,
         host: AutomateHost,
         registry: AdapterRegistry,
+        subject: str = "",
+        event_bindings: Mapping[str, SourceBinding] | None = None,
         _token: object = None,
     ):
         if _token is not _VERIFIED:
@@ -69,6 +81,8 @@ class PackRuntime:
         self._store = store
         self._engine = WorkflowEngine(store=store, host=host)
         self._runner = ActionRunner(store=store, registry=registry, host=host)
+        self._subject = subject
+        self._event_bindings = {} if event_bindings is None else dict(event_bindings)
 
     @property
     def pack(self) -> LoadedPack:
@@ -82,7 +96,7 @@ class PackRuntime:
         )
 
     @property
-    def workflow(self) -> Workflow:
+    def workflow(self) -> Workflow | WorkflowV2:
         # A defensive deep copy, for the same reason as :attr:`pack`.
         return self._pack.workflow.model_copy(deep=True)
 
@@ -99,6 +113,7 @@ class PackRuntime:
         grant_keys: Mapping[str, bytes],
         subject: str,
         now: datetime,
+        event_bindings: Mapping[str, SourceBinding | Mapping[str, object]] | None = None,
     ) -> PackRuntime:
         """Verify a pack and its per-PC grant, then return a runtime for its workflow.
 
@@ -114,7 +129,105 @@ class PackRuntime:
         host.require_license()
         pack = load_pack(pack_bytes, keys=publisher_keys)
         verify_grant(grant_bytes, keys=grant_keys, pack_id=pack.pack_id, subject=subject, now=now)
-        return cls(pack=pack, store=store, host=host, registry=registry, _token=_VERIFIED)
+        bindings, configuration = cls._validate_bindings(pack.workflow, event_bindings)
+        if isinstance(pack.workflow, WorkflowV2):
+            store.register_bindings(subject, pack.pack_id, configuration)
+        return cls(
+            pack=pack,
+            store=store,
+            host=host,
+            registry=registry,
+            subject=subject,
+            event_bindings=bindings,
+            _token=_VERIFIED,
+        )
+
+    @staticmethod
+    def _validate_bindings(workflow, supplied):
+        if not isinstance(workflow, WorkflowV2):
+            if supplied is not None:
+                raise EventBindingError()
+            return {}, {}
+        try:
+            if not isinstance(supplied, Mapping):
+                raise ValueError("missing source bindings")
+            triggers = [
+                definition.trigger
+                for definition in workflow.definitions
+                if definition.trigger.source_kind != "operator.decision"
+            ]
+            names = {trigger.binding for trigger in triggers}
+            if set(supplied) != names or any(
+                not isinstance(name, str) or not 1 <= len(name) <= MAX_NAME_LENGTH
+                for name in supplied
+            ):
+                raise ValueError("invalid source names")
+            bindings = {
+                name: SourceBinding.model_validate(
+                    value.model_dump() if isinstance(value, SourceBinding) else value
+                )
+                for name, value in supplied.items()
+            }
+            configuration = {}
+            for name, source in bindings.items():
+                matching = [trigger for trigger in triggers if trigger.binding == name]
+                if any(trigger.source_kind != source.source_kind for trigger in matching):
+                    raise ValueError("wrong source kind")
+                policies = {
+                    (trigger.anchor, trigger.every_seconds)
+                    for trigger in matching
+                    if isinstance(trigger, ScheduleTrigger)
+                }
+                if len(policies) > 1:
+                    raise ValueError("ambiguous timer policy")
+                policy = (
+                    {"anchor": matching[0].anchor, "every_seconds": matching[0].every_seconds}
+                    if policies
+                    else None
+                )
+                configuration[name] = {**source.model_dump(mode="json"), "policy": policy}
+            return bindings, configuration
+        except (ValueError, TypeError, RecursionError):
+            pass
+        raise EventBindingError()
+
+    def submit_event(self, *, binding: str, event: bytes, now: datetime) -> EventRun:
+        self._host.require_license()
+        parsed = parse_event(event)
+        if (
+            not isinstance(self._pack.workflow, WorkflowV2)
+            or not isinstance(binding, str)
+            or binding not in self._event_bindings
+        ):
+            raise EventBindingError()
+        source = self._event_bindings[binding]
+        if source.source_kind != parsed.source_kind:
+            raise EventBindingError()
+        check_event_time(parsed, now)
+        outcome = self._engine.submit_event(
+            self._pack.workflow,
+            subject=self._subject,
+            pack_id=self._pack.pack_id,
+            pack_version=self._pack.pack_version,
+            binding=binding,
+            source=source,
+            event=parsed,
+            now=now,
+        )
+        actions = self._dispatch_event_actions(
+            outcome.record, outcome.event_id, outcome.applied, now
+        )
+        return EventRun(outcome.matched, outcome.applied, outcome.record, outcome.event_id, actions)
+
+    def _dispatch_event_actions(self, record, event_id, applied, now):
+        if record is None or event_id is None:
+            return []
+        prefix = f"{ACTION_DEDUPE_PREFIX}{event_id}:"
+        return [
+            self._runner.dispatch(view, now=now, safe_replay=not applied)
+            for view in self._store.list_actions(record.record_id)
+            if view.dedupe_key.startswith(prefix)
+        ]
 
     def create_record(self, *, now: datetime) -> RecordView:
         """Create a record for the pack's workflow at its initial stage.
@@ -173,5 +286,12 @@ class PackRuntime:
             prefix = f"{ACTION_DEDUPE_PREFIX}{outcome.event_id}:"
             for view in self._store.list_actions(record_id):
                 if view.dedupe_key.startswith(prefix):
-                    actions.append(self._runner.dispatch(view, now=now))
+                    actions.append(
+                        self._runner.dispatch(
+                            view,
+                            now=now,
+                            safe_replay=isinstance(self._pack.workflow, WorkflowV2)
+                            and not outcome.applied,
+                        )
+                    )
         return DecisionRun(outcome=outcome, actions=actions)

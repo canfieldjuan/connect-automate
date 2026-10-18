@@ -33,10 +33,14 @@ from .definition import (
     ConnectInvokeProvider,
     ConnectInvokeRequest,
     DefinitionError,
+    MailTrigger,
     OverlayBinding,
     RequestBindingError,
+    ScheduleTrigger,
     Workflow,
     WorkflowDefinition,
+    WorkflowDefinitionV2,
+    WorkflowV2,
     canonical_workflow,
     parse_workflow,
     render_connect_invoke_request,
@@ -50,6 +54,7 @@ from .engine import (
     WorkflowEngine,
     WorkflowMismatch,
 )
+from .events import AmbiguousEvent, EventBindingError, EventConflict, EventInputError, SourceBinding
 from .host import REQUIRED_FEATURES, AutomateHost, AutomateLicenseError
 from .pack import (
     MAX_GRANT_BYTES,
@@ -59,10 +64,12 @@ from .pack import (
     PackError,
     PackGrant,
     PackManifest,
+    PackManifestV2,
     load_pack,
+    validate_manifest,
     verify_grant,
 )
-from .runtime import DecisionRun, PackRuntime
+from .runtime import DecisionRun, EventRun, PackRuntime
 from .store import (
     ActionAdmission,
     ActionConflict,
@@ -80,6 +87,18 @@ from .store import (
 )
 
 __all__ = [
+    "AmbiguousEvent",
+    "EventBindingError",
+    "EventConflict",
+    "EventInputError",
+    "EventRun",
+    "SourceBinding",
+    "WorkflowDefinitionV2",
+    "WorkflowV2",
+    "MailTrigger",
+    "ScheduleTrigger",
+    "PackManifestV2",
+    "validate_manifest",
     "ACTION_KINDS",
     "REQUIRED_FEATURES",
     "Adapter",

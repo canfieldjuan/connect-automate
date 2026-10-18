@@ -48,7 +48,7 @@ from ..entitlement import (
     _StrictModel,
     verify_signature,
 )
-from .definition import Workflow, canonical_workflow
+from .definition import Workflow, WorkflowV2, canonical_workflow
 
 # A pack payload embeds a full workflow (bounded to 16 KiB canonical by the definition model)
 # plus small identity metadata, so the pack envelope is larger than the license envelope.
@@ -100,13 +100,38 @@ class PackGrant(_StrictModel):
     expires_at: UtcTimestamp
 
 
+class PackManifestV2(_StrictModel):
+    format_version: Annotated[StrictInt, Field(ge=2, le=2)]
+    pack_id: UuidV4
+    pack_version: Annotated[StrictInt, Field(ge=1)]
+    workflow: WorkflowV2
+
+
+def validate_manifest(data: object) -> PackManifest | PackManifestV2:
+    """The only manifest selector, shared by loading and authoring."""
+    if not isinstance(data, Mapping) or type(data.get("format_version")) is not int:
+        raise PackError("invalid pack manifest version")
+    version = data["format_version"]
+    if version == 1:
+        manifest = PackManifest.model_validate(data)
+    elif version == 2:
+        try:
+            manifest = PackManifestV2.model_validate(data)
+        except ValidationError:
+            raise PackError("invalid v2 pack manifest") from None
+    else:
+        raise PackError("invalid pack manifest version")
+    canonical_workflow(manifest.workflow)
+    return manifest
+
+
 @dataclass(frozen=True)
 class LoadedPack:
     """A verified pack: its authenticated identity, version, and workflow."""
 
     pack_id: str
     pack_version: int
-    workflow: Workflow
+    workflow: Workflow | WorkflowV2
 
 
 @dataclass(frozen=True)
@@ -149,7 +174,7 @@ def load_pack(pack_bytes: bytes, *, keys: Mapping[str, bytes]) -> LoadedPack:
     """
     payload = _verify_envelope(pack_bytes, keys, max_bytes=MAX_PACK_BYTES)
     try:
-        manifest = PackManifest.model_validate(_strict_json_object(payload))
+        manifest = validate_manifest(_strict_json_object(payload))
         # Enforce the workflow's canonical-definition size bound (DefinitionError is a
         # ValueError), so a pack cannot smuggle an oversized or unserializable workflow.
         canonical_workflow(manifest.workflow)
