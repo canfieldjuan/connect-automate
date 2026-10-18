@@ -469,6 +469,7 @@ Review repair contract (`537aa0c`, oversight `6254268336`):
   without repairing them. Legacy stores with none of the new tables initialize
   additively. Receipt replay must bind its event to its own record and intake operation (derived key, source-kind name and canonical request fingerprint). Reproduce
   malformed schemas and cross-record receipts using synthetic on-disk databases.
+- WAL negotiation in `initialize` (ordering from `bf1cd1d`): retry only SQLite BUSY/LOCKED outside any transaction within the connection's existing busy-timeout budget, verify `wal`, and raise a typed store error before DDL on exhaustion or unavailable WAL; restore the native wait policy before the initialization transaction.
 - Binding registration (`3056cc1`): consolidate alias rejection at its persisted
   owner and prove both distinct-source admission and duplicate-scope refusal.
 - Diagnostic owners `parse_event/_validate_bindings` (`3056cc1`): reject outside
