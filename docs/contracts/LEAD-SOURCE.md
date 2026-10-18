@@ -1,10 +1,23 @@
 # Lead Intake source contract: parser slice
 
-Status: PROPOSED FOR REVIEW AND OPERATOR ACCEPTANCE. Contract-only branch from
-main. No parser code or tests are included in this branch. The existing parser
-on draft PR #7 is an unaccepted reference implementation, not the specification.
-Implementation corrections wait for acceptance of this exact contract revision.
+Status: ACCEPTED at revision `8d453b6be525c7f1a1b1069269a79a8b92b3d088`.
+This commit records acceptance only; the behavioral requirements below are
+unchanged. No parser code or tests are included in this contract-only branch.
+The existing parser on draft PR #7 still requires correction and exact-head review.
 This is not source admission, deployment authorization, or a claim that G1 passes.
+
+## Operator acceptance and execution boundary
+
+On 2026-10-18, Juan selected **"Accept (Recommended)"** for this exact contract
+revision. Oversight relayed the selected option verbatim in
+[the acceptance record](https://github.com/canfieldjuan/connect-automate/pull/10#issuecomment-6254877248):
+
+> I relay this word for word. The session applies this contract to the parser branch (#7) as a docs-only commit, then makes the parser and test corrections as separate commits and requests review of that exact head. #10 merges as the contract record. No app changes, no version-pin bump.
+
+Merge the contract record only after the published head has green required checks
+and no unresolved review threads. Then apply this accepted document to the parser
+branch as a docs-only commit before implementation/test corrections. Acceptance
+does not waive the must-fail regression proofs or authorize application adoption.
 
 ## Root cause and existing work
 
