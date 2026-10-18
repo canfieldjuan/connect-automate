@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import os
 from contextlib import contextmanager
 from copy import deepcopy
 from datetime import UTC, datetime
@@ -11,7 +12,7 @@ from tempfile import TemporaryDirectory
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from connect_automate import entitlement
+from connect_automate import connect_windows, entitlement
 from connect_automate.automate import (
     ACTION_KINDS,
     AdapterRegistry,
@@ -99,19 +100,36 @@ def _host(root: Path, key: Ed25519PrivateKey, *, valid=True):
     if valid:
         claims["features"].append(entitlement.AUTOMATIONS_FEATURE_ID)
     directory = root / "local-connect"
-    directory.mkdir(mode=0o700)
     path = directory / entitlement.ENTITLEMENT_FILE_NAME
-    path.write_bytes(_envelope(canonical(claims), key, KEY_ID))
-    path.chmod(0o600)
+    content = _envelope(canonical(claims), key, KEY_ID)
+    if os.name == "nt":
+        connect_windows.ensure_private_directory(
+            directory, root=connect_windows.local_app_data_root()
+        )
+        connect_windows.atomic_replace_bytes(path, content, entitlement.MAX_ENTITLEMENT_BYTES)
+    else:
+        directory.mkdir(mode=0o700)
+        path.write_bytes(content)
+        path.chmod(0o600)
     return AutomateHost(
         entitlement.EntitlementGate.for_test(path=path, keyring_document=keyring, now=NOW)
     )
 
 
 @contextmanager
-def environment(data, catalogue, event_catalogue=None):
-    with TemporaryDirectory(prefix="pack-kit-") as name:
+def _sandbox_root():
+    # The Windows entitlement reader validates the entire chain under Local AppData.
+    parent = connect_windows.local_app_data_root() if os.name == "nt" else None
+    with TemporaryDirectory(prefix="pack-kit-", dir=parent) as name:
         root = Path(name)
+        if os.name == "nt":
+            connect_windows._protect_windows_directory(root)
+        yield root
+
+
+@contextmanager
+def environment(data, catalogue, event_catalogue=None):
+    with _sandbox_root() as root:
         publisher, issuer, ent_key = (Ed25519PrivateKey.generate() for _ in range(3))
         pack = _envelope(canonical(data["manifest"]), publisher, KEY_ID)
         grant = {

@@ -432,6 +432,21 @@ proof. A warning from the new migration fixture was traced to its raw SQLite
 connection and fixed with a closure regression. Public API annotation follow-ups
 were verified to leave the executable production AST unchanged.
 
+Windows qualification correction: CI at `05b0366` exposed fixture newline
+conversion and rejected the sandbox's synthetic entitlement. Canonical fixtures
+now have an explicit Git `-text` policy, including the existing v1 goldens;
+their tracked bytes and comparisons stay unchanged. The sandbox construction
+introduced by `d96268d` assumed POSIX storage. Its Windows scratch root and
+entitlement now use the existing SDK private-storage owner under Local AppData,
+without weakening the license reader. A controlled Linux reproduction through
+the real Windows validator recorded `private directory escapes its root` before
+the fix; v1 and both v2 check paths pass that policy afterward. Native CI also
+replays the old storage construction to expose its exact rejection reason.
+The new CLI test expects the platform's text newline for diagnostics while
+continuing to compare artifacts as exact bytes. No old test file, fixture,
+library implementation, dependency, app or release behavior changes in this
+correction. Native Windows qualification remains a required pending gate.
+
 Gap audit: **NOT DONE**. Exact-revision contract review and operator acceptance
 are recorded above; implementation and local Linux qualification are complete.
 Native Windows CI evidence, exact-head PR review and merge remain. Application
