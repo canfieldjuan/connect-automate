@@ -1,7 +1,13 @@
 # Pack kit: approve then act
 
-Status: PROPOSED; implementation requires Juan's explicit acceptance, relayed
-verbatim by oversight. This contract commit authorizes no implementation.
+Status: ACCEPTED. Juan answered **"Accept (Recommended)"** on 2026-10-17;
+oversight relayed his acceptance verbatim in mailbox message `44c186ae` for
+contract commit `8f20f5ae174dc99bd41acb151ed9e2d1671f2d66`. The accepted prompt was:
+
+> Accept the pack kit contract (connect-automate#4, commit 8f20f5a)? It builds a 'new / build / check / sign' tool under tools/ that turns a short spec file (pack name and version, conditions, which app capability to call and with what, and one follow-up action) into a signed pack. It changes none of the shipped code, and it proves the shipped package is byte-identical. The one real limit: today's engine can't react to a result on its own, so in this first pattern ('approve then act') a person approves, the app call runs, then a person marks it done or failed after looking at the outcome, and only then does the follow-up action fire. The follow-up can't use the app's output yet; it's fixed text. Automatic 'when the result arrives, do X' needs the new triggers in #5. This slice proves the reusable skeleton and tooling, not hands-free automations.
+
+Acceptance is recorded separately before implementation. The behavioral
+requirements below are unchanged.
 Work: issue #4. Follow-up vocabulary in issue #5 is excluded.
 
 ## Root cause and source inventory
