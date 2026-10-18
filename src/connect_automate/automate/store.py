@@ -29,6 +29,7 @@ import contextlib
 import hashlib
 import json
 import sqlite3
+import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -728,7 +729,38 @@ class WorkflowStore:
         # parent without changing that parent's permissions.
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         with self.connection() as db:
-            db.execute("PRAGMA journal_mode=WAL")
+            # WAL negotiation cannot run in a transaction, and SQLite may skip its
+            # busy handler during the required lock upgrade. Own this phase's retry
+            # budget here, without multiplying it by a native wait on each attempt.
+            busy_timeout_ms = db.execute("PRAGMA busy_timeout").fetchone()[0]
+            deadline = time.monotonic() + busy_timeout_ms / 1000
+            last_busy: sqlite3.OperationalError | None = None
+            db.execute("PRAGMA busy_timeout=0")
+            try:
+                while True:
+                    if last_busy is not None and time.monotonic() >= deadline:
+                        raise WorkflowStoreError(
+                            "workflow store initialization busy"
+                        ) from last_busy
+                    try:
+                        mode = db.execute("PRAGMA journal_mode=WAL").fetchone()
+                    except sqlite3.OperationalError as exc:
+                        code = getattr(exc, "sqlite_errorcode", None)
+                        if code is None or (code & 0xFF) not in (
+                            sqlite3.SQLITE_BUSY,
+                            sqlite3.SQLITE_LOCKED,
+                        ):
+                            raise
+                        last_busy = exc
+                        remaining = deadline - time.monotonic()
+                        if remaining > 0:
+                            time.sleep(min(0.01, remaining))
+                    else:
+                        if mode is None or mode[0] != "wal":
+                            raise WorkflowStoreError("workflow store WAL mode unavailable")
+                        break
+            finally:
+                db.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
             db.execute("BEGIN IMMEDIATE")
             _verify_event_schema(db, allow_absent=True)
             for statement in _schema_statements():

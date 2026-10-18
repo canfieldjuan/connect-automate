@@ -352,6 +352,154 @@ def test_failed_initialize_rolls_back_all_new_tables(tmp_path, monkeypatch):
         assert schema_objects(db) == []
 
 
+@pytest.fixture
+def held_legacy_store(tmp_path):
+    from pathlib import Path
+
+    path = tmp_path / "held-legacy.db"
+    fixture = Path(__file__).parent / "fixtures" / "pack_events" / "v1-store.sql"
+    with closing(sqlite3.connect(path)) as holder:
+        holder.executescript(fixture.read_text())
+        before = list(holder.iterdump())
+        assert holder.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+        holder.execute("BEGIN IMMEDIATE")
+        try:
+            yield path, holder, before
+        finally:
+            holder.rollback()
+
+
+def wal_clock(monkeypatch, release=None):
+    class Clock:
+        now = 0.0
+
+        def __init__(self):
+            self.sleeps = []
+
+        def monotonic(self):
+            return self.now
+
+        def sleep(self, seconds):
+            assert seconds > 0
+            self.sleeps.append(seconds)
+            if release is not None:
+                release()
+            self.now += seconds
+
+    clock = Clock()
+    monkeypatch.setattr(store_module, "time", clock, raising=False)
+    return clock
+
+
+def observe_wal_connections(monkeypatch, *, timeout=5.0, on_wal=None):
+    connect = sqlite3.connect
+    restored_timeouts = []
+
+    class ObservedConnection(sqlite3.Connection):
+        def execute(self, sql, parameters=(), /):
+            if sql == "PRAGMA journal_mode=WAL":
+                assert not self.in_transaction
+                if on_wal is not None:
+                    sql = on_wal(self) or sql
+            return super().execute(sql, parameters)
+
+        def close(self):
+            restored_timeouts.append(self.execute("PRAGMA busy_timeout").fetchone()[0])
+            super().close()
+
+    def observed(*args, **kwargs):
+        return connect(*args, **{**kwargs, "timeout": timeout, "factory": ObservedConnection})
+
+    monkeypatch.setattr(store_module.sqlite3, "connect", observed)
+    return restored_timeouts
+
+
+def test_wal_switch_retries_when_write_lock_releases_inside_budget(held_legacy_store, monkeypatch):
+    path, holder, before = held_legacy_store
+    restored = observe_wal_connections(monkeypatch)
+    clock = wal_clock(monkeypatch, release=holder.rollback)
+    WorkflowStore(path).initialize()
+    assert clock.sleeps and clock.now < 5.0
+    assert restored and set(restored) == {5000}
+    with closing(sqlite3.connect(path)) as db:
+        assert db.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        for statement in before:
+            if statement.startswith("INSERT INTO"):
+                assert statement in list(db.iterdump())
+
+
+@pytest.mark.parametrize("timeout", [0.0, 0.025])
+def test_wal_switch_exhaustion_is_typed_and_preserves_schema(
+    held_legacy_store, monkeypatch, timeout
+):
+    path, holder, before = held_legacy_store
+    restored = observe_wal_connections(monkeypatch, timeout=timeout)
+    clock = wal_clock(monkeypatch)
+    with pytest.raises(WorkflowStoreError, match="^workflow store initialization busy$"):
+        WorkflowStore(path).initialize()
+    assert clock.now == pytest.approx(timeout)
+    assert restored and set(restored) == {int(timeout * 1000)}
+    assert list(holder.iterdump()) == before
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        sqlite3.SQLITE_BUSY,
+        sqlite3.SQLITE_LOCKED,
+        sqlite3.SQLITE_BUSY_SNAPSHOT,
+        sqlite3.SQLITE_LOCKED_SHAREDCACHE,
+    ],
+)
+def test_wal_switch_retries_only_transient_primary_codes(tmp_path, monkeypatch, code):
+    attempts = []
+
+    def busy_once(db):
+        assert db.execute("PRAGMA busy_timeout").fetchone()[0] == 0
+        attempts.append(1)
+        if len(attempts) == 1:
+            error = sqlite3.OperationalError("synthetic transient WAL failure")
+            error.sqlite_errorcode = code
+            raise error
+
+    restored = observe_wal_connections(monkeypatch, on_wal=busy_once)
+    clock = wal_clock(monkeypatch)
+    WorkflowStore(tmp_path / "retry.db").initialize()
+    assert len(attempts) == 2 and len(clock.sleeps) == 1
+    assert restored and set(restored) == {5000}
+
+
+@pytest.mark.parametrize("code", [None, sqlite3.SQLITE_ERROR, sqlite3.SQLITE_IOERR])
+def test_wal_switch_does_not_retry_other_errors(tmp_path, monkeypatch, code):
+    error = sqlite3.OperationalError("synthetic non-transient WAL failure")
+    if code is not None:
+        error.sqlite_errorcode = code
+    attempts = []
+
+    def fail(db):
+        attempts.append(1)
+        raise error
+
+    restored = observe_wal_connections(monkeypatch, on_wal=fail)
+    clock = wal_clock(monkeypatch)
+    with pytest.raises(sqlite3.OperationalError) as caught:
+        WorkflowStore(tmp_path / "error.db").initialize()
+    assert caught.value is error
+    assert attempts == [1] and not clock.sleeps
+    assert restored and set(restored) == {5000}
+
+
+@pytest.mark.parametrize("statement", ["PRAGMA journal_mode=DELETE", "SELECT 'wal' WHERE 0"])
+def test_initialize_requires_confirmed_wal_before_ddl(tmp_path, monkeypatch, statement):
+    path = tmp_path / "not-wal.db"
+    restored = observe_wal_connections(monkeypatch, on_wal=lambda db: statement)
+    with pytest.raises(WorkflowStoreError, match="^workflow store WAL mode unavailable$"):
+        WorkflowStore(path).initialize()
+    assert restored and set(restored) == {5000}
+    with closing(sqlite3.connect(path)) as db:
+        assert schema_objects(db) == []
+
+
 def test_concurrent_legacy_initializers_preserve_rows(tmp_path):
     from pathlib import Path
 
