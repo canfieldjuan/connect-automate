@@ -1,9 +1,24 @@
 # Lead source authentication and organization scope
 
-Status: PROPOSED. Contract-only; not accepted and not implementation authorization.
-The next implementation, if separately authorized, is a library verifier with
-synthetic fixtures. No enrollment service, receiver, persistence or application
-adoption is authorized by this document. The source handoff gate remains open.
+Status: ACCEPTED at revision `82813ebf81f8bbb6ed2d86e8d5bd623fd87dc8d8`
+with clarification C1 below. This commit records acceptance and C1 only.
+The authorized implementation is a library verifier with synthetic fixtures,
+on a separate branch after this contract merges. No enrollment service, receiver,
+persistence or application adoption is authorized. The source handoff gate remains open.
+
+## Operator acceptance and execution boundary
+
+On 2026-10-18, oversight relayed Juan's selection verbatim:
+**"Accept (Recommended)"**, including exact character matching without Unicode
+rewriting. The [acceptance record](https://github.com/canfieldjuan/connect-automate/pull/11#issuecomment-6256127984)
+identifies the revision above and [clarification C1](https://github.com/canfieldjuan/connect-automate/pull/11#discussion_r4309063620).
+
+C1 makes the existing non-normalization rule explicit at the authorization
+comparison owner and adds the corresponding scope probe. The omission originated
+in this document's initial revision above; no runtime verifier exists to repair.
+Record this clarification separately, obtain exact-head checks and review,
+and merge the contract per policy before the separate fail-first implementation.
+No application pins change. The production gates below remain in force.
 
 ## Root cause and verified reuse inventory
 
@@ -119,7 +134,10 @@ mailbox tuples within a grant and dangling/duplicate policy references within a
 grant invalidate the snapshot. Shared mailbox permission across distinct keys
 is permitted for rotation. Duplicate policy pairs in the top-level policy
 collection also fail. Detect duplicates before converting sequences to sets.
-No wildcards, NULL-organization fallback, case folding or account-only matching.
+No wildcards, NULL-organization fallback, case folding, Unicode normalization or
+account-only matching. All identifier and mailbox-tuple members compare as exact
+Unicode code-point sequences, preserving the source contract's non-normalization
+rule at authorization. Visually identical NFC and NFD forms remain distinct.
 Mailbox identity is compared as the whole tuple, within the granted namespace
 and the snapshot's organization. Rule/selector identifiers remain signed
 provenance, not proof that a particular sender filter was applied correctly.
@@ -259,6 +277,9 @@ fail-first test, then implement only the verifier/encoder boundary above:
 - Probe valid and invalid scope combinations, mixing a provider from one allowed
   tuple with an account/mailbox from another. Include missing/empty scope lists,
   duplicate/dangling trust records, revoked and unknown keys, and another org.
+  For C1, an NFC grant must reject an otherwise valid, correctly signed NFD
+  identifier; each form must succeed with its own exact grant. Cover both opaque
+  mailbox members and remove the comparison rule in a normalization mutant.
 - Probe before/at/after validity starts and ends, occurrence and deadline; include
   subsecond values, equal endpoints, maximum recovery duration and its neighbors,
   `0`, `False`, empty strings, negative values and naive/non-UTC clocks.
@@ -292,9 +313,9 @@ authority confusion, an independently divergent encoder, and treating a stale
 authentication result as commit permission; the contracts and probes above
 target those owners directly. Existing EOM proof and enrollment remain intact.
 
-Implementation summary: this change specifies a proposed boundary only.
+Implementation summary: this change records the accepted boundary only.
 Cold diff audit: the intended change surface is this document alone.
-Gap audit: NOT DONE for acceptance, implementation and handoff qualification.
-Commit this contract separately and stop for exact-revision acceptance before
-implementing. Contract acceptance does not authorize app adoption or waive the
-later enrollment, persistence, recovery and retention gates.
+Gap audit: acceptance is recorded above; implementation and handoff qualification
+are NOT DONE. Merge this contract record after exact-head checks and review before
+the separate implementation branch. Acceptance does not authorize app adoption
+or waive the later enrollment, persistence, recovery and retention gates.
