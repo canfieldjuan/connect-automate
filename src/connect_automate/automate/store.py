@@ -437,6 +437,12 @@ def request_fingerprint(request: Mapping[str, object]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _event_operation_key(identity: tuple[str, str, str, str, str]) -> str:
+    """Bind both receipt replay and creation to the same intake operation."""
+    canonical = json.dumps(identity, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return "pack.event:" + hashlib.sha256(canonical).hexdigest()
+
+
 def _normalize_effects(effects: Sequence[Mapping[str, object]]) -> list[dict[str, object]]:
     """Validate an effect batch and return it in a canonical, minimal form.
 
@@ -727,6 +733,8 @@ class WorkflowStore:
             _verify_event_schema(db, allow_absent=True)
             for statement in _schema_statements():
                 db.execute(statement)
+            # Internal postcondition: the preflight above owns malformed-store refusal;
+            # absent event objects have just been created from the expected schema.
             _verify_event_schema(db)
         _restrict(self.path, 0o600)
         for suffix in ("-wal", "-shm"):
@@ -822,6 +830,7 @@ class WorkflowStore:
         """One commit owns the receipt, record, effect ledger and action outbox."""
         fingerprint = hashlib.sha256(payload).hexdigest()
         identity = (subject, pack_id, source_id, source_kind, occurrence)
+        operation_key = _event_operation_key(identity)
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
             owner = db.execute(
@@ -860,6 +869,9 @@ class WorkflowStore:
                     record is None
                     or event is None
                     or event["record_id"] != prior["record_id"]
+                    or event["operation_key"] != operation_key
+                    or event["operation_name"] != source_kind
+                    or event["request_fingerprint"] != request_fingerprint(json.loads(payload))
                     or record["pack_id"] != pack_id
                     or record["pack_version"] != pack_version
                 ):
@@ -877,12 +889,6 @@ class WorkflowStore:
                     allowed_stages=allowed_stages,
                     pack_id=pack_id,
                     pack_version=pack_version,
-                )
-                operation_key = (
-                    "pack.event:"
-                    + hashlib.sha256(
-                        json.dumps(identity, separators=(",", ":"), ensure_ascii=False).encode()
-                    ).hexdigest()
                 )
                 outcome = self._apply_effects(
                     db,

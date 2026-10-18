@@ -144,6 +144,109 @@ def test_receipt_refuses_event_from_another_record(tmp_path):
     assert counts(store) == before
 
 
+def test_receipt_refuses_decision_event_on_same_record(tmp_path):
+    runtime, store, _ = event_runtime(tmp_path)
+    raw = encoded(mail_event())
+    first = runtime.submit_event(binding="inbox", event=raw, now=NOW)
+    decision = runtime.submit_decision(
+        first.record.record_id,
+        decision="approve",
+        operation_key="same-record-approval",
+        request={},
+        expected_version=2,
+        now=NOW,
+    )
+    with store.connection() as db:
+        trigger = db.execute(
+            "SELECT sql FROM sqlite_master WHERE name = 'workflow_receipts_no_update'"
+        ).fetchone()[0]
+        db.execute("DROP TRIGGER workflow_receipts_no_update")
+        db.execute(
+            "UPDATE workflow_event_receipts SET event_id = ? WHERE record_id = ?",
+            (decision.outcome.event_id, first.record.record_id),
+        )
+        db.execute(trigger)
+    before = counts(store)
+    with pytest.raises(WorkflowStoreError, match="invalid event receipt ownership"):
+        runtime.submit_event(binding="inbox", event=raw, now=NOW)
+    assert counts(store) == before
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("record_id", "another-record"),
+        ("operation_key", "different-intake"),
+        ("operation_key", None),
+        ("operation_name", "schedule.tick"),
+        ("operation_name", "approve"),
+        ("request_fingerprint", "0" * 64),
+        ("request_fingerprint", None),
+    ],
+)
+def test_receipt_refuses_mismatched_intake_operation_field(tmp_path, field, value):
+    runtime, store, _ = event_runtime(tmp_path)
+    raw = encoded(mail_event())
+    first = runtime.submit_event(binding="inbox", event=raw, now=NOW)
+    with store.connection() as db:
+        trigger = db.execute(
+            "SELECT sql FROM sqlite_master WHERE name = 'workflow_events_no_update'"
+        ).fetchone()[0]
+        db.execute("DROP TRIGGER workflow_events_no_update")
+        db.execute(
+            f"UPDATE workflow_events SET {field} = ? WHERE event_id = ?",
+            (value, first.event_id),
+        )
+        db.execute(trigger)
+    before = counts(store)
+    with pytest.raises(WorkflowStoreError, match="invalid event receipt ownership"):
+        runtime.submit_event(binding="inbox", event=raw, now=NOW)
+    assert counts(store) == before
+
+
+@pytest.mark.parametrize("source", ["mail-ascii", "mail-unicode", "schedule"])
+def test_intake_operation_replays_original_view_after_record_advances(tmp_path, source):
+    if source == "schedule":
+        trigger = {
+            "source_kind": "schedule.tick",
+            "binding": "timer",
+            "anchor": "2026-01-01T00:00:00Z",
+            "every_seconds": 60,
+        }
+        workflow = event_workflow(trigger)
+        binding = "timer"
+        bindings = {binding: source_binding("schedule.tick")}
+        raw = encoded({"source_kind": "schedule.tick", "scheduled_at": trigger["anchor"]})
+    else:
+        workflow = event_workflow()
+        binding = "inbox"
+        bindings = {binding: source_binding()}
+        raw = encoded(mail_event(message_id="é-message" if source == "mail-unicode" else "m"))
+    runtime, store, host = event_runtime(tmp_path, workflow=workflow, bindings=bindings)
+    intake = runtime.submit_event(binding=binding, event=raw, now=NOW)
+    decision = runtime.submit_decision(
+        intake.record.record_id,
+        decision="approve",
+        operation_key="approve-original",
+        request={},
+        expected_version=2,
+        now=NOW,
+    )
+    assert (decision.outcome.record.stage, decision.outcome.record.state_version) == (
+        "completed",
+        3,
+    )
+    reopened, _, _ = event_runtime(
+        tmp_path, workflow=workflow, bindings=bindings, store=store, host=host
+    )
+    before = counts(store)
+    replay = reopened.submit_event(binding=binding, event=raw, now=NOW)
+    assert (replay.matched, replay.applied, replay.event_id) == (True, False, intake.event_id)
+    assert (replay.record.stage, replay.record.state_version) == ("ready", 2)
+    assert store.get_record(intake.record.record_id).stage == "completed"
+    assert counts(store) == before
+
+
 SCHEMA_FAULTS = [
     (",\n    PRIMARY KEY (subject, pack_id)", ""),
     (",\n    PRIMARY KEY (subject, pack_id, binding)", ""),

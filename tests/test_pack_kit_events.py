@@ -314,6 +314,8 @@ def test_event_kit_builds_checks_and_signs_real_v2(archetype):
 
 def test_missing_or_incompatible_event_catalogue_precedes_seed():
     raw = k.build(k.parse_spec(k.new_spec("mail-review-then-act", PACK_ID, "Event proof", 1)))
+    key = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
+    public = k.encoded(key.public_key().public_bytes_raw())
 
     class Unreadable:
         def read(self, size):
@@ -322,11 +324,37 @@ def test_missing_or_incompatible_event_catalogue_precedes_seed():
     for events, code in [
         (None, 3),
         (b"{}", 3),
+        (event_catalogue("mail-review-then-act").ljust(k.SPEC_LIMIT + 1, b" "), 3),
+        (
+            k.canonical(
+                {**json.loads(event_catalogue("mail-review-then-act")), "unknown_field": True}
+            ),
+            3,
+        ),
         (event_catalogue("schedule-review-then-act"), 5),
     ]:
         with pytest.raises(k.KitError) as caught:
-            k.sign(raw, APPS, "development", "invalid", Unreadable(), event_catalogue=events)
+            k.sign(raw, APPS, "development", public, Unreadable(), event_catalogue=events)
         assert caught.value.code == code
+
+
+@pytest.mark.parametrize("size", [k.SPEC_LIMIT - 1, k.SPEC_LIMIT])
+def test_event_catalogue_size_boundary_is_accepted(size):
+    archetype = "mail-review-then-act"
+    raw = k.build(k.parse_spec(k.new_spec(archetype, PACK_ID, "Event proof", 1)))
+    catalogue = event_catalogue(archetype).ljust(size, b" ")
+    assert len(catalogue) == size
+    seed = bytes(range(32))
+    key = Ed25519PrivateKey.from_private_bytes(seed)
+    signed = k.sign(
+        raw,
+        APPS,
+        "development",
+        k.encoded(key.public_key().public_bytes_raw()),
+        io.BytesIO(seed),
+        event_catalogue=catalogue,
+    )
+    assert signed == (GOLDENS / f"{archetype}.signed.json").read_bytes()
 
 
 @pytest.mark.parametrize("scenario", ["_event_replay", "_event_boundaries"])
