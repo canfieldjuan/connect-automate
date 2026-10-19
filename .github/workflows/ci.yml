@@ -41,6 +41,7 @@ jobs:
           uv run pytest -rP
           tests/test_locking.py
           tests/test_action_lock_lifecycle.py
+          tests/test_lead_source_store.py
           tests/test_windows_connect.py
           tests/test_automate_events.py
           tests/test_automate_review.py
