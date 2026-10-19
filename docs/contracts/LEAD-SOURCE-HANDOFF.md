@@ -1,8 +1,25 @@
 # Lead source receipt to Automate: host handoff contract
 
-Status: **PROPOSED; NOT ACCEPTED.** This work order is documentation-only.
-Implementation requires separate operator acceptance and authorization. No
+Status: **ACCEPTED CONTRACT; IMPLEMENTATION NOT AUTHORIZED.** This work order is
+documentation-only. Implementation requires a separate operator work order. No
 production receiver, Watcher adoption or complete foundation gate is approved.
+
+## Operator acceptance
+
+On 2026-10-19, after the coding session reported oversight's PASS as a proposal
+and identified direct contract acceptance as the next gate, Juan replied:
+
+> I accept
+
+This accepts the handoff contract at
+`4f8cc7a6580cfcef834af52fac45c5f0db9c52d7`, reviewed in
+[PR #23](https://github.com/canfieldjuan/connect-automate/pull/23#issuecomment-6275561224).
+This acceptance-only update changes no proposed API or runtime semantics.
+The accepted scope remains library-only; implementation and application adoption
+are separate work orders. The operator decision about workflow receipt metadata
+retention after source purge remains open before adoption. Keep implementation
+PRs bounded; the read-only lookup connection may land first, but the joined
+submission/lookup boundary is not usable until its recovery proof is complete.
 
 ## Root cause and baseline
 
@@ -321,14 +338,15 @@ persisted data or reinterpret the new event as mail. Existing workflows keep the
 contracts; an older binary must fail closed on the new trigger. Recovery from
 backup divergence needs separate qualification before live use.
 
-Implementation summary for this PR: one proposed contract added; no runtime,
+Implementation summary for this PR: one contract added and its direct operator
+acceptance recorded; no runtime,
 schema, dependency, fixture, workflow or application behavior changes. Cold diff
 must confirm that scope and validate each cited baseline file/range. Code tests
 are not rerun for this documentation-only change; the prior gate is attributed
 above with its tested head and merge-tree equality.
 
-Gap audit: **NOT DONE** for acceptance, implementation and application adoption.
-This draft is a concrete review artifact, not an accepted execution plan. The
-operator must accept the contract's proposed semantics before implementation;
-review approval or a docs merge does not substitute for that acceptance. Stop
-after publishing the draft and requesting review; do not begin executable work.
+Gap audit: contract acceptance is **DONE**, as recorded above. Implementation and
+application adoption remain **NOT DONE** and require separate authorization.
+Review approval or a docs merge does not authorize executable work. Stop after
+the documentation review/merge process; do not begin implementation under this
+work order.
