@@ -61,6 +61,17 @@ forward samples and C1 recovery remain required together before that row or
 its foundation gates can be claimed complete. No production adoption is
 authorized by this amendment.
 
+#### Operator-approved delayed-purge amendment
+
+The operator directly confirmed in the coding conversation:
+**“I confirm that a late deletion removes only copies captured up to its own moment.”**
+
+This authorizes the C3 cutoff-bounded deletion rule below. It replaces the prior
+all-then-matching deletion rule: later captures survive a delayed purge. Message
+identity, monotonic horizons, replay admission checks and namespace retirement
+are unchanged. This record precedes the executable change; it does not authorize
+application integration or production adoption.
+
 ## Source baseline and reusable proof inventory
 
 Repository: `canfieldjuan/connect-automate`.
@@ -356,7 +367,8 @@ account_id, mailbox_identity_key, message_id)`. Neither `event_id`,
 Use the validated exact identity values; do not infer aliases from message text.
 
 One atomic purge under the admission transaction owner removes the content of
-EVERY matching admission and marks each `content_state=purged`, preserving its
+EVERY matching admission whose `captured_at <= cutoff` and marks each
+`content_state=purged`, preserving its
 immutable receipt. Other message identities and organization scopes remain
 untouched. Retain a protected identity-to-admission association after deleting
 content so this rule does not depend on reparsing a body that is already gone.
@@ -369,13 +381,17 @@ validated cutoff; authenticated producer-to-host mapping and time coordination
 must be defined and qualified in the later handoff contract. The horizon never
 moves backward. Repeating an already applied or older horizon is a no-op, not
 another deletion of content captured later. A newer authorized purge atomically
-advances the horizon and purges all then-matching admissions.
+advances the horizon and applies the capture cutoff to every matching admission.
+Captures after that cutoff are retained, even when admitted before the delayed
+purge arrives. Compare parsed UTC instants, not timestamp strings with different
+precision. The same capture comparison governs deletion and admission denial.
 
 After current authentication and before event lookup/write, admission refuses
 any source whose `snapshot.captured_at <= purge_horizon`. This includes a late
 in-flight first delivery, a different event ID and replay of a pre-horizon event.
 The horizon check and admission commit use the same transaction owner as purge:
-admission ordered first is covered by purge; purge ordered first denies stale
+admission ordered first is covered by purge only up to its cutoff; purge ordered
+first denies stale
 admission. A capture after the horizon following re-follow may be admitted as a
 new event under normal authorization and expiry checks. It cannot replace an
 old event's payload, restore a purged admission or bypass namespace retirement.
@@ -509,8 +525,8 @@ mapping and application integration remain adoption prerequisites.
   repeats the query safely; a limit bounds changed admissions, not whole-database
   validation cost. No cleanup service is introduced.
 - `purge_message(identity, cutoff)` uses the complete validated signed identity
-  and immutable store organization. A newer cutoff atomically purges every
-  currently matching retained admission and records a canonical UTC horizon,
+  and immutable store organization. Apply the [C3 capture cutoff](#c3-message-wide-purge-and-admission-horizon)
+  through the shared capture comparison and record a canonical UTC horizon,
   including for absent messages. Equal/older requests are no-ops. Admission
   enforces the horizon after authentication and before lookup; event IDs never
   narrow purge. Horizon/state rows are minimal purge facts without body text.
