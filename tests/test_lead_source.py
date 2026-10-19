@@ -81,7 +81,9 @@ def test_valid_source_round_trip():
 
 
 @pytest.mark.parametrize(
-    "text", ["", "x", "x" * 199999, "x" * 200000, "\x01" * 200000, "😀" * 200000]
+    "text",
+    ["", "x", "x" * 199999, "x" * 200000, "\x01" * 200000, "😀" * 200000],
+    ids=["empty", "one", "max-minus-one", "max", "control-max", "astral-max"],
 )
 def test_body_boundaries_preserve_exact_content(text):
     assert parse(envelope(text)).payload.snapshot.body.text == text
@@ -109,8 +111,8 @@ def test_body_above_limit_rejected():
         (("payload", "trigger", "admission_kind"), "model_selected"),
         (("payload", "source", "account_id"), ""),
         (("payload", "source", "account_id"), False),
-        (("payload", "source", "account_id"), "é" * 129),
-        (("payload", "source", "message_id"), "x" * 257),
+        pytest.param(("payload", "source", "account_id"), "é" * 129, id="account-over-byte-limit"),
+        pytest.param(("payload", "source", "message_id"), "x" * 257, id="message-over-byte-limit"),
         (("payload", "snapshot", "body", "sha256"), "0" * 64),
         (("payload", "snapshot", "body", "stored_chars"), 0),
         (("payload", "snapshot", "body", "stored_chars"), False),
@@ -140,7 +142,11 @@ def test_invalid_fields_fail_closed(path, value):
 
 
 @pytest.mark.parametrize("field", ["provider", "account_id", "message_id"])
-@pytest.mark.parametrize("value", ["x", "x" * 255, "x" * 256, "é" * 128])
+@pytest.mark.parametrize(
+    "value",
+    ["x", "x" * 255, "x" * 256, "é" * 128],
+    ids=["one", "max-minus-one", "max", "unicode-max"],
+)
 def test_opaque_identifiers_preserved(field, value):
     data = envelope()
     data["payload"]["source"][field] = value
@@ -227,8 +233,8 @@ def test_all_objects_reject_missing_and_extra_members():
         b'{"x":Infinity}',
         b'{"x":1.0}',
         b'{"x":"\\ud800"}',
-        b"[" * 1100 + b"]" * 1100,
-        b'{"x":' + b"9" * 5000 + b"}",
+        pytest.param(b"[" * 1100 + b"]" * 1100, id="deep-nesting"),
+        pytest.param(b'{"x":' + b"9" * 5000 + b"}", id="oversized-integer"),
         "not bytes",
     ],
 )
