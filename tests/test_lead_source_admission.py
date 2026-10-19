@@ -93,6 +93,60 @@ def test_event_unique_constraint(admission, private_root):
     assert counts(store(private_root)) == (1, 1, 1)
 
 
+def test_namespace_scopes_same_event(private_root):
+    value, data = envelope(), trust_data()
+    signer = key(bytes(reversed(range(32))))
+    value["payload"]["source"]["namespace_id"] = OTHER
+    value["authorization"]["key_id"] = OTHER
+    grant = deepcopy(data["key_grants"][0])
+    grant.update(
+        key_id=OTHER, namespace_id=OTHER, public_key=signer.public_key().public_bytes_raw()
+    )
+    data["key_grants"].append(grant)
+    owner = store(private_root)
+    owner.initialize(SourceTrustSnapshot.model_validate(data))
+    boundary = SourceAdmission(owner, clock=lambda: NOW)
+    requests = (encode(envelope()), resign(value, signer))
+    first, second = (boundary.admit_source(raw) for raw in requests)
+    assert first.applied is second.applied is True
+    assert first.receipt.event_id == second.receipt.event_id
+    assert first.receipt.namespace_id != second.receipt.namespace_id
+    assert first.receipt.admission_id != second.receipt.admission_id
+    for raw, expected in zip(requests, (first.receipt, second.receipt), strict=True):
+        replay = boundary.admit_source(raw)
+        assert replay.applied is False
+        assert replay.receipt == expected
+    assert counts(owner) == (2, 2, 2)
+
+
+@pytest.mark.parametrize(
+    "rule,sql",
+    [
+        ("receipt_no_update", "UPDATE source_receipts SET receipt='changed'"),
+        ("receipt_no_delete", "DELETE FROM source_receipts"),
+        ("content_no_update", "UPDATE source_content SET envelope=X'00'"),
+        ("custody_no_delete", "DELETE FROM source_custody"),
+        ("custody-id", "UPDATE source_custody SET admission_id='changed'"),
+        ("custody-identity", "UPDATE source_custody SET identity='changed'"),
+        ("custody-capture", "UPDATE source_custody SET captured_at='changed'"),
+        ("state-check", "UPDATE source_custody SET state='invalid'"),
+    ],
+)
+def test_direct_custody_guards(admission, private_root, rule, sql):
+    raw = encode(envelope())
+    first = admission.admit_source(raw)
+    with database(store(private_root).path) as db:
+        db.execute("PRAGMA foreign_keys=ON")
+        before = list(db.iterdump())
+        message = "CHECK constraint failed" if rule == "state-check" else "immutable"
+        with pytest.raises(sqlite3.IntegrityError, match=message):
+            db.execute(sql)
+        assert list(db.iterdump()) == before
+    replay = admission.admit_source(raw)
+    assert replay.applied is False
+    assert replay.receipt == first.receipt
+
+
 def counts(owner):
     with database(owner.path) as db:
         return tuple(
