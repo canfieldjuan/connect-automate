@@ -488,7 +488,7 @@ than creating a second receipt/envelope checker.
 Proof inventory: reuse frozen source/auth vectors, synthetic private-store
 fixtures, custody tamper fixtures, spawned-process real-busy rendezvous, crash
 recovery and the clock-floor/C1 tests unchanged. No model, inference runtime or
-prompt is involved. New tests qualify lifecycle behavior that does not yet exist.
+prompt is involved. New tests qualify the lifecycle behavior added in this increment.
 
 Required surface: add `SourceContent`, a privileged host library object constructed
 with deployment-scoped store and qualified clock. It is not employee authorization
@@ -673,12 +673,21 @@ opt-in integration and preserve the store. Do not downgrade or discard persisted
 records to make an older binary open the file. Recovery from corrupted storage
 and backups needs its own qualified procedure before live use.
 
-Implementation summary: only this accepted contract and its clarifications are added.
-Cold diff audit: all normative additions address the missing source transaction
-owner; no executable behavior or existing contract is changed.
-Gap audit: operator acceptance of the original revision with C1-C3 conditions
-is recorded; independent review of this clarification update remains pending.
-C4's same-lead identity decision and C5's Watcher enrollment contract remain open.
-Implementation, production admission, runtime integration and all broader
-foundation qualifications remain NOT DONE. Stop after this documentation update;
-do not implement or treat oversight PASS as operator acceptance.
+Implementation summary: the source, authentication, authority/custody and clock
+increments are implemented as local library boundaries. This increment adds
+`SourceContent`, permanent retirement and purge-horizon metadata, and admission
+and publication checks through the existing writer. The private schema changes
+explicitly; previous-format stores are rejected without migration.
+
+Cold diff audit: executable changes stay in the source store, admission policy
+and new host content boundary. The parser, authentication wire models, old tests,
+fixtures, runtime integrations and dependencies stay unchanged. The new lifecycle
+tests are included in the native Windows lane from the first push.
+
+Gap audit: local implementation and Linux proof are DONE for this increment;
+native Windows, exact-head independent review and oversight remain NOT DONE until
+recorded against the published head. C4's same-lead identity decision and C5's
+Watcher enrollment contract remain open. Production admission, runtime integration,
+producer purge delivery, employee authorization, encryption/backup qualification
+and all broader foundation qualifications remain NOT DONE. Stop after the reviewed
+merge of this library slice; no application adoption is authorized here.
