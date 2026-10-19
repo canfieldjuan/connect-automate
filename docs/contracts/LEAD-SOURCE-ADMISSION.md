@@ -61,6 +61,17 @@ forward samples and C1 recovery remain required together before that row or
 its foundation gates can be claimed complete. No production adoption is
 authorized by this amendment.
 
+#### Operator-approved delayed-purge amendment
+
+The operator directly confirmed in the coding conversation:
+**“I confirm that a late deletion removes only copies captured up to its own moment.”**
+
+This authorizes the C3 cutoff-bounded deletion rule below. It replaces the prior
+all-then-matching deletion rule: later captures survive a delayed purge. Message
+identity, monotonic horizons, replay admission checks and namespace retirement
+are unchanged. This record precedes the executable change; it does not authorize
+application integration or production adoption.
+
 ## Source baseline and reusable proof inventory
 
 Repository: `canfieldjuan/connect-automate`.
@@ -356,7 +367,8 @@ account_id, mailbox_identity_key, message_id)`. Neither `event_id`,
 Use the validated exact identity values; do not infer aliases from message text.
 
 One atomic purge under the admission transaction owner removes the content of
-EVERY matching admission and marks each `content_state=purged`, preserving its
+EVERY matching admission whose `captured_at <= cutoff` and marks each
+`content_state=purged`, preserving its
 immutable receipt. Other message identities and organization scopes remain
 untouched. Retain a protected identity-to-admission association after deleting
 content so this rule does not depend on reparsing a body that is already gone.
@@ -369,13 +381,17 @@ validated cutoff; authenticated producer-to-host mapping and time coordination
 must be defined and qualified in the later handoff contract. The horizon never
 moves backward. Repeating an already applied or older horizon is a no-op, not
 another deletion of content captured later. A newer authorized purge atomically
-advances the horizon and purges all then-matching admissions.
+advances the horizon and applies the capture cutoff to every matching admission.
+Captures after that cutoff are retained, even when admitted before the delayed
+purge arrives. Compare parsed UTC instants, not timestamp strings with different
+precision. The same capture comparison governs deletion and admission denial.
 
 After current authentication and before event lookup/write, admission refuses
 any source whose `snapshot.captured_at <= purge_horizon`. This includes a late
 in-flight first delivery, a different event ID and replay of a pre-horizon event.
 The horizon check and admission commit use the same transaction owner as purge:
-admission ordered first is covered by purge; purge ordered first denies stale
+admission ordered first is covered by purge only up to its cutoff; purge ordered
+first denies stale
 admission. A capture after the horizon following re-follow may be admitted as a
 new event under normal authorization and expiry checks. It cannot replace an
 old event's payload, restore a purged admission or bypass namespace retirement.
@@ -476,6 +492,74 @@ fail-first evidence, adjacent tests, lint, cold diff and exact-head review:
 | Atomic custody and replay / G1, G2, G3 prerequisites | Frozen source/auth parity; valid body-only and unavailable sources; same-event replay; conflicting signed payload; rotation; different event IDs for one message; copied-result bypass; SQL failure between every row; simultaneous process admissions; crash before/after commit and lost response | One source receipt, no partial content or invented lead; recover by same authenticated request |
 | Revocation/time coordination / G3, G6 | Barriers at grant read, signature verification, receipt lookup and commit; both revocation orderings; expiry while blocked; clock rollback and erroneous forward sample; host-authorized floor reconciliation with atomic history, restored fresh admission, unchanged deadlines and no source-facing access; concurrent stores opened in separate processes | Recheck at transaction owner; stale assertions cannot authorize writes or receipt reads |
 | Access and expiry / G1, G6 prerequisites | Body bytes survive reopen; foreign-scope reads; expired/corrupt content; cleanup restart; C3 message-wide purge: two event IDs purged by one request, unrelated messages/scopes untouched, no body-bearing audit; absent-message purge then late first delivery; capture before/at horizon refused, later re-follow capture admitted; repeated purge after that capture is a no-op; restart/replay and concurrent admission/purge; event-scoped purge mutant must fail; retirement races; no tombstone removal before permanent denial; Windows/Linux crash and sidecar access | Expiry blocks reads independently of cleanup; no content resurrection; no erasure claim |
+
+### Access, expiry and retirement implementation increment
+
+This implements the accepted Access and expiry row as one library slice. The
+missing owner is a host content/lifecycle boundary over `SourceStore`'s existing
+writer transaction. Admission already owns signed custody and its integrity
+validator; use that same validator for host reads and deletion candidates rather
+than creating a second receipt/envelope checker.
+
+Proof inventory: reuse frozen source/auth vectors, synthetic private-store
+fixtures, custody tamper fixtures, spawned-process real-busy rendezvous, crash
+recovery and the clock-floor/C1 tests unchanged. No model, inference runtime or
+prompt is involved. New tests qualify the lifecycle behavior added in this increment.
+
+Required surface: add `SourceContent`, a privileged host library object constructed
+with deployment-scoped store and qualified clock. It is not employee authorization
+or a remotely callable source capability. Host access restriction, producer cutoff
+mapping and application integration remain adoption prerequisites.
+
+- `read_content(admission_id)` returns the original canonical signed envelope
+  bytes, preserving body availability/completeness metadata without inventing
+  body text. Validate custody and scope through the existing owner, and check
+  expiry at the final trusted sample. Missing, purged or retired content returns
+  a fixed unavailable error; corruption is a storage error. Key revocation does
+  not prevent authorized host access to historical records. An observed expiry
+  atomically purges content and commits its terminal state before returning
+  unavailable; C1 cannot revive it.
+- `cleanup_expired(limit)` removes expired retained content in bounded batches,
+  preserving receipts and identity associations. Validate each selected candidate
+  and use the same terminal-purge primitive as reads and early purge. Restart
+  repeats the query safely; a limit bounds changed admissions, not whole-database
+  validation cost. No cleanup service is introduced.
+- `purge_message(identity, cutoff)` uses the complete validated signed identity
+  and immutable store organization. Apply the [C3 capture cutoff](#c3-message-wide-purge-and-admission-horizon)
+  through the shared capture comparison and record a canonical UTC horizon,
+  including for absent messages. Equal/older requests are no-ops. Admission
+  enforces the horizon after authentication and before lookup; event IDs never
+  narrow purge. Horizon/state rows are minimal purge facts without body text.
+- `retire_namespace(namespace_id)` commits a permanent marker before deletion.
+  Admission and host reads deny retired namespaces; new authority publication
+  rejects all grants to them. Historical authority is preserved. A repeated
+  retirement is a no-op, and key rotation cannot remove the marker.
+- `cleanup_retired(namespace_id, limit)` requires that marker and removes receipt,
+  custody and content records in bounded batches, then any purge horizons within
+  the remaining budget. Each admission and each horizon counts as one work item.
+  SQL deletion guards independently require retirement before receipt/custody or
+  horizon removal. The compact retirement marker remains immutable.
+
+All operations share the existing store scope, writer lock, clock-floor and fixed
+error boundaries. Source envelopes cannot invoke host operations. Rejected reads
+must not expose content. Schema changes are explicit and private; older versions
+fail closed without implicit migration or destructive repair. SQLite deletion is
+logical only; WAL/backups, encryption and secure-erasure qualification stay open.
+
+Verification: fail first on the absent host boundary, then prove reopen/read,
+expiry before/at/after deadline, corruption and foreign scope, terminal expiry
+across C1 recovery, message-wide purge including absent/late delivery and re-follow,
+equal/older horizon no-op, retirement and publication denial, bounded cleanup,
+SQL failures and lost responses. Use real separate-process admission/purge and
+retirement races and before/after-commit crashes; exercise Linux and native Windows
+from the first push. Mutations must catch event-scoped purge, weakened horizon and
+retirement denial, and deletion-before-retirement. Preserve existing tests and
+fixtures. Run adjacent suites, lint, cold diff and independent exact-head review.
+
+Non-scope: Watcher emission/enrollment, Connect dispatch, extraction, Lead Inbox,
+CRM adapters, encryption, background services, dependencies or production adoption.
+Rollback preserves prior-format stores; never downgrade new-format stores or
+remove permanent lifecycle markers. Stop after the reviewed merge of this slice.
 
 ### Clock-floor enforcement and C1 implementation increment
 
@@ -605,12 +689,21 @@ opt-in integration and preserve the store. Do not downgrade or discard persisted
 records to make an older binary open the file. Recovery from corrupted storage
 and backups needs its own qualified procedure before live use.
 
-Implementation summary: only this accepted contract and its clarifications are added.
-Cold diff audit: all normative additions address the missing source transaction
-owner; no executable behavior or existing contract is changed.
-Gap audit: operator acceptance of the original revision with C1-C3 conditions
-is recorded; independent review of this clarification update remains pending.
-C4's same-lead identity decision and C5's Watcher enrollment contract remain open.
-Implementation, production admission, runtime integration and all broader
-foundation qualifications remain NOT DONE. Stop after this documentation update;
-do not implement or treat oversight PASS as operator acceptance.
+Implementation summary: the source, authentication, authority/custody and clock
+increments are implemented as local library boundaries. This increment adds
+`SourceContent`, permanent retirement and purge-horizon metadata, and admission
+and publication checks through the existing writer. The private schema changes
+explicitly; previous-format stores are rejected without migration.
+
+Cold diff audit: executable changes stay in the source store, admission policy
+and new host content boundary. The parser, authentication wire models, old tests,
+fixtures, runtime integrations and dependencies stay unchanged. The new lifecycle
+tests are included in the native Windows lane from the first push.
+
+Gap audit: local implementation and Linux proof are DONE for this increment;
+native Windows, exact-head independent review and oversight remain NOT DONE until
+recorded against the published head. C4's same-lead identity decision and C5's
+Watcher enrollment contract remain open. Production admission, runtime integration,
+producer purge delivery, employee authorization, encryption/backup qualification
+and all broader foundation qualifications remain NOT DONE. Stop after the reviewed
+merge of this library slice; no application adoption is authorized here.

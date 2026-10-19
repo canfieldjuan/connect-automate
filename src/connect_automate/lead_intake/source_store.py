@@ -26,6 +26,7 @@ from pydantic import TypeAdapter
 
 from ..entitlement import UuidV4
 from .auth import SourceAuthenticationError, SourceTrustSnapshot
+from .source import SourceIdentity
 
 
 class SourceStoreError(ValueError):
@@ -83,6 +84,7 @@ _SCHEMA = (
     "CREATE TRIGGER receipt_no_update BEFORE UPDATE ON source_receipts "
     "BEGIN SELECT RAISE(ABORT, 'immutable'); END",
     "CREATE TRIGGER receipt_no_delete BEFORE DELETE ON source_receipts "
+    "WHEN NOT EXISTS (SELECT 1 FROM source_retired WHERE namespace_id=OLD.namespace_id) "
     "BEGIN SELECT RAISE(ABORT, 'immutable'); END",
     "CREATE TRIGGER content_no_update BEFORE UPDATE ON source_content "
     "BEGIN SELECT RAISE(ABORT, 'immutable'); END",
@@ -91,6 +93,8 @@ _SCHEMA = (
     "OR NEW.captured_at != OLD.captured_at OR OLD.state = 'purged' "
     "BEGIN SELECT RAISE(ABORT, 'immutable'); END",
     "CREATE TRIGGER custody_no_delete BEFORE DELETE ON source_custody "
+    "WHEN NOT EXISTS (SELECT 1 FROM source_receipts r JOIN source_retired n "
+    "ON r.namespace_id=n.namespace_id WHERE r.admission_id=OLD.admission_id) "
     "BEGIN SELECT RAISE(ABORT, 'immutable'); END",
     "CREATE TABLE authority_clock_history (sequence INTEGER PRIMARY KEY, "
     "kind TEXT NOT NULL CHECK(kind IN ('sample','reconcile')), old_floor TEXT, "
@@ -101,8 +105,22 @@ _SCHEMA = (
     "BEGIN SELECT RAISE(ABORT, 'immutable'); END",
     "CREATE TRIGGER clock_no_delete BEFORE DELETE ON authority_clock_history "
     "BEGIN SELECT RAISE(ABORT, 'immutable'); END",
+    "CREATE TABLE source_retired (namespace_id TEXT PRIMARY KEY NOT NULL, "
+    "retired_at TEXT NOT NULL) STRICT",
+    "CREATE TRIGGER retired_no_update BEFORE UPDATE ON source_retired "
+    "BEGIN SELECT RAISE(ABORT, 'immutable'); END",
+    "CREATE TRIGGER retired_no_delete BEFORE DELETE ON source_retired "
+    "BEGIN SELECT RAISE(ABORT, 'immutable'); END",
+    "CREATE TABLE source_purge_horizons (identity TEXT PRIMARY KEY NOT NULL, "
+    "namespace_id TEXT NOT NULL, cutoff TEXT NOT NULL) STRICT",
+    "CREATE TRIGGER horizon_monotonic BEFORE UPDATE ON source_purge_horizons "
+    "WHEN NEW.identity != OLD.identity OR NEW.namespace_id != OLD.namespace_id "
+    "OR NEW.cutoff <= OLD.cutoff BEGIN SELECT RAISE(ABORT, 'immutable'); END",
+    "CREATE TRIGGER horizon_no_delete BEFORE DELETE ON source_purge_horizons "
+    "WHEN NOT EXISTS (SELECT 1 FROM source_retired WHERE namespace_id=OLD.namespace_id) "
+    "BEGIN SELECT RAISE(ABORT, 'immutable'); END",
 )
-_SCHEMA_VERSION = 3
+_SCHEMA_VERSION = 4
 _UUID = TypeAdapter(UuidV4)
 
 
@@ -120,6 +138,16 @@ def _utc(value: object) -> datetime:
 
 def _clock_text(value: datetime) -> str:
     return _utc(value).isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
+def _capture_at_or_before(captured_at: str, cutoff: datetime) -> bool:
+    """One UTC comparison for source admission denial and authorized purge."""
+    return datetime.fromisoformat(captured_at) <= cutoff
+
+
+def _identity_text(value: SourceIdentity) -> str:
+    value = SourceIdentity.model_validate(value)
+    return json.dumps(value.model_dump(), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def _boundary(method):
@@ -384,6 +412,7 @@ class SourceStore:
             if present:
                 self._authority(db)
                 self._clock_history(db)
+                self._lifecycle(db)
             yield db
             self._paths()
             failed = False
@@ -397,6 +426,38 @@ class SourceStore:
             with suppress(sqlite3.Error):
                 db.rollback()
             db.close()
+
+    def _lifecycle(self, db: sqlite3.Connection):
+        retired, horizons = set(), {}
+        for namespace, stamp in db.execute("SELECT namespace_id, retired_at FROM source_retired"):
+            if (
+                _UUID.validate_python(namespace) != namespace
+                or _clock_text(datetime.fromisoformat(stamp)) != stamp
+            ):
+                raise SourceStoreUnavailable()
+            retired.add(namespace)
+        for identity, namespace, stamp in db.execute(
+            "SELECT identity, namespace_id, cutoff FROM source_purge_horizons"
+        ):
+            parsed = SourceIdentity.model_validate_json(identity)
+            if (
+                _identity_text(parsed) != identity
+                or parsed.namespace_id != namespace
+                or _clock_text(datetime.fromisoformat(stamp)) != stamp
+            ):
+                raise SourceStoreUnavailable()
+            horizons[identity] = datetime.fromisoformat(stamp)
+        return retired, horizons
+
+    def _admission_policy(
+        self, db: sqlite3.Connection, identity: SourceIdentity, captured_at: str
+    ) -> None:
+        retired, horizons = self._lifecycle(db)
+        cutoff = horizons.get(_identity_text(identity))
+        if identity.namespace_id in retired or (
+            cutoff is not None and _capture_at_or_before(captured_at, cutoff)
+        ):
+            raise SourceAuthenticationError()
 
     def _clock_history(self, db: sqlite3.Connection):
         rows = list(
@@ -510,6 +571,9 @@ class SourceStore:
             raise SourceStoreInputError()
         with self._transaction() as db:
             current, history = self._authority(db)
+            retired, _ = self._lifecycle(db)
+            if any(grant.namespace_id in retired for grant in authority.key_grants):
+                raise SourceStoreConflict()
             # Lost-response replay preserves the original precondition; a new
             # caller may also confirm the already committed current generation.
             if current == authority and expected_generation in (

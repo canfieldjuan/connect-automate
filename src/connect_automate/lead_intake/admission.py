@@ -1,8 +1,8 @@
 """Atomic local source custody, not lead creation or a production receiver.
 
 Raw requests are authenticated under SourceStore's writer transaction. No caller
-supplied authenticated object is accepted. Namespace purge and content access
-are later library slices; this boundary is not for adoption.
+supplied authenticated object is accepted. Host content/lifecycle operations use
+the same custody validator and writer; this boundary is not for adoption.
 """
 
 from __future__ import annotations
@@ -195,6 +195,7 @@ class SourceAdmission:
                 raw, trust=authority, now=self._store._check_clock(db, self._clock())
             )
             payload = first.source.payload
+            self._store._admission_policy(db, payload.source, payload.snapshot.captured_at)
             row = db.execute(
                 "SELECT admission_id, organization_id, namespace_id, event_id, receipt, "
                 "envelope_sha256 FROM source_receipts "
