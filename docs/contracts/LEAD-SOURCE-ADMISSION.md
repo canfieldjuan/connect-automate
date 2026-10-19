@@ -31,6 +31,8 @@ recovery (C1) and concurrent first initialization proof (C2):
 The operator's subsequent decision, **“Purge it too (Recommended)”**, adds
 deletion/unfollow propagation and the producer retention ceiling (C3):
 [retention decision and open alignment items](https://github.com/canfieldjuan/connect-automate/pull/14#issuecomment-6257324609).
+The C3 owner below also specifies message-wide purge scope and late-delivery
+rejection in response to [the purge-scope finding](https://github.com/canfieldjuan/connect-automate/pull/14#discussion_r4309599238).
 These are operator decisions relayed by oversight, not authority granted by a
 reviewer PASS. The current documentation update incorporates those conditions;
 its independent review remains required.
@@ -92,7 +94,8 @@ being claimed; implementation must first prove parity with the existing vectors.
 ## Ownership and bounded implementation surface
 
 Lead Intake owns one source-admission store containing deployment identity,
-authority publication history, source receipts and separately deletable content.
+authority publication history, source receipts, the C3 purge metadata and
+separately deletable content.
 For the first library implementation, use a dedicated SQLite file under a
 private deployment directory on a local filesystem with qualified SQLite locking.
 Network filesystems and shared cross-machine stores are not supported. It avoids
@@ -173,7 +176,8 @@ the firing UUID with the Watcher provenance digest or a summary prefix.
 
 Use the existing `payload_digest` to compare an authorized replay with the
 original event. Identical payload under a currently permitted rotation key
-returns the original receipt. Changed payload under the same event key is a
+returns the original receipt subject to current authorization and the C3 purge
+horizon. Changed payload under the same event key is a
 conflict, including changes to body, message identity, rule or recovery deadline.
 Conflicts never replace content, extend expiry or update first-admission facts.
 
@@ -238,7 +242,8 @@ a qualified UTC clock interface; tests inject a deterministic host clock.
    against the current snapshot. Refuse a retired namespace. Untrusted clock
    samples and time earlier than the current durable clock floor fail closed.
    The current clock cannot be cached across calls or replaced by event time.
-3. Only after authorization, look up the event key. Compare its original digest.
+3. Only after authorization, enforce the message purge horizon defined in
+   C3 below, then look up the event key. Compare its original digest.
    Identical replay preserves the receipt; conflict aborts. For new events,
    prepare receipt/content rows and minimal first-admission audit facts.
    Check persisted ownership and content-state integrity: a retained row must
@@ -305,9 +310,9 @@ bounds that absolute deadline and prove it before adoption; this library does
 not infer producer retention from a signed envelope.
 
 Source-facing receipt replay always reauthenticates the full submitted envelope
-before lookup. Content access is a separate trusted-host library operation with
-the immutable deployment scope; it is not a remotely callable lookup by UUID or
-organization string. It checks the stored envelope hash, reparses with the existing
+and enforces the C3 purge horizon before lookup. Content access is a separate
+trusted-host library operation with the immutable deployment scope; it is not a
+remotely callable lookup by UUID or organization string. It checks the stored envelope hash, reparses with the existing
 source parser, and checks payload digest and ownership against the receipt. It
 refuses expired, purged, retired-namespace, foreign-scope or corrupt content.
 Future employee/job authorization and reference retrieval over Connect must be
@@ -323,17 +328,57 @@ owner; remove expired payload rows and mark content purged atomically without
 changing the receipt. Duplicate replay must never resurrect purged content.
 An authorized early purge is a terminal custody withdrawal, recorded without
 body text; later consumers must observe unavailable content, not success.
-C3: deleting or unfollowing the source in Email Watcher must reach Lead Intake
-as this authorized early purge, removing the stored content without retaining
-body text in audit records. The later library implementation must supply and prove the purge
-primitive, including replay/restart non-resurrection. Watcher emitting the purge,
-authenticated delivery and failure recovery are required clauses and adoption
-gates of the later Watcher/Connect handoff contract, not implemented integration
-in this slice. A local primitive alone does not prove cross-application deletion.
 
-Keep only event/receipt/digest/authority metadata after content deletion. Even a
-digest is sensitive correlation data; access remains restricted. To preserve
-same-event conflict detection, receipt tombstones remain while their namespace
+### C3: message-wide purge and admission horizon
+
+Deleting or unfollowing a source in Email Watcher must reach Lead Intake as
+an authorized early purge. Within the immutable organization scope, the purge
+identity is the complete signed `SourceIdentity` tuple: `(namespace_id, provider,
+account_id, mailbox_identity_key, message_id)`. Neither `event_id`,
+`watcher_event_id`, rule identity nor a receipt locator alone scopes deletion.
+Use the validated exact identity values; do not infer aliases from message text.
+
+One atomic purge under the admission transaction owner removes the content of
+EVERY matching admission and marks each `content_state=purged`, preserving its
+immutable receipt. Other message identities and organization scopes remain
+untouched. Retain a protected identity-to-admission association after deleting
+content so this rule does not depend on reparsing a body that is already gone.
+Audit records must not retain body text. The operation is a distinct authorized
+host boundary; source-facing envelopes cannot invoke it.
+
+The same transaction records a durable UTC purge horizon for that identity,
+even if no matching admission has arrived yet. The trusted host supplies the
+validated cutoff; authenticated producer-to-host mapping and time coordination
+must be defined and qualified in the later handoff contract. The horizon never
+moves backward. Repeating an already applied or older horizon is a no-op, not
+another deletion of content captured later. A newer authorized purge atomically
+advances the horizon and purges all then-matching admissions.
+
+After current authentication and before event lookup/write, admission refuses
+any source whose `snapshot.captured_at <= purge_horizon`. This includes a late
+in-flight first delivery, a different event ID and replay of a pre-horizon event.
+The horizon check and admission commit use the same transaction owner as purge:
+admission ordered first is covered by purge; purge ordered first denies stale
+admission. A capture after the horizon following re-follow may be admitted as a
+new event under normal authorization and expiry checks. It cannot replace an
+old event's payload, restore a purged admission or bypass namespace retirement.
+Reopen/restart preserves both the horizon and terminal content states.
+
+Keep the horizon while the namespace can be admitted, including when it has no
+receipt yet. It may be dropped only after permanent namespace denial using the
+retirement procedure below. This closes late delivery without relying on a
+finite tombstone timeout or the later same-lead deduplication decision.
+
+The later library implementation must supply and prove this primitive. Watcher
+must emit purge for every physical source identity, including identities behind
+coalesced aliases. Producer emission, authenticated delivery/recovery and cutoff
+mapping are required clauses and adoption gates of the later Watcher/Connect
+handoff contract, not implemented integration in this slice. A local primitive
+alone does not prove cross-application deletion.
+
+Keep only event/receipt/digest/authority and required purge-identity/horizon
+metadata after content deletion. Even a digest is sensitive correlation data;
+access remains restricted. To preserve same-event conflict detection, receipt tombstones remain while their namespace
 can be admitted. The accepted retention policy is lifecycle-bound: a local
 administrative retirement permanently denies that namespace and makes its
 content inaccessible; content and receipts may then be purged in bounded batches.
@@ -413,7 +458,7 @@ fail-first evidence, adjacent tests, lint, cold diff and exact-head review:
 | Authority store / G0, G2, G6 prerequisites | Correct/foreign deployment; missing authority; generation CAS; duplicate publish; identity and policy rebinding; revoked/removed key history; cross-process publication race; two-process concurrent first initialization/open of a fresh store, bounded WAL negotiation, typed busy failure and no partial schema; malformed schema and private paths | No peer-table access; fail closed on incompatible stores; preserve file for diagnosis |
 | Atomic custody and replay / G1, G2, G3 prerequisites | Frozen source/auth parity; valid body-only and unavailable sources; same-event replay; conflicting signed payload; rotation; different event IDs for one message; copied-result bypass; SQL failure between every row; simultaneous process admissions; crash before/after commit and lost response | One source receipt, no partial content or invented lead; recover by same authenticated request |
 | Revocation/time coordination / G3, G6 | Barriers at grant read, signature verification, receipt lookup and commit; both revocation orderings; expiry while blocked; clock rollback and erroneous forward sample; host-authorized floor reconciliation with atomic history, restored fresh admission, unchanged deadlines and no source-facing access; concurrent stores opened in separate processes | Recheck at transaction owner; stale assertions cannot authorize writes or receipt reads |
-| Access and expiry / G1, G6 prerequisites | Body bytes survive reopen; foreign-scope reads; expired/corrupt content; cleanup restart; authorized early purge removes content without body-bearing audit, including replay/restart non-resurrection; retirement races; no tombstone removal before permanent denial; Windows/Linux crash and sidecar access | Expiry blocks reads independently of cleanup; no content resurrection; no erasure claim |
+| Access and expiry / G1, G6 prerequisites | Body bytes survive reopen; foreign-scope reads; expired/corrupt content; cleanup restart; C3 message-wide purge: two event IDs purged by one request, unrelated messages/scopes untouched, no body-bearing audit; absent-message purge then late first delivery; capture before/at horizon refused, later re-follow capture admitted; repeated purge after that capture is a no-op; restart/replay and concurrent admission/purge; event-scoped purge mutant must fail; retirement races; no tombstone removal before permanent denial; Windows/Linux crash and sidecar access | Expiry blocks reads independently of cleanup; no content resurrection; no erasure claim |
 
 For each security guard, exercise accepted and rejected sides, partial/mixed
 records, strict-type/falsy values, boundaries, Unicode identities and replay after
