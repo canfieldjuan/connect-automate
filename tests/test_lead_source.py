@@ -434,7 +434,7 @@ def test_published_sender_vectors():
     )
 
     root = Path(__file__).parent / "fixtures" / "lead_source"
-    for vector in json.loads((root / "vectors.json").read_text()):
+    for vector in json.loads((root / "vectors.json").read_text(encoding="utf-8")):
         raw = (root / vector["file"]).read_bytes()
         assert hashlib.sha256(raw).hexdigest() == vector["envelope_sha256"]
         source = parse_untrusted_source(raw)

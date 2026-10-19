@@ -20,7 +20,7 @@ from connect_automate.lead_intake.auth import (
 )
 
 FIXTURES = Path(__file__).parent / "fixtures" / "lead_source_auth"
-VECTORS = json.loads((FIXTURES / "vectors.json").read_text())
+VECTORS = json.loads((FIXTURES / "vectors.json").read_text(encoding="utf-8"))
 NOW = datetime(2026, 10, 18, 12, 30, tzinfo=UTC)
 OTHER = "00000000-0000-4000-8000-000000000002"
 

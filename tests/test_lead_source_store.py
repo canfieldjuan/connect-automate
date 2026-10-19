@@ -196,7 +196,7 @@ def test_whole_mailbox_tuple_and_policy_version_can_advance(private_root):
     assert store(private_root).read_authority() == authority
 
 
-@pytest.mark.parametrize("expected", [0, "", False, 2147483648])
+@pytest.mark.parametrize("expected", [0, "", False, True, 2147483648])
 def test_expected_generation_strict(private_root, expected):
     from connect_automate.lead_intake.source_store import SourceStoreInputError
 
@@ -205,6 +205,175 @@ def test_expected_generation_strict(private_root, expected):
     with pytest.raises(SourceStoreInputError):
         owner.publish_authority(next_snapshot(), expected_generation=expected)
     assert owner.read_authority() == trust()
+
+
+@pytest.mark.parametrize("field", ["host_id", "organization_id"])
+def test_foreign_publication_preserves_usable_history(private_root, field):
+    from test_lead_source_auth import OTHER
+
+    from connect_automate.lead_intake.source_store import SourceStoreConflict
+
+    owner = store(private_root)
+    owner.initialize(trust())
+    with pytest.raises(SourceStoreConflict):
+        owner.publish_authority(next_snapshot(**{field: OTHER}), expected_generation=1)
+    assert store(private_root).read_authority() == trust()
+    second = next_snapshot()
+    assert store(private_root).publish_authority(second, expected_generation=1)
+    assert store(private_root).read_authority() == second
+
+
+@pytest.mark.parametrize(
+    "corruption", ["digest", "canonical", "row_generation", "gap", "host_id", "organization_id"]
+)
+def test_history_integrity_guards_independent(private_root, corruption):
+    import hashlib
+    import json
+
+    from test_lead_source_auth import OTHER
+
+    from connect_automate.lead_intake.source_store import SourceStoreUnavailable, _encode
+
+    owner = store(private_root)
+    owner.initialize(trust())
+    row_generation = 3 if corruption == "gap" else 2
+    updates = {}
+    if corruption in ("host_id", "organization_id"):
+        updates[corruption] = OTHER
+    if corruption in ("row_generation", "gap"):
+        updates["generation"] = 3
+    raw = _encode(next_snapshot(**updates))
+    if corruption == "canonical":
+        raw = json.dumps(json.loads(raw), indent=2)
+    digest = "0" * 64 if corruption == "digest" else hashlib.sha256(raw.encode()).hexdigest()
+    with database(owner.path) as db:
+        # INSERT leaves the exact schema and immutability triggers intact.
+        db.execute("INSERT INTO authority_history VALUES (?, ?, ?)", (row_generation, raw, digest))
+    with pytest.raises(SourceStoreUnavailable):
+        store(private_root).read_authority()
+
+
+@pytest.mark.parametrize("field", ["host_id", "organization_id"])
+def test_deployment_scope_with_original_schema(private_root, field):
+    from test_lead_source_auth import OTHER
+
+    from connect_automate.lead_intake.source_store import _SCHEMA, SourceStoreUnavailable
+
+    owner = store(private_root)
+    owner.initialize(trust())
+    with database(owner.path) as db:
+        db.execute("DROP TRIGGER deployment_no_update")
+        db.execute(f"UPDATE deployment SET {field}=?", (OTHER,))
+        db.execute(_SCHEMA[2])
+        assert owner._schema(db)
+    with pytest.raises(SourceStoreUnavailable):
+        store(private_root).read_authority()
+
+
+def test_initialize_preserves_unrelated_sqlite_mode_and_bytes(private_root):
+    from connect_automate.lead_intake.source_store import SourceStoreUnavailable
+
+    owner = store(private_root)
+    owner.path.touch(mode=0o600)
+    with database(owner.path) as db:
+        db.execute("CREATE TABLE unrelated (value TEXT)")
+        db.execute("INSERT INTO unrelated VALUES ('synthetic')")
+        assert db.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+    before = owner.path.read_bytes()
+    with pytest.raises(SourceStoreUnavailable):
+        owner.initialize(trust())
+    assert owner.path.read_bytes() == before
+    with database(owner.path) as db:
+        assert db.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+
+
+def test_initialize_rejects_different_first_generation(private_root):
+    from connect_automate.lead_intake.source_store import SourceStoreConflict
+
+    owner = store(private_root)
+    owner.initialize(trust())
+    with pytest.raises(SourceStoreConflict):
+        owner.initialize(next_snapshot(generation=1, key_grants=()))
+    assert store(private_root).read_authority() == trust()
+    assert owner.publish_authority(next_snapshot(), expected_generation=1)
+
+
+def test_hardlinked_database_refused(private_root):
+    import os
+
+    from connect_automate.lead_intake.source_store import SourceStoreUnavailable
+
+    owner = store(private_root)
+    owner.initialize(trust())
+    os.link(owner.path, private_root / "alias.sqlite3")
+    assert owner.path.stat().st_nlink == 2
+    with pytest.raises(SourceStoreUnavailable):
+        owner.read_authority()
+
+
+def test_ancestor_link_refused(private_root):
+    import os
+    import subprocess
+
+    from connect_automate.lead_intake.source_store import SourceStoreUnavailable
+
+    store(private_root).initialize(trust())
+    alias = private_root.parent / "parent-alias"
+    if os.name == "nt":
+        subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(alias), str(private_root.parent)],
+            check=True,
+            capture_output=True,
+        )
+    else:
+        alias.symlink_to(private_root.parent, target_is_directory=True)
+    with pytest.raises(SourceStoreUnavailable):
+        store(alias / private_root.name).read_authority()
+
+
+def test_database_outside_private_root_refused(private_root):
+    from connect_automate.lead_intake.source_store import SourceStoreInputError
+
+    authority = trust()
+    with pytest.raises(SourceStoreInputError):
+        SourceStore(
+            private_root.parent / "outside.sqlite3",
+            private_root=private_root,
+            host_id=authority.host_id,
+            organization_id=authority.organization_id,
+        )
+
+
+@pytest.mark.parametrize("operation", ["read", "publish"])
+def test_established_store_requires_wal(private_root, operation):
+    from connect_automate.lead_intake.source_store import SourceStoreUnavailable
+
+    owner = store(private_root)
+    owner.initialize(trust())
+    with database(owner.path) as db:
+        assert db.execute("PRAGMA journal_mode=DELETE").fetchone()[0] == "delete"
+    before = owner.path.read_bytes()
+    with pytest.raises(SourceStoreUnavailable):
+        if operation == "read":
+            owner.read_authority()
+        else:
+            owner.publish_authority(next_snapshot(), expected_generation=1)
+    assert owner.path.read_bytes() == before
+
+
+def test_identical_replay_rejects_older_precondition(private_root):
+    from connect_automate.lead_intake.source_store import SourceStoreConflict
+
+    owner = store(private_root)
+    owner.initialize(trust())
+    second = next_snapshot()
+    third = next_snapshot(second)
+    owner.publish_authority(second, expected_generation=1)
+    owner.publish_authority(third, expected_generation=2)
+    with pytest.raises(SourceStoreConflict):
+        owner.publish_authority(third, expected_generation=1)
+    assert owner.read_authority() == third
+    assert owner.publish_authority(next_snapshot(third), expected_generation=3)
 
 
 def test_stale_conflicting_and_skipped_generations(private_root):

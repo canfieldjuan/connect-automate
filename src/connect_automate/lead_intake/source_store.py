@@ -386,6 +386,7 @@ class SourceStore:
 
     @_boundary
     def read_authority(self) -> SourceTrustSnapshot:
+        """Replay full history under BEGIN IMMEDIATE, serializing with writers."""
         with self._transaction() as db:
             current, _ = self._authority(db)
             return current
