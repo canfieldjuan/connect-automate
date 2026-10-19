@@ -477,6 +477,68 @@ fail-first evidence, adjacent tests, lint, cold diff and exact-head review:
 | Revocation/time coordination / G3, G6 | Barriers at grant read, signature verification, receipt lookup and commit; both revocation orderings; expiry while blocked; clock rollback and erroneous forward sample; host-authorized floor reconciliation with atomic history, restored fresh admission, unchanged deadlines and no source-facing access; concurrent stores opened in separate processes | Recheck at transaction owner; stale assertions cannot authorize writes or receipt reads |
 | Access and expiry / G1, G6 prerequisites | Body bytes survive reopen; foreign-scope reads; expired/corrupt content; cleanup restart; C3 message-wide purge: two event IDs purged by one request, unrelated messages/scopes untouched, no body-bearing audit; absent-message purge then late first delivery; capture before/at horizon refused, later re-follow capture admitted; repeated purge after that capture is a no-op; restart/replay and concurrent admission/purge; event-scoped purge mutant must fail; retirement races; no tombstone removal before permanent denial; Windows/Linux crash and sidecar access | Expiry blocks reads independently of cleanup; no content resurrection; no erasure claim |
 
+### Clock-floor enforcement and C1 implementation increment
+
+This is the remaining time implementation under the
+[accepted sequence](#operator-approved-sequencing-amendment). The transaction
+owner is `SourceStore`; the source boundary remains `SourceAdmission.admit_source`.
+The defect is that successful samples currently disappear at commit, so a later
+request or reopened process can admit against a regressed clock.
+
+Proof inventory: preserve the source/auth fixtures and existing store, custody
+and race tests unchanged, including spawned-process real-busy rendezvous and
+before/after-commit crash recovery. No inference runtime, model or prompt is
+involved. The new proof extends that same library/SQLite environment with
+cross-request/reopen regression, C1 recovery, concurrent administrative operations,
+append-history corruption and write/commit failures. Add it to native Windows
+CI on the first push. These are new guarantees, not previously qualified ones.
+
+Required change surface and invariants:
+
+- `SourceStore` owns append-only `authority_clock_history`, including successful
+  sample advances and explicit reconciliation records with old/new floor,
+  authority generation and a unique administrative operation identity. Validate
+  the complete chain before use. Sample records never lower the floor. No new
+  clock service, scheduler or source-controlled time input is introduced.
+- Admission samples the host UTC clock after taking the writer lock. Check the
+  durable floor before any receipt lookup, then check the final sample against
+  both the durable floor and the first sample. Append the successful final
+  sample in the same transaction as custody, including on authenticated replay.
+  Invalid or rejected requests cannot advance the floor.
+- A distinct `SourceClockAdmin` host library interface reads clock state and
+  reconciles an explicitly supplied, host-qualified corrected UTC sample. Its
+  construction is privileged host code, like authority publication: the existing
+  private-directory/OS-user boundary applies. It is not employee authentication
+  or a callable source capability. The deployment must never expose this object
+  to an untrusted caller; application authorization remains a prerequisite to
+  adoption.
+- Reconciliation requires the observed history sequence and a unique operation
+  ID. Stale state conflicts. A repeated identical operation returns the recorded
+  result without reapplying it; conflicting reuse is rejected. Reconciliation
+  can lower or confirm an existing floor, never raise it or initialize one.
+  It appends history atomically without changing receipts, grants, deadlines or
+  content. Later admission still authenticates normally. The operation does not
+  accept a callback or dispatch any external effect while holding the writer.
+- Bump the private opt-in schema version; existing versions fail closed with no
+  implicit upgrade. There is no deployed-data migration in this increment.
+  Full-database replacement by the same OS user remains outside the threat model.
+
+Verification: first reproduce successful admission after a committed newer
+sample and fail the regression test, then prove rejection. Cover equality and
+microsecond boundaries, malformed/non-UTC samples, replay, rejected-request
+rollback, reopen, clock jumps, stale and duplicate C1 calls, independently
+constructed corrupted history rows, SQL failure and commit ambiguity, both
+orders of concurrent writers, and process crashes. Run the unchanged adjacent
+proof inventory, lint, owner mutations, cold diff and exact-head Linux/Windows
+CI plus independent review. Retain raw evidence outside the worktree.
+
+Explicit non-scope: content access, C3 purge, namespace retirement, Watcher or
+Automate integration, employee authorization, production adoption, parser/auth
+wire changes, old-test changes and dependency updates. No whole foundation gate
+is declared complete. Rollback is to the prior library with its prior-format
+store; do not downgrade a new-format store or erase clock history. Stop at the
+reviewed merge of this increment.
+
 ### Revocation and expiry race qualification increment
 
 Under the [operator-approved sequencing amendment](#operator-approved-sequencing-amendment),
