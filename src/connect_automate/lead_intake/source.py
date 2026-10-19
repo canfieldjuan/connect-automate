@@ -209,8 +209,10 @@ def _canonical(value) -> bytes:
     ).encode("utf-8")
 
 
-def _validate_source(value) -> tuple[UntrustedSource, bytes]:
+def _validate_source(value, *, model_only: bool = False) -> tuple[UntrustedSource, bytes]:
     """One validation and envelope serialization owner for both public boundaries."""
+    if model_only and not isinstance(value, UntrustedSource):
+        raise ValueError("expected parsed source model")
     _shape(value)
     # Revalidated models expose Python field names (schema_name); raw envelopes
     # must still use wire aliases (schema). Never relax the raw-input contract.
@@ -245,9 +247,7 @@ def parse_untrusted_source(raw: bytes) -> UntrustedSource:
 
 def _encode_source(source: UntrustedSource, *, payload_only: bool) -> bytes:
     try:
-        if not isinstance(source, UntrustedSource):
-            raise ValueError("expected parsed source model")
-        validated, wire = _validate_source(source)
+        validated, wire = _validate_source(source, model_only=True)
         return _canonical(validated.payload.model_dump(by_alias=True)) if payload_only else wire
     except (ValueError, TypeError, RecursionError):
         pass

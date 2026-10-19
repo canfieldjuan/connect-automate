@@ -1,5 +1,14 @@
 """Lead Intake contracts. Parsed source data is not authenticated admission."""
 
+from .auth import (
+    AuthenticatedSource,
+    SourceAuthenticationError,
+    SourceKeyGrant,
+    SourceRetentionPolicy,
+    SourceTrustSnapshot,
+    authenticate_source,
+    source_signing_bytes,
+)
 from .source import (
     SourceInputError,
     UntrustedSource,
@@ -10,6 +19,13 @@ from .source import (
 )
 
 __all__ = [
+    "AuthenticatedSource",
+    "SourceAuthenticationError",
+    "SourceKeyGrant",
+    "SourceRetentionPolicy",
+    "SourceTrustSnapshot",
+    "authenticate_source",
+    "source_signing_bytes",
     "SourceInputError",
     "UntrustedSource",
     "canonical_payload",
