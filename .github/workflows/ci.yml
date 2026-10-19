@@ -44,6 +44,7 @@ jobs:
           tests/test_lead_source_store.py
           tests/test_lead_source_admission.py
           tests/test_lead_source_races.py
+          tests/test_lead_source_clock.py
           tests/test_lead_source.py
           tests/test_lead_source_auth.py
           tests/test_lead_source_fixture_encoding.py

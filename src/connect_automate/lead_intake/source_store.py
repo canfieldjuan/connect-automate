@@ -17,6 +17,8 @@ import stat
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from functools import wraps
 from pathlib import Path
 
@@ -90,9 +92,34 @@ _SCHEMA = (
     "BEGIN SELECT RAISE(ABORT, 'immutable'); END",
     "CREATE TRIGGER custody_no_delete BEFORE DELETE ON source_custody "
     "BEGIN SELECT RAISE(ABORT, 'immutable'); END",
+    "CREATE TABLE authority_clock_history (sequence INTEGER PRIMARY KEY, "
+    "kind TEXT NOT NULL CHECK(kind IN ('sample','reconcile')), old_floor TEXT, "
+    "new_floor TEXT NOT NULL, generation INTEGER NOT NULL "
+    "REFERENCES authority_history(generation), "
+    "operation_id TEXT UNIQUE) STRICT",
+    "CREATE TRIGGER clock_no_update BEFORE UPDATE ON authority_clock_history "
+    "BEGIN SELECT RAISE(ABORT, 'immutable'); END",
+    "CREATE TRIGGER clock_no_delete BEFORE DELETE ON authority_clock_history "
+    "BEGIN SELECT RAISE(ABORT, 'immutable'); END",
 )
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 _UUID = TypeAdapter(UuidV4)
+
+
+@dataclass(frozen=True)
+class SourceClockState:
+    sequence: int
+    floor: datetime | None
+
+
+def _utc(value: object) -> datetime:
+    if type(value) is not datetime or value.tzinfo is None or value.utcoffset() != timedelta(0):
+        raise ValueError("invalid UTC sample")
+    return value.astimezone(UTC)
+
+
+def _clock_text(value: datetime) -> str:
+    return _utc(value).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
 def _boundary(method):
@@ -356,6 +383,7 @@ class SourceStore:
             present = self._schema(db, allow_empty=initialize)
             if present:
                 self._authority(db)
+                self._clock_history(db)
             yield db
             self._paths()
             failed = False
@@ -369,6 +397,66 @@ class SourceStore:
             with suppress(sqlite3.Error):
                 db.rollback()
             db.close()
+
+    def _clock_history(self, db: sqlite3.Connection):
+        rows = list(
+            db.execute(
+                "SELECT sequence, kind, old_floor, new_floor, generation, operation_id "
+                "FROM authority_clock_history ORDER BY sequence"
+            )
+        )
+        generations = {r[0] for r in db.execute("SELECT generation FROM authority_history")}
+        previous, prior_generation = None, 0
+        operations = set()
+        for expected, (seq, kind, old, new, generation, operation) in enumerate(rows, 1):
+            parsed = datetime.fromisoformat(new)
+            if (
+                seq != expected
+                or old != previous
+                or _clock_text(parsed) != new
+                or generation not in generations
+                or generation < prior_generation
+            ):
+                raise SourceStoreUnavailable()
+            if kind == "sample":
+                if operation is not None or (old is not None and new < old):
+                    raise SourceStoreUnavailable()
+            elif kind == "reconcile":
+                if old is None or new > old or _UUID.validate_python(operation) != operation:
+                    raise SourceStoreUnavailable()
+                if operation in operations:
+                    raise SourceStoreUnavailable()
+                operations.add(operation)
+            else:
+                raise SourceStoreUnavailable()
+            previous, prior_generation = new, generation
+        if not rows and db.execute("SELECT 1 FROM source_receipts LIMIT 1").fetchone():
+            raise SourceStoreUnavailable()
+        return rows
+
+    def _check_clock(self, db: sqlite3.Connection, sample: datetime) -> datetime:
+        try:
+            sample = _utc(sample)
+        except (ValueError, TypeError):
+            sample = None
+        if sample is None:
+            raise SourceAuthenticationError()
+        rows = self._clock_history(db)
+        if rows and sample < datetime.fromisoformat(rows[-1][3]):
+            raise SourceAuthenticationError()
+        return sample
+
+    def _record_clock(self, db: sqlite3.Connection, sample: datetime, generation: int) -> None:
+        rows = self._clock_history(db)
+        # The final sample was checked before staging the immutable receipt.
+        old = rows[-1][3] if rows else None
+        new = _clock_text(sample)
+        if new == old:
+            return
+        db.execute(
+            "INSERT INTO authority_clock_history VALUES (?, 'sample', ?, ?, ?, NULL)",
+            (len(rows) + 1, old, new, generation),
+        )
 
     def _scope(self, authority: SourceTrustSnapshot) -> None:
         if (authority.host_id, authority.organization_id) != (self.host_id, self.organization_id):
@@ -437,3 +525,53 @@ class SourceStore:
             history.append(authority)
             self._insert(db, authority)
         return True
+
+
+class SourceClockAdmin:
+    """Privileged local host API, never a source-facing capability.
+
+    Like authority publication, construction/access must be restricted by the
+    embedding host and private OS-user boundary. This is not employee auth.
+    """
+
+    def __init__(self, store: SourceStore):
+        if not isinstance(store, SourceStore):
+            raise SourceStoreInputError()
+        self._store = store
+
+    @_boundary
+    def read(self) -> SourceClockState:
+        with self._store._transaction() as db:
+            rows = self._store._clock_history(db)
+            return SourceClockState(
+                len(rows), datetime.fromisoformat(rows[-1][3]) if rows else None
+            )
+
+    @_boundary
+    def reconcile(
+        self, *, operation_id: str, expected_sequence: int, corrected_at: datetime
+    ) -> SourceClockState:
+        valid = False
+        try:
+            operation_id = _UUID.validate_python(operation_id)
+            new = _clock_text(corrected_at)
+            valid = type(expected_sequence) is int and expected_sequence >= 1
+        except (ValueError, TypeError):
+            pass
+        if not valid:
+            raise SourceStoreInputError()
+        with self._store._transaction() as db:
+            rows = self._store._clock_history(db)
+            for row in rows:
+                if row[5] == operation_id:
+                    if row[0] != expected_sequence + 1 or row[3] != new:
+                        raise SourceStoreConflict()
+                    return SourceClockState(row[0], datetime.fromisoformat(row[3]))
+            if len(rows) != expected_sequence or not rows or new > rows[-1][3]:
+                raise SourceStoreConflict()
+            authority, _ = self._store._authority(db)
+            db.execute(
+                "INSERT INTO authority_clock_history VALUES (?, 'reconcile', ?, ?, ?, ?)",
+                (len(rows) + 1, rows[-1][3], new, authority.generation, operation_id),
+            )
+            return SourceClockState(len(rows) + 1, _utc(corrected_at))
