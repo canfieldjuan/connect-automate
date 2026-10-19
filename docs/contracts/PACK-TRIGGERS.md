@@ -493,9 +493,10 @@ At PR #8 approval, the low operational lock-file retention finding was deferred
 to issue #9: one small file remained per action. The replacement lifecycle is
 specified in [ACTION-LOCK-LIFECYCLE.md](ACTION-LOCK-LIFECYCLE.md), which preserves
 per-action exclusion while gating creation and cleanup at the native lock owner.
-Issue #9 still requires implementation and native Linux/Windows process proof
-**before any application adopts this revision or bumps its pin**. Do not describe
-retention as fixed until those gates pass; never unlink a live lock inode.
+That library lifecycle shipped in [PR #13](https://github.com/canfieldjuan/connect-automate/pull/13)
+at `7624acac876fecadb5cc7f2abf74103638617dd3`, with Linux and native Windows CI
+passing; issue #9 is closed. Application adoption and pin changes still require
+their own accepted scope. Never unlink a live lock inode.
 
 Review repair qualification: the full Linux suite passed with the required CI
 warning policy (922 passed, 16 skipped), and the affected kit slice passed under
@@ -506,7 +507,10 @@ baseline reproduces that warning and the original test remains byte-identical.
 The new library source matches the full-suite-tested snapshot; later changes
 are confined to the kit, its tests and documentation and have their own gates.
 
-Gap audit: **NOT DONE**. Exact-revision contract review and operator acceptance
-are recorded above; implementation and local Linux qualification are complete.
-Native Windows CI evidence, exact-head PR review and merge remain. Application
-adoption and the excluded aggregation/result features require separate accepted scope.
+Gap audit: **DONE for the accepted library slice**. Contract review and operator
+acceptance are recorded above. Implementation, reviewed repairs and Linux/native
+Windows CI shipped in [PR #8](https://github.com/canfieldjuan/connect-automate/pull/8),
+merged at `8326d4ab8121ffd044372786bf5a14ecb931f574`; the deferred lock lifecycle
+shipped separately in PR #13. **NOT DONE:** application adoption and the excluded
+aggregation/result features, which require separate accepted scope. These library
+merges do not qualify a deployed Watcher/Connect handoff or change application pins.
