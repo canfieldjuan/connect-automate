@@ -477,6 +477,74 @@ fail-first evidence, adjacent tests, lint, cold diff and exact-head review:
 | Revocation/time coordination / G3, G6 | Barriers at grant read, signature verification, receipt lookup and commit; both revocation orderings; expiry while blocked; clock rollback and erroneous forward sample; host-authorized floor reconciliation with atomic history, restored fresh admission, unchanged deadlines and no source-facing access; concurrent stores opened in separate processes | Recheck at transaction owner; stale assertions cannot authorize writes or receipt reads |
 | Access and expiry / G1, G6 prerequisites | Body bytes survive reopen; foreign-scope reads; expired/corrupt content; cleanup restart; C3 message-wide purge: two event IDs purged by one request, unrelated messages/scopes untouched, no body-bearing audit; absent-message purge then late first delivery; capture before/at horizon refused, later re-follow capture admitted; repeated purge after that capture is a no-op; restart/replay and concurrent admission/purge; event-scoped purge mutant must fail; retirement races; no tombstone removal before permanent denial; Windows/Linux crash and sidecar access | Expiry blocks reads independently of cleanup; no content resurrection; no erasure claim |
 
+### Access, expiry and retirement implementation increment
+
+This implements the accepted Access and expiry row as one library slice. The
+missing owner is a host content/lifecycle boundary over `SourceStore`'s existing
+writer transaction. Admission already owns signed custody and its integrity
+validator; use that same validator for host reads and deletion candidates rather
+than creating a second receipt/envelope checker.
+
+Proof inventory: reuse frozen source/auth vectors, synthetic private-store
+fixtures, custody tamper fixtures, spawned-process real-busy rendezvous, crash
+recovery and the clock-floor/C1 tests unchanged. No model, inference runtime or
+prompt is involved. New tests qualify lifecycle behavior that does not yet exist.
+
+Required surface: add `SourceContent`, a privileged host library object constructed
+with deployment-scoped store and qualified clock. It is not employee authorization
+or a remotely callable source capability. Host access restriction, producer cutoff
+mapping and application integration remain adoption prerequisites.
+
+- `read_content(admission_id)` returns the original canonical signed envelope
+  bytes, preserving body availability/completeness metadata without inventing
+  body text. Validate custody and scope through the existing owner, and check
+  expiry at the final trusted sample. Missing, purged or retired content returns
+  a fixed unavailable error; corruption is a storage error. Key revocation does
+  not prevent authorized host access to historical records. An observed expiry
+  atomically purges content and commits its terminal state before returning
+  unavailable; C1 cannot revive it.
+- `cleanup_expired(limit)` removes expired retained content in bounded batches,
+  preserving receipts and identity associations. Validate each selected candidate
+  and use the same terminal-purge primitive as reads and early purge. Restart
+  repeats the query safely; a limit bounds changed admissions, not whole-database
+  validation cost. No cleanup service is introduced.
+- `purge_message(identity, cutoff)` uses the complete validated signed identity
+  and immutable store organization. A newer cutoff atomically purges every
+  currently matching retained admission and records a canonical UTC horizon,
+  including for absent messages. Equal/older requests are no-ops. Admission
+  enforces the horizon after authentication and before lookup; event IDs never
+  narrow purge. Horizon/state rows are minimal purge facts without body text.
+- `retire_namespace(namespace_id)` commits a permanent marker before deletion.
+  Admission and host reads deny retired namespaces; new authority publication
+  rejects all grants to them. Historical authority is preserved. A repeated
+  retirement is a no-op, and key rotation cannot remove the marker.
+- `cleanup_retired(namespace_id, limit)` requires that marker and removes receipt,
+  custody and content records in bounded batches, then any purge horizons within
+  the remaining budget. Each admission and each horizon counts as one work item.
+  SQL deletion guards independently require retirement before receipt/custody or
+  horizon removal. The compact retirement marker remains immutable.
+
+All operations share the existing store scope, writer lock, clock-floor and fixed
+error boundaries. Source envelopes cannot invoke host operations. Rejected reads
+must not expose content. Schema changes are explicit and private; older versions
+fail closed without implicit migration or destructive repair. SQLite deletion is
+logical only; WAL/backups, encryption and secure-erasure qualification stay open.
+
+Verification: fail first on the absent host boundary, then prove reopen/read,
+expiry before/at/after deadline, corruption and foreign scope, terminal expiry
+across C1 recovery, message-wide purge including absent/late delivery and re-follow,
+equal/older horizon no-op, retirement and publication denial, bounded cleanup,
+SQL failures and lost responses. Use real separate-process admission/purge and
+retirement races and before/after-commit crashes; exercise Linux and native Windows
+from the first push. Mutations must catch event-scoped purge, weakened horizon and
+retirement denial, and deletion-before-retirement. Preserve existing tests and
+fixtures. Run adjacent suites, lint, cold diff and independent exact-head review.
+
+Non-scope: Watcher emission/enrollment, Connect dispatch, extraction, Lead Inbox,
+CRM adapters, encryption, background services, dependencies or production adoption.
+Rollback preserves prior-format stores; never downgrade new-format stores or
+remove permanent lifecycle markers. Stop after the reviewed merge of this slice.
+
 ### Clock-floor enforcement and C1 implementation increment
 
 This is the remaining time implementation under the
