@@ -95,7 +95,7 @@ def operation_lock_supported(lock_path: Path) -> bool:
     try:
         # First-run settings can precede creation of the configured state directory.
         # Its nearest existing ancestor is the filesystem that will contain it.
-        with TemporaryDirectory(prefix=".eom-lock-probe-", dir=probe_parent) as directory:
+        with TemporaryDirectory(prefix=".connect-lock-probe-", dir=probe_parent) as directory:
             probe = FileLock(Path(directory) / "probe.lock", timeout=0, mode=0o600)
             try:
                 probe.acquire()
