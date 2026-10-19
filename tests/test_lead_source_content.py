@@ -315,6 +315,8 @@ def invoke(owner, action, raw):
         return SourceAdmission(owner, clock=lambda: NOW).admit_source(raw).applied
     if action == "purge":
         return access.purge_message(identity(), cutoff=NOW)
+    if action == "late_purge":
+        return access.purge_message(identity(), cutoff=NOW - timedelta(minutes=5))
     if action == "retire":
         return access.retire_namespace(identity().namespace_id)
     if action == "erase":
@@ -796,3 +798,87 @@ def test_deletion_candidates_validate_custody_and_rollback(private_root, operati
     assert error.value.__context__ is None
     assert len(accepted) == 1 and bad.admission_id not in accepted
     assert snapshot(store(private_root)) == before
+
+
+@pytest.mark.parametrize("capture_offset", [-1, 0, 1, 180])
+@pytest.mark.parametrize("cutoff_us", [0, 1, 999999])
+def test_delayed_purge_preserves_captures_after_cutoff(private_root, capture_offset, cutoff_us):
+    owner = initialized(private_root)
+    access = SourceContent(owner, clock=lambda: NOW)
+    assert access.purge_message(identity(), cutoff=NOW - timedelta(minutes=10))
+    cutoff = NOW - timedelta(minutes=5) + timedelta(microseconds=cutoff_us)
+    captured = NOW - timedelta(minutes=5) + timedelta(seconds=capture_offset)
+    stamp = captured.isoformat(timespec="seconds").replace("+00:00", "Z")
+    receipt, raw = admit(owner, captured=stamp)
+    before = rows(owner, "source_receipts")
+    assert access.purge_message(identity(), cutoff=cutoff)
+    reopened = SourceContent(store(private_root), clock=lambda: NOW)
+    assert rows(owner, "source_receipts") == before
+    if captured > cutoff:
+        assert reopened.read_content(receipt.admission_id) == raw
+        replay = SourceAdmission(store(private_root), clock=lambda: NOW).admit_source(raw)
+        assert not replay.applied and replay.content_state == "retained"
+    else:
+        with pytest.raises(SourceContentUnavailable):
+            reopened.read_content(receipt.admission_id)
+        with pytest.raises(SourceAuthenticationError):
+            SourceAdmission(store(private_root), clock=lambda: NOW).admit_source(raw)
+    assert not reopened.purge_message(identity(), cutoff=cutoff)
+
+
+def test_message_purge_applies_cutoff_to_every_copy(private_root):
+    owner = initialized(private_root)
+    access = SourceContent(owner, clock=lambda: NOW)
+    cutoff = NOW - timedelta(minutes=5)
+    admitted = []
+    for seconds in (-1, 0, 1, 2):
+        capture = (
+            (cutoff + timedelta(seconds=seconds))
+            .isoformat(timespec="seconds")
+            .replace("+00:00", "Z")
+        )
+        admitted.append(admit(owner, captured=capture))
+    receipts = rows(owner, "source_receipts")
+    assert access.purge_message(identity(), cutoff=cutoff)
+    assert counts(owner) == (4, 2, 4)
+    assert rows(owner, "source_receipts") == receipts
+    for index, (receipt, raw) in enumerate(admitted):
+        if index < 2:
+            with pytest.raises(SourceContentUnavailable):
+                access.read_content(receipt.admission_id)
+        else:
+            assert access.read_content(receipt.admission_id) == raw
+
+
+@pytest.mark.parametrize("first", ["admit", "late_purge"])
+@pytest.mark.parametrize("offset", [-1, 0, 1])
+def test_delayed_purge_races_admission_at_cutoff(private_root, first, offset):
+    owner = initialized(private_root)
+    value = envelope()
+    captured = NOW - timedelta(minutes=5) + timedelta(seconds=offset)
+    stamp = captured.isoformat(timespec="seconds").replace("+00:00", "Z")
+    value["payload"]["snapshot"]["captured_at"] = stamp
+    value["payload"]["occurred_at"] = stamp
+    raw = resign(value)
+    second = "late_purge" if first == "admit" else "admit"
+    with LifecycleRace(private_root, raw) as race:
+        race.start(first, "commit")
+        race.expect("paused", first, "commit")
+        race.start(second)
+        race.expect("blocked", second)
+        race.release(first)
+        results = race.finish()
+    assert results["late_purge"][0] == ("ok", True, None)
+    if offset > 0 or first == "admit":
+        assert results["admit"][0] == ("ok", True, None)
+    else:
+        assert results["admit"][0] == ("SourceAuthenticationError", None, None)
+    if offset > 0:
+        receipt = SourceAdmission(store(private_root), clock=lambda: NOW).admit_source(raw).receipt
+        assert (
+            SourceContent(store(private_root), clock=lambda: NOW).read_content(receipt.admission_id)
+            == raw
+        )
+        assert counts(owner) == (1, 1, 1)
+    else:
+        assert counts(owner) == ((1, 0, 1) if first == "admit" else (0, 0, 0))

@@ -17,6 +17,7 @@ from .source_store import (
     SourceStoreInputError,
     SourceStoreUnavailable,
     _boundary,
+    _capture_at_or_before,
     _clock_text,
     _identity_text,
 )
@@ -136,12 +137,14 @@ class SourceContent:
             if identity.namespace_id in retired or (key in horizons and cutoff <= horizons[key]):
                 return False
             ids = db.execute(
-                "SELECT admission_id FROM source_custody WHERE identity=? AND state='retained'",
+                "SELECT admission_id, captured_at FROM source_custody "
+                "WHERE identity=? AND state='retained'",
                 (key,),
             ).fetchall()
-            for (ident,) in ids:
+            for ident, captured_at in ids:
                 self._custody._existing(db, self._row(db, ident))
-                self._purge(db, ident)
+                if _capture_at_or_before(captured_at, cutoff):
+                    self._purge(db, ident)
             db.execute(
                 "INSERT INTO source_purge_horizons VALUES (?, ?, ?) "
                 "ON CONFLICT(identity) DO UPDATE SET cutoff=excluded.cutoff",

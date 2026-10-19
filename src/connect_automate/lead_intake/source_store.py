@@ -140,6 +140,11 @@ def _clock_text(value: datetime) -> str:
     return _utc(value).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
+def _capture_at_or_before(captured_at: str, cutoff: datetime) -> bool:
+    """One UTC comparison for source admission denial and authorized purge."""
+    return datetime.fromisoformat(captured_at) <= cutoff
+
+
 def _identity_text(value: SourceIdentity) -> str:
     value = SourceIdentity.model_validate(value)
     return json.dumps(value.model_dump(), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -450,7 +455,7 @@ class SourceStore:
         retired, horizons = self._lifecycle(db)
         cutoff = horizons.get(_identity_text(identity))
         if identity.namespace_id in retired or (
-            cutoff is not None and datetime.fromisoformat(captured_at) <= cutoff
+            cutoff is not None and _capture_at_or_before(captured_at, cutoff)
         ):
             raise SourceAuthenticationError()
 
