@@ -460,6 +460,36 @@ fail-first evidence, adjacent tests, lint, cold diff and exact-head review:
 | Revocation/time coordination / G3, G6 | Barriers at grant read, signature verification, receipt lookup and commit; both revocation orderings; expiry while blocked; clock rollback and erroneous forward sample; host-authorized floor reconciliation with atomic history, restored fresh admission, unchanged deadlines and no source-facing access; concurrent stores opened in separate processes | Recheck at transaction owner; stale assertions cannot authorize writes or receipt reads |
 | Access and expiry / G1, G6 prerequisites | Body bytes survive reopen; foreign-scope reads; expired/corrupt content; cleanup restart; C3 message-wide purge: two event IDs purged by one request, unrelated messages/scopes untouched, no body-bearing audit; absent-message purge then late first delivery; capture before/at horizon refused, later re-follow capture admitted; repeated purge after that capture is a no-op; restart/replay and concurrent admission/purge; event-scoped purge mutant must fail; retirement races; no tombstone removal before permanent denial; Windows/Linux crash and sidecar access | Expiry blocks reads independently of cleanup; no content resurrection; no erasure claim |
 
+### Revocation and expiry race qualification increment
+
+The next bounded increment qualifies the existing transaction ordering from
+"Admission algorithm and linearization" above. It does not implement the rest
+of the revocation/time row or claim a foundation gate complete.
+
+Proof inventory: reuse the frozen source/auth vectors and the private SQLite
+fixtures in `tests/test_lead_source_auth.py` and `tests/test_lead_source_store.py`.
+Reuse the spawned-process lifecycle and rollback/replay assertions established
+by `tests/test_lead_source_admission.py`. The production owners remain
+`SourceStore._transaction`, `publish_authority`, and `SourceAdmission.admit_source`.
+The coverage gap is deterministic contention at authorization boundaries;
+existing concurrency tests do not pause at those boundaries.
+
+Add a dedicated race test file and include it in native Windows CI from its
+first push. Instrument real calls in child processes, with barriers at grant
+read, successful signature verification, receipt lookup and commit. Observe a
+real SQLite busy result before releasing the first writer; do not infer
+serialization from sleeps or mock call counts. Cover new admissions and replay,
+both revocation orderings, key/source expiry while waiting, and expiry across
+the final clock sample. Preserve the distinction between the final authorization
+sample and physical commit completion defined above.
+
+No production code, schema, frozen fixtures or existing assertions change in
+this qualification increment. Durable clock-floor enforcement and C1 recovery
+remain a subsequent implementation together; content access, C3 purge and
+application adoption remain excluded. Require owner mutations to fail the
+intended assertion, adjacent tests, lint, cold diff and exact-head Linux/Windows
+CI plus independent review. Keep evidence outside the worktree.
+
 For each security guard, exercise accepted and rejected sides, partial/mixed
 records, strict-type/falsy values, boundaries, Unicode identities and replay after
 reopen. Mutate the controlling check at its owner and require its regression to
