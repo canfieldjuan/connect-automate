@@ -20,7 +20,7 @@ from connect_automate.lead_intake.auth import (
 )
 
 FIXTURES = Path(__file__).parent / "fixtures" / "lead_source_auth"
-VECTORS = json.loads((FIXTURES / "vectors.json").read_text())
+VECTORS = json.loads((FIXTURES / "vectors.json").read_text(encoding="utf-8"))
 NOW = datetime(2026, 10, 18, 12, 30, tzinfo=UTC)
 OTHER = "00000000-0000-4000-8000-000000000002"
 
@@ -297,7 +297,11 @@ def test_unicode_scope_is_exact(member, granted):
 
 
 @pytest.mark.parametrize("member", ["provider", "account_id"])
-@pytest.mark.parametrize("value", ["Synthetic", "synthetic ", "*", "", "x" * 257])
+@pytest.mark.parametrize(
+    "value",
+    ["Synthetic", "synthetic ", "*", "", "x" * 257],
+    ids=["case", "trailing-space", "wildcard", "empty", "over-limit"],
+)
 def test_no_casefold_trim_wildcard_or_invalid_identifier(member, value):
     original = envelope()
     original["payload"]["source"][member] = value
@@ -564,7 +568,9 @@ def test_construct_copy_and_mutation_cannot_bypass_public_boundaries():
 
 
 @pytest.mark.parametrize(
-    "raw", [b"", b"\xff", b'{"sensitive-sentinel":', b"{}", b"[" * 10000 + b"]" * 10000]
+    "raw",
+    [b"", b"\xff", b'{"sensitive-sentinel":', b"{}", b"[" * 10000 + b"]" * 10000],
+    ids=["empty", "invalid-utf8", "incomplete", "empty-object", "deep-nesting"],
 )
 def test_input_errors_have_no_internal_context(raw):
     rejected(raw, trust())
@@ -667,7 +673,11 @@ def test_preimage_rejects_invalid_nested_dictionary(construction):
     assert caught.value.__cause__ is None
 
 
-@pytest.mark.parametrize("supplied", [None, False, envelope(), encode(envelope())])
+@pytest.mark.parametrize(
+    "supplied",
+    [None, False, envelope(), encode(envelope())],
+    ids=["none", "false", "mapping", "bytes"],
+)
 def test_preimage_requires_source_model(supplied):
     from connect_automate.lead_intake import SourceInputError
 

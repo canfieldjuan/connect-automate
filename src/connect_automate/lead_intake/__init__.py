@@ -17,8 +17,24 @@ from .source import (
     parse_untrusted_source,
     payload_digest,
 )
+from .source_store import (
+    SourceStore,
+    SourceStoreBusy,
+    SourceStoreConflict,
+    SourceStoreError,
+    SourceStoreInputError,
+    SourceStoreUnavailable,
+    SourceStoreUncertain,
+)
 
 __all__ = [
+    "SourceStore",
+    "SourceStoreBusy",
+    "SourceStoreConflict",
+    "SourceStoreError",
+    "SourceStoreInputError",
+    "SourceStoreUnavailable",
+    "SourceStoreUncertain",
     "AuthenticatedSource",
     "SourceAuthenticationError",
     "SourceKeyGrant",
