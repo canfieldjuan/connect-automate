@@ -503,7 +503,9 @@ Required change surface and invariants:
 - Admission samples the host UTC clock after taking the writer lock. Check the
   durable floor before any receipt lookup, then check the final sample against
   both the durable floor and the first sample. Append the successful final
-  sample in the same transaction as custody, including on authenticated replay.
+  sample advance in the same transaction as custody, including on authenticated
+  replay. Equal-time samples are no-ops, preserving the existing byte-identical
+  replay guarantee; explicit C1 reconciliation still appends its audit record.
   Invalid or rejected requests cannot advance the floor.
 - A distinct `SourceClockAdmin` host library interface reads clock state and
   reconciles an explicitly supplied, host-qualified corrected UTC sample. Its

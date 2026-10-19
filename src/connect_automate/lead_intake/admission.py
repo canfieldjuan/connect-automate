@@ -1,8 +1,8 @@
 """Atomic local source custody, not lead creation or a production receiver.
 
 Raw requests are authenticated under SourceStore's writer transaction. No caller
-supplied authenticated object is accepted. Clock-floor recovery, namespace purge
-and content access are later library slices; this boundary is not for adoption.
+supplied authenticated object is accepted. Namespace purge and content access
+are later library slices; this boundary is not for adoption.
 """
 
 from __future__ import annotations
@@ -191,7 +191,9 @@ class SourceAdmission:
             raise SourceAuthenticationError()
         with self._store._transaction() as db:
             authority, _ = self._store._authority(db)
-            first = authenticate_source(raw, trust=authority, now=self._clock())
+            first = authenticate_source(
+                raw, trust=authority, now=self._store._check_clock(db, self._clock())
+            )
             payload = first.source.payload
             row = db.execute(
                 "SELECT admission_id, organization_id, namespace_id, event_id, receipt, "
@@ -216,12 +218,15 @@ class SourceAdmission:
                     (ident, _json(payload.source), payload.snapshot.captured_at),
                 )
             current, _ = self._store._authority(db)
-            final = authenticate_source(raw, trust=current, now=self._clock())
+            final = authenticate_source(
+                raw, trust=current, now=self._store._check_clock(db, self._clock())
+            )
             if (
                 final.trust_generation != first.trust_generation
                 or final.verified_at < first.verified_at
             ):
                 raise SourceAuthenticationError()
+            self._store._record_clock(db, final.verified_at, final.trust_generation)
             if applied:
                 receipt = SourceReceipt.model_validate(
                     {
