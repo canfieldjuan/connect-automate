@@ -1,7 +1,8 @@
 # Durable Lead Source Admission
 
-Status: PROPOSED — contract only; operator acceptance pending.
-Implementation authorization: NOT GRANTED by this document or a reviewer PASS.
+Status: ACCEPTED WITH CONDITIONS — acceptance record below; contract only.
+Implementation boundary: this update records acceptance and clarifications only;
+implementation requires a separate branch and work order. No production adoption.
 
 ## Contract and stop boundary
 
@@ -11,14 +12,35 @@ The missing owner is the transaction boundary between current local authority
 and a persisted source receipt. This is a new opt-in boundary, not a repair to
 deployed EOM behavior.
 
-This change adds only this contract. Commit it, request independent review and
-stop for explicit operator acceptance of its exact revision. No source, test,
+This change adds only this contract and records its conditional acceptance.
+Publish the clarifications for independent review, then stop. No source, test,
 database, migration, dependency, service, application pin or existing contract
 changes are authorized by this documentation slice. Acceptance must precede a
 separate implementation branch. Acceptance does not authorize production use.
 
-All normative behavior below is PROPOSED. CONFIRMED labels describe inspected
-code only; INFERRED and UNKNOWN labels preserve the limits of that inspection.
+Normative behavior below is accepted design, not implemented functionality.
+CONFIRMED labels describe inspected code only; INFERRED and UNKNOWN labels
+preserve the limits of that inspection.
+
+### Acceptance record
+
+Oversight relayed the operator's exact decision, **“Accept (Recommended)”**, for
+revision `1c87feb0248056a64318461a0675c56959a4e70d`, conditional on clock-floor
+recovery (C1) and concurrent first initialization proof (C2):
+[acceptance and conditions](https://github.com/canfieldjuan/connect-automate/pull/14#issuecomment-6257302653).
+The operator's subsequent decision, **“Purge it too (Recommended)”**, adds
+deletion/unfollow propagation and the producer retention ceiling (C3):
+[retention decision and open alignment items](https://github.com/canfieldjuan/connect-automate/pull/14#issuecomment-6257324609).
+These are operator decisions relayed by oversight, not authority granted by a
+reviewer PASS. The current documentation update incorporates those conditions;
+its independent review remains required.
+
+C4 leaves the same-lead identity owner open for the extraction/deduplication
+contract. C5 requires Watcher pairing/enrollment to define namespace identity
+before adoption. Neither is implicitly decided by accepting event-level custody.
+Changes beyond these accepted precisions require an operator-approved amendment.
+Implementation must use a separate branch, fail-first proof and native Windows
+and Linux crash, locking and permission gates. This update stops before code.
 
 ## Source baseline and reusable proof inventory
 
@@ -106,6 +128,12 @@ Identity mismatch, unknown schema or damaged authority data fails closed. There
 is no implicit bootstrap from an incoming envelope, fallback organization or
 ordinary identity reassignment. Different businesses require different stores
 and deployments. No production initialization command is included in this slice.
+Concurrent first initialization is part of this store's responsibility: two
+processes initializing/opening a fresh store must negotiate WAL within the
+bounded wait and either obtain a complete validated schema or a typed busy
+failure, never a partially usable schema. Reuse the existing SQLite owner's
+bounded negotiation pattern and prove it here; an unrelated store's fix does
+not qualify this owner (C2).
 
 The internal administrative operation publishes a validated `SourceTrustSnapshot`
 with an expected current generation. Initialization installs generation `1`;
@@ -150,9 +178,14 @@ conflict, including changes to body, message identity, rule or recovery deadline
 Conflicts never replace content, extend expiry or update first-admission facts.
 
 Different event IDs for the same message are distinct source admissions in this
-slice. They create no canonical leads or contacts. Message/contact deduplication
-must be separately contracted before extraction can create leads; this event
-policy alone does not satisfy the foundation's duplicate-lead requirement.
+slice. They create no canonical leads or contacts. The same-lead identity owner
+(message, contact or content) remains an explicit open decision (C4). Before
+extraction can create leads, its deduplication contract must reconcile Watcher's
+firing identity, Automate's `message_id` and Atlas's contact-plus-content rule.
+Those cross-application alignment topics come from review; this document does
+not independently qualify the other applications or adopt their algorithms.
+Event-level custody alone does not satisfy the foundation's duplicate-lead
+requirement.
 
 Commit the receipt, canonical envelope bytes and first-authentication provenance
 together. Use `canonical_source` for the protected content blob so restart reads
@@ -165,7 +198,7 @@ Available, truncated, unknown and unavailable bodies retain their exact
 meaning. A stored unavailable source is not a successfully extracted lead.
 Attachments remain explicitly unprocessed. No missing body is invented or fetched.
 
-Proposed immutable receipt schema `lead.source.receipt`, version `1.0`:
+Accepted immutable receipt schema `lead.source.receipt`, version `1.0`:
 
 | Field | Meaning |
 | --- | --- |
@@ -203,7 +236,7 @@ a qualified UTC clock interface; tests inject a deterministic host clock.
    durable namespace retirement state. No business receipt lookup occurs yet.
 2. Sample the host clock after lock acquisition; call `authenticate_source`
    against the current snapshot. Refuse a retired namespace. Untrusted clock
-   samples and time earlier than the store's last successful decision fail closed.
+   samples and time earlier than the current durable clock floor fail closed.
    The current clock cannot be cached across calls or replaced by event time.
 3. Only after authorization, look up the event key. Compare its original digest.
    Identical replay preserves the receipt; conflict aborts. For new events,
@@ -234,7 +267,21 @@ Time validity is decided at the final trusted sample before commit invocation;
 it is not a claim about physical disk-flush completion at a wall-clock instant.
 Receipt return may occur after the deadline. Later lookup/content access still
 rechecks current authority and expiry. The host must qualify time across restart;
-the persisted clock floor only detects regression relative to committed samples.
+the persisted clock floor detects regression relative to committed trusted
+samples, subject only to the explicit administrative reconciliation below.
+
+C1: a confirmed erroneous forward sample must not permanently halt admission.
+Provide a distinct local, host-authorized administrative operation to lower or
+reconcile the floor under the same transaction owner. Append the old/new floor
+facts to authority history atomically; never rewrite previous receipts or
+authority history. Reconciliation is never automatic and is unreachable from
+an envelope or the source-facing API. It never extends a deadline, reauthorizes
+expired content or reverses terminal purge/retirement. It does not itself admit
+content: subsequent requests still require current authorization and expiry
+checks. Prove that a bad forward sample blocks admission after clock correction,
+that authorized reconciliation restores admission for otherwise valid fresh
+sources, and that the source-facing path cannot invoke it. Direct table edits
+are not a recovery mechanism.
 
 Use typed, fixed, input-free errors: authentication/scope rejection must not
 reveal receipt existence; an authorized digest conflict is distinct from busy
@@ -246,10 +293,16 @@ receipt. Busy waits have one bounded owner; callers may retry, not multiply wait
 ## Content access, retention and deletion
 
 For this slice the original signed recovery deadline is also the latest content
-access time. This is a proposed policy decision, not a claim that the current
+access time. This is an accepted policy decision, not a claim that the current
 auth policy already enforces storage retention. Expiry/cleanup never extends the
 deadline. Local policy may reject a requested recovery duration; it may not
 silently shorten a newly promised custody interval after returning success.
+Authorized early purge below is an explicit withdrawal, not a silent policy
+change. C3 also requires the signed `recovery_deadline` never to exceed the
+producer's own retention cutoff for that content. The later Watcher/Connect
+handoff contract must define how producer retention (including `retention_days`)
+bounds that absolute deadline and prove it before adoption; this library does
+not infer producer retention from a signed envelope.
 
 Source-facing receipt replay always reauthenticates the full submitted envelope
 before lookup. Content access is a separate trusted-host library operation with
@@ -270,11 +323,18 @@ owner; remove expired payload rows and mark content purged atomically without
 changing the receipt. Duplicate replay must never resurrect purged content.
 An authorized early purge is a terminal custody withdrawal, recorded without
 body text; later consumers must observe unavailable content, not success.
+C3: deleting or unfollowing the source in Email Watcher must reach Lead Intake
+as this authorized early purge, removing the stored content without retaining
+body text in audit records. The later library implementation must supply and prove the purge
+primitive, including replay/restart non-resurrection. Watcher emitting the purge,
+authenticated delivery and failure recovery are required clauses and adoption
+gates of the later Watcher/Connect handoff contract, not implemented integration
+in this slice. A local primitive alone does not prove cross-application deletion.
 
 Keep only event/receipt/digest/authority metadata after content deletion. Even a
 digest is sensitive correlation data; access remains restricted. To preserve
 same-event conflict detection, receipt tombstones remain while their namespace
-can be admitted. The proposed retention policy is lifecycle-bound: a local
+can be admitted. The accepted retention policy is lifecycle-bound: a local
 administrative retirement permanently denies that namespace and makes its
 content inaccessible; content and receipts may then be purged in bounded batches.
 Keep the compact retired-namespace marker so a future key cannot reactivate
@@ -282,6 +342,14 @@ forgotten identities.
 Publication must reject grants to a retired namespace. Ordinary key rotation
 does not retire a namespace. Full metadata erasure while
 retaining the namespace's admission ability is not supported by this policy.
+
+C5: before adoption, the Watcher-side pairing/enrollment contract must define
+how `namespace_id` is minted and persisted across restart/upgrade, and how
+replacement installations and retirement are handled without reusing retired
+identities. Tombstones and retirement depend on that definition. Provider process
+identity is not a substitute. A new namespace does not inherit another namespace's
+event tombstones; this slice makes no cross-namespace lead-deduplication claim.
+Watcher enrollment is a prerequisite, not an implemented capability asserted here.
 
 Both retirement and cleanup use the admission transaction owner. Retirement
 must deny new operations atomically; bulk deletion can follow in bounded batches.
@@ -317,7 +385,9 @@ content access. No workflow is dispatched and no delivery queue is introduced.
 The stable receipt is the candidate reference for a separately accepted runtime
 adapter contract. That contract must identify the smallest supported event or
 capability extension, authenticate the host call, bind organization and receipt,
-and use the existing workflow admission/replay path. It must qualify failures
+and use the existing workflow admission/replay path. Before adoption it must
+also satisfy the C3 producer retention/purge obligations and the C5 namespace
+enrollment prerequisite above. It must qualify failures
 between the source commit, workflow acceptance and recording the workflow receipt.
 
 Lost handoff acknowledgement must recover through stable identities and the
@@ -332,17 +402,18 @@ not assumed as a reason to build a second dispatcher now.
 Contract verification: read the pinned source and relevant tests, check the
 existing evidence receipt, audit every confirmed citation, then inspect a diff
 containing this document alone. No behavioral tests are run for this doc-only
-change. Review and operator acceptance of the exact revision precede code.
+change. The conditional acceptance is recorded above; independent review of these
+clarifications precedes a separate implementation work order.
 
-After acceptance, implement the following dependent slices; each needs its own
+For separately authorized implementation, the dependent slices below each need
 fail-first evidence, adjacent tests, lint, cold diff and exact-head review:
 
 | Slice / foundation gate | Invariant and required proof | Regression risk / recovery |
 | --- | --- | --- |
-| Authority store / G0, G2, G6 prerequisites | Correct/foreign deployment; missing authority; generation CAS; duplicate publish; identity and policy rebinding; revoked/removed key history; cross-process publication race; malformed schema and private paths | No peer-table access; fail closed on incompatible stores; preserve file for diagnosis |
+| Authority store / G0, G2, G6 prerequisites | Correct/foreign deployment; missing authority; generation CAS; duplicate publish; identity and policy rebinding; revoked/removed key history; cross-process publication race; two-process concurrent first initialization/open of a fresh store, bounded WAL negotiation, typed busy failure and no partial schema; malformed schema and private paths | No peer-table access; fail closed on incompatible stores; preserve file for diagnosis |
 | Atomic custody and replay / G1, G2, G3 prerequisites | Frozen source/auth parity; valid body-only and unavailable sources; same-event replay; conflicting signed payload; rotation; different event IDs for one message; copied-result bypass; SQL failure between every row; simultaneous process admissions; crash before/after commit and lost response | One source receipt, no partial content or invented lead; recover by same authenticated request |
-| Revocation/time coordination / G3, G6 | Barriers at grant read, signature verification, receipt lookup and commit; both revocation orderings; expiry while blocked; clock rollback; concurrent stores opened in separate processes | Recheck at transaction owner; stale assertions cannot authorize writes or receipt reads |
-| Access and expiry / G1, G6 prerequisites | Body bytes survive reopen; foreign-scope reads; expired/corrupt content; cleanup restart; early purge and replay; retirement races; no tombstone removal before permanent denial; Windows/Linux crash and sidecar access | Expiry blocks reads independently of cleanup; no content resurrection; no erasure claim |
+| Revocation/time coordination / G3, G6 | Barriers at grant read, signature verification, receipt lookup and commit; both revocation orderings; expiry while blocked; clock rollback and erroneous forward sample; host-authorized floor reconciliation with atomic history, restored fresh admission, unchanged deadlines and no source-facing access; concurrent stores opened in separate processes | Recheck at transaction owner; stale assertions cannot authorize writes or receipt reads |
+| Access and expiry / G1, G6 prerequisites | Body bytes survive reopen; foreign-scope reads; expired/corrupt content; cleanup restart; authorized early purge removes content without body-bearing audit, including replay/restart non-resurrection; retirement races; no tombstone removal before permanent denial; Windows/Linux crash and sidecar access | Expiry blocks reads independently of cleanup; no content resurrection; no erasure claim |
 
 For each security guard, exercise accepted and rejected sides, partial/mixed
 records, strict-type/falsy values, boundaries, Unicode identities and replay after
@@ -355,15 +426,19 @@ vectors and existing native-process test patterns. CI owns broad repeated suites
 run the required narrow and high-risk transaction probes locally. Do not claim
 any full foundation gate passes merely because this library's tests pass. G1
 still needs the real Watcher/Connect handoff; G2 still needs lead identity and
-extraction validation; G3 still needs runtime handoff recovery; G6 still needs
-deployment authorization, encryption/backup and retention qualification.
+extraction validation and the C4 identity decision; G3 still needs runtime
+handoff recovery; G6 still needs deployment authorization, encryption/backup
+and retention qualification. Adoption also requires the later handoff to prove
+C3 deletion/unfollow propagation and producer-bounded deadlines, and the
+Watcher pairing/enrollment contract to define C5 namespace lifecycle.
 
 ## Assumptions, rollback and gap audit
 
-The accepted source/auth wire behavior stays authoritative. Proposed new choices
-requiring operator acceptance include the separate owned file, serialized local
-trust publication, event-level replay, content cutoff at the signed deadline and
-namespace-lifecycle tombstones. No production retention duration is silently
+The accepted source/auth wire behavior stays authoritative. Conditionally
+accepted new choices include the separate owned file, serialized local trust
+publication, event-level replay, content cutoff at the signed deadline and
+namespace-lifecycle tombstones, with C1-C3 precisions and C4-C5 prerequisites
+recorded above. No production retention duration is silently
 chosen. Employee authorization, sender custody and trusted enrollment are unknown
 deployment work, not supplied by an OS directory or a Python method signature.
 
@@ -373,10 +448,12 @@ opt-in integration and preserve the store. Do not downgrade or discard persisted
 records to make an older binary open the file. Recovery from corrupted storage
 and backups needs its own qualified procedure before live use.
 
-Implementation summary: only this proposed contract is added.
+Implementation summary: only this accepted contract and its clarifications are added.
 Cold diff audit: all normative additions address the missing source transaction
 owner; no executable behavior or existing contract is changed.
-Gap audit: contract review and exact-revision operator acceptance are NOT DONE.
+Gap audit: operator acceptance of the original revision with C1-C3 conditions
+is recorded; independent review of this clarification update remains pending.
+C4's same-lead identity decision and C5's Watcher enrollment contract remain open.
 Implementation, production admission, runtime integration and all broader
-foundation qualifications remain NOT DONE. Stop after the reviewed contract;
+foundation qualifications remain NOT DONE. Stop after this documentation update;
 do not implement or treat oversight PASS as operator acceptance.
