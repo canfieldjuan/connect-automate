@@ -1,4 +1,4 @@
-"""Local administrative authority store. No source admission or application API.
+"""Local authority and source custody transaction owner. No application API.
 
 The host provisions a private root and supplies deployment scope. Every operation
 opens and validates that scope under one SQLite transaction owner. Public keys,
@@ -23,7 +23,7 @@ from pathlib import Path
 from pydantic import TypeAdapter
 
 from ..entitlement import UuidV4
-from .auth import SourceTrustSnapshot
+from .auth import SourceAuthenticationError, SourceTrustSnapshot
 
 
 class SourceStoreError(ValueError):
@@ -69,8 +69,29 @@ _SCHEMA = (
     "BEGIN SELECT RAISE(ABORT, 'immutable'); END",
     "CREATE TRIGGER history_no_delete BEFORE DELETE ON authority_history "
     "BEGIN SELECT RAISE(ABORT, 'immutable'); END",
+    "CREATE TABLE source_receipts (admission_id TEXT PRIMARY KEY NOT NULL, "
+    "organization_id TEXT NOT NULL, namespace_id TEXT NOT NULL, event_id TEXT NOT NULL, "
+    "receipt TEXT NOT NULL, envelope_sha256 TEXT NOT NULL, "
+    "UNIQUE(organization_id, namespace_id, event_id)) STRICT",
+    "CREATE TABLE source_content (admission_id TEXT PRIMARY KEY NOT NULL REFERENCES "
+    "source_receipts(admission_id) DEFERRABLE INITIALLY DEFERRED, envelope BLOB NOT NULL) STRICT",
+    "CREATE TABLE source_custody (admission_id TEXT PRIMARY KEY NOT NULL REFERENCES "
+    "source_receipts(admission_id) DEFERRABLE INITIALLY DEFERRED, identity TEXT NOT NULL, "
+    "captured_at TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('retained','purged'))) STRICT",
+    "CREATE TRIGGER receipt_no_update BEFORE UPDATE ON source_receipts "
+    "BEGIN SELECT RAISE(ABORT, 'immutable'); END",
+    "CREATE TRIGGER receipt_no_delete BEFORE DELETE ON source_receipts "
+    "BEGIN SELECT RAISE(ABORT, 'immutable'); END",
+    "CREATE TRIGGER content_no_update BEFORE UPDATE ON source_content "
+    "BEGIN SELECT RAISE(ABORT, 'immutable'); END",
+    "CREATE TRIGGER custody_identity_no_update BEFORE UPDATE ON source_custody "
+    "WHEN NEW.admission_id != OLD.admission_id OR NEW.identity != OLD.identity "
+    "OR NEW.captured_at != OLD.captured_at OR OLD.state = 'purged' "
+    "BEGIN SELECT RAISE(ABORT, 'immutable'); END",
+    "CREATE TRIGGER custody_no_delete BEFORE DELETE ON source_custody "
+    "BEGIN SELECT RAISE(ABORT, 'immutable'); END",
 )
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 _UUID = TypeAdapter(UuidV4)
 
 
@@ -79,7 +100,7 @@ def _boundary(method):
     def call(*args, **kwargs):
         try:
             return method(*args, **kwargs)
-        except SourceStoreError:
+        except (SourceStoreError, SourceAuthenticationError):
             raise
         except sqlite3.Error as exc:
             failure = SourceStoreBusy if _busy(exc) else SourceStoreUnavailable
@@ -161,7 +182,7 @@ class _IdentityHistory:
 
 
 class SourceStore:
-    """Opt-in local host authority, separate from the future source-facing boundary.
+    """Opt-in local host authority and transaction owner for source custody.
 
     The root must already exist and be private, including inheritable Windows
     ACLs. No directory repair, implicit enrollment, database upgrade or caller-
