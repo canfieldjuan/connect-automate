@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import sqlite3
 from copy import deepcopy
 from datetime import timedelta
 
@@ -15,6 +16,7 @@ from connect_automate.lead_intake import (
     SourceAdmissionConflict,
     SourceAdmissionResult,
     SourceAuthenticationError,
+    SourceStoreInputError,
     SourceStoreUnavailable,
     SourceStoreUncertain,
     SourceTrustSnapshot,
@@ -31,13 +33,21 @@ def admission(private_root):
     return SourceAdmission(owner, clock=lambda: NOW)
 
 
-def test_body_custody_and_replay_after_reopen(admission, private_root):
-    raw = encode(envelope())
+@pytest.mark.parametrize("indented", [False, True])
+def test_body_custody_and_replay_after_reopen(admission, private_root, indented):
+    raw = json.dumps(envelope(), indent=2).encode() if indented else encode(envelope())
     first = admission.admit_source(raw)
+    with database(store(private_root).path) as db:
+        assert db.execute("SELECT envelope FROM source_content").fetchone()[0] == canonical_source(
+            parse_untrusted_source(raw)
+        )
     replay = SourceAdmission(store(private_root), clock=lambda: NOW).admit_source(raw)
     assert first.applied is True
     assert replay.applied is False
     assert first.receipt == replay.receipt
+    canonical_replay = admission.admit_source(encode(envelope()))
+    assert canonical_replay.receipt == first.receipt
+    assert canonical_replay.applied is False
     assert first.content_state == replay.content_state == "retained"
     with database(store(private_root).path) as db:
         assert db.execute("SELECT count(*) FROM source_receipts").fetchone()[0] == 1
@@ -45,6 +55,42 @@ def test_body_custody_and_replay_after_reopen(admission, private_root):
         assert db.execute("SELECT envelope FROM source_content").fetchone()[0] == canonical_source(
             parse_untrusted_source(raw)
         )
+
+
+@pytest.mark.parametrize("expires", ["2026-10-18T12:45:00Z", "2026-10-18T14:00:00Z"])
+def test_receipt_preserves_source_deadline(private_root, expires):
+    data = trust_data()
+    data["key_grants"][0]["valid_until"] = expires
+    owner = store(private_root)
+    owner.initialize(SourceTrustSnapshot.model_validate(data))
+    boundary = SourceAdmission(owner, clock=lambda: NOW)
+    value = envelope()
+    first = boundary.admit_source(encode(value))
+    assert first.receipt.recovery_deadline == value["payload"]["retention"]["recovery_deadline"]
+    replay = boundary.admit_source(encode(value))
+    assert replay.receipt == first.receipt
+    assert replay.applied is False
+
+
+@pytest.mark.parametrize("invalid", [None, object(), 0, False, "", {}])
+def test_admission_requires_store(invalid):
+    with pytest.raises(SourceStoreInputError):
+        SourceAdmission(invalid, clock=lambda: NOW)
+
+
+def test_event_unique_constraint(admission, private_root):
+    admission.admit_source(encode(envelope()))
+    # A distinct primary key isolates the event-key constraint itself.
+    with (
+        database(store(private_root).path) as db,
+        pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint failed"),
+    ):
+        db.execute(
+            "INSERT INTO source_receipts SELECT ?, organization_id, namespace_id, "
+            "event_id, receipt, envelope_sha256 FROM source_receipts",
+            (OTHER,),
+        )
+    assert counts(store(private_root)) == (1, 1, 1)
 
 
 def counts(owner):
@@ -408,10 +454,12 @@ def tamper(db, trigger, sql, params=()):
         "receipt-generation",
         "missing-custody",
         "identity",
+        "identity-canonical",
         "capture",
         "purged-content",
         "receipt-canonical",
         "receipt-time",
+        "receipt-deadline",
         "receipt-extra",
     ],
 )
@@ -439,17 +487,22 @@ def test_each_stored_integrity_layer_fails_closed(admission, private_root, corru
                 "UPDATE source_receipts SET envelope_sha256=?",
                 (hashlib.sha256(content).hexdigest(),),
             )
-        elif corruption in ("identity", "capture"):
-            if corruption == "identity":
+        elif corruption in ("identity", "identity-canonical", "capture"):
+            if corruption != "capture":
                 identity = envelope()["payload"]["source"]
-                identity["message_id"] = "different-message"
+                if corruption == "identity":
+                    identity["message_id"] = "different-message"
                 tamper(
                     db,
                     "custody_identity_no_update",
                     "UPDATE source_custody SET identity=?",
                     (
                         json.dumps(
-                            identity, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                            identity,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                            indent=2 if corruption == "identity-canonical" else None,
                         ),
                     ),
                 )
@@ -474,6 +527,7 @@ def test_each_stored_integrity_layer_fails_closed(admission, private_root, corru
                 "receipt-policy": ("policy_id", OTHER),
                 "receipt-generation": ("trust_generation", 2),
                 "receipt-time": ("accepted_at", "2026-10-18T13:00:00.000000Z"),
+                "receipt-deadline": ("recovery_deadline", "2026-10-18T13:30:00Z"),
                 "receipt-extra": ("unexpected", "synthetic"),
             }
             if corruption in changes:
@@ -502,6 +556,9 @@ def test_purged_content_is_not_resurrected(admission, private_root):
     with database(store(private_root).path) as db:
         db.execute("DELETE FROM source_content")
         db.execute("UPDATE source_custody SET state='purged'")
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            db.execute("UPDATE source_custody SET state='retained'")
+        assert db.execute("SELECT state FROM source_custody").fetchone()[0] == "purged"
     result = admission.admit_source(raw)
     assert result.receipt == first.receipt
     assert result.content_state == "purged"
