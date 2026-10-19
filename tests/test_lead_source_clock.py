@@ -562,3 +562,72 @@ def test_c1_sql_failure_replays_without_reapplying(private_root, stage):
     assert len(history(owner)) == (2 if stage == "commit-after" else 1)
     assert SourceClockAdmin(store(private_root)).reconcile(**args).sequence == 2
     assert len(history(owner)) == 2 and preserved(owner) == before
+
+
+@pytest.mark.parametrize("publication", ["before-sample", "after-sample"])
+def test_c1_records_current_authority(private_root, publication):
+    owner = store(private_root)
+    owner.initialize(trust())
+    current = next_snapshot()
+    if publication == "before-sample":
+        owner.publish_authority(current, expected_generation=1)
+    raw = encode(envelope())
+    original = SourceAdmission(owner, clock=lambda: NOW + timedelta(seconds=600)).admit_source(raw)
+    if publication == "after-sample":
+        owner.publish_authority(current, expected_generation=1)
+    before = preserved(owner)
+    admin = SourceClockAdmin(store(private_root))
+    operation = str(uuid4())
+    recovered = admin.reconcile(operation_id=operation, expected_sequence=1, corrected_at=NOW)
+    assert [(row[1], row[4]) for row in history(owner)] == [
+        ("sample", 2 if publication == "before-sample" else 1),
+        ("reconcile", 2),
+    ]
+    reopened = store(private_root)
+    assert reopened.read_authority() == current
+    assert SourceClockAdmin(reopened).read() == recovered
+    assert (
+        SourceClockAdmin(reopened).reconcile(
+            operation_id=operation, expected_sequence=1, corrected_at=NOW
+        )
+        == recovered
+    )
+    replay = SourceAdmission(reopened, clock=lambda: NOW).admit_source(raw)
+    assert not replay.applied and replay.receipt == original.receipt
+    assert preserved(owner) == before
+
+
+@pytest.mark.parametrize(
+    "violation,index,bad,code",
+    [
+        ("duplicate", 5, OTHER, sqlite3.SQLITE_CONSTRAINT_UNIQUE),
+        ("kind", 1, "bogus", sqlite3.SQLITE_CONSTRAINT_CHECK),
+        ("generation", 4, 99, sqlite3.SQLITE_CONSTRAINT_FOREIGNKEY),
+        ("required", 3, None, sqlite3.SQLITE_CONSTRAINT_NOTNULL),
+        ("type", 4, "not-an-integer", 3091),  # SQLITE_CONSTRAINT_DATATYPE, not exported by Python.
+        ("sequence", 0, 2, sqlite3.SQLITE_CONSTRAINT_PRIMARYKEY),
+    ],
+    ids=["duplicate", "kind", "generation", "required", "type", "sequence"],
+)
+def test_clock_schema_prevents_invalid_writes(private_root, violation, index, bad, code):
+    owner, _ = seeded(private_root)
+    SourceClockAdmin(owner).reconcile(operation_id=OTHER, expected_sequence=1, corrected_at=NOW)
+    before = history(owner)
+    floor = before[-1][3]
+    good = [3, "reconcile", floor, floor, 1, str(uuid4())]
+    sql = "INSERT INTO authority_clock_history VALUES (?, ?, ?, ?, ?, ?)"
+    with owner._transaction() as db:
+        # Valid sibling uses the same live schema and foreign-key settings.
+        db.execute("SAVEPOINT valid_control")
+        db.execute(sql, good)
+        assert db.execute(
+            "SELECT * FROM authority_clock_history WHERE sequence=3"
+        ).fetchone() == tuple(good)
+        db.execute("ROLLBACK TO valid_control")
+        db.execute("RELEASE valid_control")
+        invalid = good.copy()
+        invalid[index] = bad
+        with pytest.raises(sqlite3.IntegrityError) as rejected:
+            db.execute(sql, invalid)
+        assert rejected.value.sqlite_errorcode == code, violation
+    assert history(owner) == before
