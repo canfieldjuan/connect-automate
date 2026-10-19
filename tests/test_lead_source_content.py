@@ -753,3 +753,46 @@ def test_horizon_identity_columns_are_immutable(private_root, column, value):
             "UPDATE source_purge_horizons SET " + column + "=?, cutoff=?",
             (value, "2026-10-18T12:31:00.000000Z"),
         )
+
+
+@pytest.mark.parametrize("operation", ["purge", "expire", "erase"])
+def test_deletion_candidates_validate_custody_and_rollback(private_root, operation):
+    owner = initialized(private_root)
+    first, _ = admit(owner)
+    second, _ = admit(owner)
+    access = SourceContent(
+        owner, clock=lambda: NOW + timedelta(minutes=30) if operation == "expire" else NOW
+    )
+    if operation == "erase":
+        access.retire_namespace(identity().namespace_id)
+    # Purge walks insertion order; cleanup orders equal-deadline receipts by ID.
+    bad = second if operation == "purge" else max((first, second), key=lambda r: r.admission_id)
+    with database(owner.path) as db:
+        tamper(
+            db,
+            "receipt_no_update",
+            "UPDATE source_receipts SET envelope_sha256=? WHERE admission_id=?",
+            ("0" * 64, bad.admission_id),
+        )
+    before = snapshot(owner)
+    accepted = []
+    validate = access._custody._existing
+
+    def observed(db, row):
+        result = validate(db, row)
+        accepted.append(row[0])
+        return result
+
+    with (
+        patch.object(access._custody, "_existing", observed),
+        pytest.raises(SourceStoreUnavailable) as error,
+    ):
+        if operation == "purge":
+            access.purge_message(identity(), cutoff=NOW)
+        elif operation == "expire":
+            access.cleanup_expired(limit=2)
+        else:
+            access.cleanup_retired(identity().namespace_id, limit=2)
+    assert error.value.__context__ is None
+    assert len(accepted) == 1 and bad.admission_id not in accepted
+    assert snapshot(store(private_root)) == before
