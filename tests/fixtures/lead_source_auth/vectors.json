@@ -1,0 +1,124 @@
+[
+  {
+    "name": "ascii",
+    "test_only_seed_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "public_key_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+    "preimage_hex": "636f6e6e6563742d6c6561642d736f757263652d617574682d76310a30303030303030302d303030302d343030302d383030302d3030303030303030303030310a30303030303030302d303030302d343030302d383030302d3030303030303030303030310a66663233306265396439396565656437386261653735303230356462633262386664386261323363633337366261353136356535643734653438346633303965",
+    "payload_sha256": "ff230be9d99eeed78bae750205dbc2b8fd8ba23cc376ba5165e5d74e484f309e",
+    "signature_base64url": "c4BGKxZOCwVdw_H63cnL5HA7M5C4tQTbKr8OcVVuEh3rdOeK6QuZUHdpy0LzsnLtZGZMG1f2qUEvU9pvm3UfBw",
+    "envelope": {
+      "authorization": {
+        "host_id": "00000000-0000-4000-8000-000000000001",
+        "key_id": "00000000-0000-4000-8000-000000000001",
+        "signature": "c4BGKxZOCwVdw_H63cnL5HA7M5C4tQTbKr8OcVVuEh3rdOeK6QuZUHdpy0LzsnLtZGZMG1f2qUEvU9pvm3UfBw"
+      },
+      "payload": {
+        "event_id": "00000000-0000-4000-8000-000000000001",
+        "occurred_at": "2026-10-18T12:00:00Z",
+        "organization_id": "00000000-0000-4000-8000-000000000001",
+        "retention": {
+          "policy_id": "00000000-0000-4000-8000-000000000001",
+          "policy_version": 1,
+          "recovery_deadline": "2026-10-18T13:00:00Z"
+        },
+        "schema": "lead.source.admission",
+        "schema_version": "1.0",
+        "snapshot": {
+          "attachments": {
+            "count": null,
+            "processing": "not_processed"
+          },
+          "body": {
+            "completeness": "complete",
+            "sha256": "0288455d4e8ce14aef53dc255fafb85e1eabd3352ae5cdf23e15850f9fa87911",
+            "source_chars": 17,
+            "state": "available",
+            "stored_chars": 17,
+            "text": "Synthetic inquiry"
+          },
+          "captured_at": "2026-10-18T12:00:00Z",
+          "normalization_version": "watcher-v1",
+          "representation": "normalized-text",
+          "snapshot_id": "00000000-0000-4000-8000-000000000001"
+        },
+        "source": {
+          "account_id": "test-account",
+          "mailbox_identity_key": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "message_id": "logical-message",
+          "namespace_id": "00000000-0000-4000-8000-000000000001",
+          "provider": "synthetic"
+        },
+        "trigger": {
+          "admission_kind": "exact_sender",
+          "input_kind": "message_body",
+          "part_id": "body",
+          "rule_id": "00000000-0000-4000-8000-000000000001",
+          "rule_version": 1,
+          "selector_id": "configured-sender"
+        },
+        "watcher_event_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    }
+  },
+  {
+    "name": "unicode",
+    "test_only_seed_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "public_key_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+    "preimage_hex": "636f6e6e6563742d6c6561642d736f757263652d617574682d76310a30303030303030302d303030302d343030302d383030302d3030303030303030303030310a30303030303030302d303030302d343030302d383030302d3030303030303030303030310a65373536353865356230356464316335653364373736656266666535363438393666643861643537653065306139383364376261323965346462633964613666",
+    "payload_sha256": "e75658e5b05dd1c5e3d776ebffe564896fd8ad57e0e0a983d7ba29e4dbc9da6f",
+    "signature_base64url": "fhIUdAVvq1yi42omOEfUR-DniWzEvi3eEnfRzEGRc6NksUF1vaSKPh1LDjSkfqNphLpCylQiULxIFKNZXksFCQ",
+    "envelope": {
+      "authorization": {
+        "host_id": "00000000-0000-4000-8000-000000000001",
+        "key_id": "00000000-0000-4000-8000-000000000001",
+        "signature": "fhIUdAVvq1yi42omOEfUR-DniWzEvi3eEnfRzEGRc6NksUF1vaSKPh1LDjSkfqNphLpCylQiULxIFKNZXksFCQ"
+      },
+      "payload": {
+        "event_id": "00000000-0000-4000-8000-000000000001",
+        "occurred_at": "2026-10-18T12:00:00Z",
+        "organization_id": "00000000-0000-4000-8000-000000000001",
+        "retention": {
+          "policy_id": "00000000-0000-4000-8000-000000000001",
+          "policy_version": 1,
+          "recovery_deadline": "2026-10-18T13:00:00Z"
+        },
+        "schema": "lead.source.admission",
+        "schema_version": "1.0",
+        "snapshot": {
+          "attachments": {
+            "count": null,
+            "processing": "not_processed"
+          },
+          "body": {
+            "completeness": "complete",
+            "sha256": "419d53c97d283428a0050aa3795b2f4bc2a0f0b1420f3ef9ef5fed98cd84d47a",
+            "source_chars": 32,
+            "state": "available",
+            "stored_chars": 32,
+            "text": "Synthetic inquiry: café, é, 😀.\n"
+          },
+          "captured_at": "2026-10-18T12:00:00Z",
+          "normalization_version": "watcher-v1",
+          "representation": "normalized-text",
+          "snapshot_id": "00000000-0000-4000-8000-000000000001"
+        },
+        "source": {
+          "account_id": "test-account",
+          "mailbox_identity_key": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "message_id": "logical-message",
+          "namespace_id": "00000000-0000-4000-8000-000000000001",
+          "provider": "synthetic"
+        },
+        "trigger": {
+          "admission_kind": "exact_sender",
+          "input_kind": "message_body",
+          "part_id": "body",
+          "rule_id": "00000000-0000-4000-8000-000000000001",
+          "rule_version": 1,
+          "selector_id": "configured-sender"
+        },
+        "watcher_event_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    }
+  }
+]
