@@ -489,11 +489,13 @@ Review repair contract (`537aa0c`, oversight `6254268336`):
   Preserve old tests/goldens, run affected lanes and applicable lint, and publish
   one grouped repair. Native Windows CI and exact-head review remain merge gates.
 
-The low operational lock-file retention finding is explicitly deferred by
-oversight to issue #9. One small file remains per action; serialization is
-unchanged. Issue #9 requires a safe lifecycle design and native Linux/Windows
-process proof **before any application adopts this revision or bumps its pin**.
-Do not describe retention as fixed or remove lock inodes as an incidental repair.
+At PR #8 approval, the low operational lock-file retention finding was deferred
+to issue #9: one small file remained per action. The replacement lifecycle is
+specified in [ACTION-LOCK-LIFECYCLE.md](ACTION-LOCK-LIFECYCLE.md), which preserves
+per-action exclusion while gating creation and cleanup at the native lock owner.
+Issue #9 still requires implementation and native Linux/Windows process proof
+**before any application adopts this revision or bumps its pin**. Do not describe
+retention as fixed until those gates pass; never unlink a live lock inode.
 
 Review repair qualification: the full Linux suite passed with the required CI
 warning policy (922 passed, 16 skipped), and the affected kit slice passed under

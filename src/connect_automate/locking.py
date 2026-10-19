@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from filelock import FileLock, SoftFileLock
 from filelock import Timeout as FileLockTimeout
+
+_EPHEMERAL_LOCK_NAME = re.compile(r"[0-9a-f]{64}\.lock")
 
 
 class OperationLockBusy(RuntimeError):
@@ -110,8 +113,15 @@ def operation_lock(
     busy_message: str,
     *,
     timeout_seconds: float = 0,
+    ephemeral: bool = False,
 ) -> Iterator[None]:
     """Hold one native process lock on supported desktop platforms."""
+    if ephemeral:
+        if timeout_seconds != 0 or not _EPHEMERAL_LOCK_NAME.fullmatch(lock_path.name):
+            raise ValueError("Ephemeral locks require a hashed action name and timeout zero")
+        with _ephemeral_operation_lock(lock_path, busy_message):
+            yield
+        return
     if FileLock is SoftFileLock:
         raise RuntimeError("Production operation locking is not available on this platform")
 
@@ -127,3 +137,38 @@ def operation_lock(
         yield
     finally:
         lock.release()
+
+
+def _reap_idle_operation_locks(directory: Path) -> None:
+    """Called only under the namespace gate, before any new action file is opened."""
+    for candidate in directory.iterdir():
+        if not _EPHEMERAL_LOCK_NAME.fullmatch(candidate.name):
+            continue
+        try:
+            with operation_lock(candidate, "action delivery busy"):
+                pass
+        except OperationLockBusy:
+            continue
+        # All open/acquire/release/unlink transitions share the gate. No waiter
+        # can hold an unacquired descriptor to this inode when it is removed.
+        candidate.unlink(missing_ok=True)
+
+
+@contextmanager
+def _ephemeral_operation_lock(lock_path: Path, busy_message: str) -> Iterator[None]:
+    prepare_private_lock_path(lock_path)
+    gate = lock_path.parent / ".namespace.lock"
+    # A gate waiter must not return busy and strand a fresh non-idempotent action.
+    # This wait covers metadata only; action-lock acquisition remains nonblocking.
+    with ExitStack() as held:
+        with operation_lock(gate, "action lock lifecycle busy", timeout_seconds=-1):
+            _reap_idle_operation_locks(lock_path.parent)
+            held.enter_context(operation_lock(lock_path, busy_message))
+        try:
+            yield
+        finally:
+            with operation_lock(gate, "action lock lifecycle busy", timeout_seconds=-1):
+                held.close()
+                lock_path.unlink(missing_ok=True)
+        # ExitStack also releases the descriptor if gate acquisition or cleanup
+        # fails; the resulting idle pathname is reclaimed by the next entry.
