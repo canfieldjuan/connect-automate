@@ -1,5 +1,11 @@
 """Lead Intake contracts. Parsed source data is not authenticated admission."""
 
+from .admission import (
+    SourceAdmission,
+    SourceAdmissionConflict,
+    SourceAdmissionResult,
+    SourceReceipt,
+)
 from .auth import (
     AuthenticatedSource,
     SourceAuthenticationError,
@@ -28,6 +34,10 @@ from .source_store import (
 )
 
 __all__ = [
+    "SourceAdmission",
+    "SourceAdmissionConflict",
+    "SourceAdmissionResult",
+    "SourceReceipt",
     "SourceStore",
     "SourceStoreBusy",
     "SourceStoreConflict",

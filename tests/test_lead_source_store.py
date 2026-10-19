@@ -8,6 +8,12 @@ from test_lead_source_auth import trust
 from connect_automate.lead_intake.source_store import SourceStore
 
 
+def trigger_statement(name):
+    from connect_automate.lead_intake.source_store import _SCHEMA
+
+    return next(sql for sql in _SCHEMA if sql.startswith(f"CREATE TRIGGER {name} "))
+
+
 @contextmanager
 def database(path):
     import sqlite3
@@ -257,14 +263,14 @@ def test_history_integrity_guards_independent(private_root, corruption):
 def test_deployment_scope_with_original_schema(private_root, field):
     from test_lead_source_auth import OTHER
 
-    from connect_automate.lead_intake.source_store import _SCHEMA, SourceStoreUnavailable
+    from connect_automate.lead_intake.source_store import SourceStoreUnavailable
 
     owner = store(private_root)
     owner.initialize(trust())
     with database(owner.path) as db:
         db.execute("DROP TRIGGER deployment_no_update")
         db.execute(f"UPDATE deployment SET {field}=?", (OTHER,))
-        db.execute(_SCHEMA[2])
+        db.execute(trigger_statement("deployment_no_update"))
         assert owner._schema(db)
     with pytest.raises(SourceStoreUnavailable):
         store(private_root).read_authority()
@@ -754,9 +760,7 @@ def test_missing_authority_and_immutable_history(private_root):
                 db.execute(sql)
         db.execute("DROP TRIGGER history_no_delete")
         db.execute("DELETE FROM authority_history")
-        from connect_automate.lead_intake.source_store import _SCHEMA
-
-        db.execute(_SCHEMA[-1])
+        db.execute(trigger_statement("history_no_delete"))
     with pytest.raises(SourceStoreUnavailable):
         owner.read_authority()
 
