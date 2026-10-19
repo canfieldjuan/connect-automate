@@ -44,6 +44,23 @@ Changes beyond these accepted precisions require an operator-approved amendment.
 Implementation must use a separate branch, fail-first proof and native Windows
 and Linux crash, locking and permission gates. This update stops before code.
 
+#### Operator-approved sequencing amendment
+
+In the coding conversation, the operator asked, **“What’s the next slice?”**
+The proposed sequence explicitly separated revocation and expiry race tests
+into the first PR, followed by persistent clock protection and C1 recovery
+together in a subsequent PR. The operator replied, **“Let’s start”**. Before
+implementation, the coding session restated that it would start with the race
+tests and keep clock-floor implementation separate.
+
+This records that direct operator authorization for the sequencing amendment;
+it is not an approval inferred from an oversight PASS. The revocation/time
+coordination row below remains the complete required scope. The qualification
+increment covers only its race and expiry proof; clock rollback, erroneous
+forward samples and C1 recovery remain required together before that row or
+its foundation gates can be claimed complete. No production adoption is
+authorized by this amendment.
+
 ## Source baseline and reusable proof inventory
 
 Repository: `canfieldjuan/connect-automate`.
@@ -462,7 +479,8 @@ fail-first evidence, adjacent tests, lint, cold diff and exact-head review:
 
 ### Revocation and expiry race qualification increment
 
-The next bounded increment qualifies the existing transaction ordering from
+Under the [operator-approved sequencing amendment](#operator-approved-sequencing-amendment),
+this bounded increment qualifies the existing transaction ordering from
 "Admission algorithm and linearization" above. It does not implement the rest
 of the revocation/time row or claim a foundation gate complete.
 
