@@ -366,9 +366,11 @@ commit, and resource release on every exit. Mutate URI mode, snapshot BEGIN,
 schema validation and the read SQL guard independently; each must fail a targeted
 assertion. Run unchanged parser/auth and adjacent workflow parity, lint/format,
 and exact-head Linux/Windows CI plus independent review. A read transaction may
-participate in SQLite WAL shared-memory coordination; no claim of byte-for-byte
-immutability of live WAL sidecars is made. It must not write application rows,
-create a missing database, initialize schema or checkpoint/migrate the store.
+participate in SQLite WAL shared-memory coordination, including creating absent
+`-wal` and `-shm` sidecars for an existing database and leaving them after the read
+connection closes. Read-only access does not promise an unchanged filesystem
+footprint or byte-for-byte immutability of sidecars. It must not write application
+rows, create a missing database, initialize schema or checkpoint/migrate the store.
 
 Non-scope: do not route existing getters through this method, change writer
 semantics or schema, add receipt lookup/submission, alter source custody, or add
