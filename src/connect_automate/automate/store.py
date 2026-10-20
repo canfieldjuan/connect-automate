@@ -28,6 +28,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import re
 import sqlite3
 import time
 import uuid
@@ -38,7 +39,16 @@ from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 
-from .events import EventBindingError, EventConflict
+from .events import (
+    EventBindingError,
+    EventConflict,
+    EventInputError,
+    canonical_event,
+    parse_event,
+)
+from .events import (
+    occurrence as event_occurrence,
+)
 
 CREATE_OPERATION_NAME = "create"
 
@@ -458,6 +468,83 @@ def _event_operation_key(identity: tuple[str, str, str, str, str]) -> str:
     """Bind both receipt replay and creation to the same intake operation."""
     canonical = json.dumps(identity, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     return "pack.event:" + hashlib.sha256(canonical).hexdigest()
+
+
+def _stored_event_payload(prior: sqlite3.Row, source_kind: str, occurrence: str) -> dict:
+    """Validate stored bytes at their owner, before either replay consumer sees them."""
+    try:
+        raw = prior["payload"].encode("utf-8")
+        parsed = parse_event(raw)
+        if (
+            canonical_event(parsed) == raw
+            and hashlib.sha256(raw).hexdigest() == prior["fingerprint"]
+            and parsed.source_kind == source_kind
+            and event_occurrence(parsed) == occurrence
+        ):
+            return parsed.model_dump(mode="json")
+    except (ValueError, TypeError, AttributeError, RecursionError):
+        pass
+    raise WorkflowStoreError("invalid event receipt payload")
+
+
+def _read_event_receipt(
+    db: sqlite3.Connection,
+    *,
+    identity: tuple[str, str, str, str, str],
+    pack_version: int,
+    binding: str,
+    fingerprint: str,
+) -> EventAdmission | None:
+    """Single owner for binding, receipt integrity and historical replay checks."""
+    subject, pack_id, source_id, source_kind, occurrence = identity
+    owner = db.execute(
+        (
+            "SELECT source_id, source_kind FROM workflow_source_bindings WHERE "
+            "subject = ? AND pack_id = ? AND binding = ?"
+        ),
+        (subject, pack_id, binding),
+    ).fetchone()
+    if owner is None or (owner["source_id"], owner["source_kind"]) != (
+        source_id,
+        source_kind,
+    ):
+        raise EventBindingError()
+    prior = db.execute(
+        (
+            "SELECT * FROM workflow_event_receipts WHERE subject = ? AND pack_id = ? "
+            "AND source_id = ? AND source_kind = ? AND occurrence = ?"
+        ),
+        identity,
+    ).fetchone()
+    if prior is None:
+        return None
+    if prior["pack_version"] != pack_version:
+        raise _EventVersionConflict("event belongs to another pack revision")
+    if prior["fingerprint"] != fingerprint or prior["binding"] != binding:
+        raise EventConflict()
+    payload = _stored_event_payload(prior, source_kind, occurrence)
+    if (prior["record_id"] is None) != (prior["event_id"] is None):
+        raise WorkflowStoreError("invalid event receipt ownership")
+    if prior["record_id"] is None:
+        return EventAdmission(False, False, None, None)
+    record = db.execute(
+        "SELECT * FROM workflow_records WHERE record_id = ?", (prior["record_id"],)
+    ).fetchone()
+    event = db.execute(
+        "SELECT * FROM workflow_events WHERE event_id = ?", (prior["event_id"],)
+    ).fetchone()
+    if (
+        record is None
+        or event is None
+        or event["record_id"] != prior["record_id"]
+        or event["operation_key"] != _event_operation_key(identity)
+        or event["operation_name"] != source_kind
+        or event["request_fingerprint"] != request_fingerprint(payload)
+        or record["pack_id"] != pack_id
+        or record["pack_version"] != pack_version
+    ):
+        raise WorkflowStoreError("invalid event receipt ownership")
+    return EventAdmission(True, False, _replay_view(record, event), prior["event_id"])
 
 
 def _normalize_effects(effects: Sequence[Mapping[str, object]]) -> list[dict[str, object]]:
@@ -890,6 +977,42 @@ class WorkflowStore:
                     ),
                 )
 
+    def lookup_event(
+        self,
+        *,
+        subject: str,
+        pack_id: str,
+        pack_version: int,
+        binding: str,
+        source_id: str,
+        source_kind: str,
+        occurrence: str,
+        expected_payload_digest: str,
+    ) -> EventAdmission | None:
+        """Read the original workflow outcome; None means a valid binding has no receipt.
+
+        Internal storage primitive, not a licensed/organization-authorized host API.
+        The digest identifies canonical workflow event bytes, not source body bytes.
+        Never use admission or action dispatch to implement historical lookup.
+        """
+        identity = (subject, pack_id, source_id, source_kind, occurrence)
+        if (
+            any(not isinstance(value, str) or not value for value in (*identity, binding))
+            or type(pack_version) is not int
+            or pack_version < 1
+            or not isinstance(expected_payload_digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", expected_payload_digest) is None
+        ):
+            raise EventInputError()
+        with self.read_connection() as db:
+            return _read_event_receipt(
+                db,
+                identity=identity,
+                pack_version=pack_version,
+                binding=binding,
+                fingerprint=expected_payload_digest,
+            )
+
     def admit_event(
         self,
         *,
@@ -916,50 +1039,15 @@ class WorkflowStore:
         operation_key = _event_operation_key(identity)
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
-            owner = db.execute(
-                (
-                    "SELECT source_id, source_kind FROM workflow_source_bindings WHERE "
-                    "subject = ? AND pack_id = ? AND binding = ?"
-                ),
-                (subject, pack_id, binding),
-            ).fetchone()
-            if owner is None or (owner["source_id"], owner["source_kind"]) != (
-                source_id,
-                source_kind,
-            ):
-                raise EventBindingError()
-            prior = db.execute(
-                (
-                    "SELECT * FROM workflow_event_receipts WHERE subject = ? AND pack_id = ? "
-                    "AND source_id = ? AND source_kind = ? AND occurrence = ?"
-                ),
-                identity,
-            ).fetchone()
+            prior = _read_event_receipt(
+                db,
+                identity=identity,
+                pack_version=pack_version,
+                binding=binding,
+                fingerprint=fingerprint,
+            )
             if prior is not None:
-                if prior["pack_version"] != pack_version:
-                    raise _EventVersionConflict("event belongs to another pack revision")
-                if prior["fingerprint"] != fingerprint or prior["binding"] != binding:
-                    raise EventConflict()
-                if prior["record_id"] is None:
-                    return EventAdmission(False, False, None, None)
-                record = db.execute(
-                    "SELECT * FROM workflow_records WHERE record_id = ?", (prior["record_id"],)
-                ).fetchone()
-                event = db.execute(
-                    "SELECT * FROM workflow_events WHERE event_id = ?", (prior["event_id"],)
-                ).fetchone()
-                if (
-                    record is None
-                    or event is None
-                    or event["record_id"] != prior["record_id"]
-                    or event["operation_key"] != operation_key
-                    or event["operation_name"] != source_kind
-                    or event["request_fingerprint"] != request_fingerprint(json.loads(payload))
-                    or record["pack_id"] != pack_id
-                    or record["pack_version"] != pack_version
-                ):
-                    raise WorkflowStoreError("invalid event receipt ownership")
-                return EventAdmission(True, False, _replay_view(record, event), prior["event_id"])
+                return prior
             selection = select()
             outcome = None
             if selection is not None:
