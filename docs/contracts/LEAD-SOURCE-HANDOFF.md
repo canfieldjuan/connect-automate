@@ -237,14 +237,23 @@ does not re-enable submission. It must distinguish a prior pack revision from
 not-found without silently rerunning that event. License/scope denial cannot be
 converted to not-found.
 
+### Recovery limits
+
+This table owns the recovery rules for both the base contract and subsequent
+implementation work orders. An uncertain submission remains unknown until a
+permitted retry or historical lookup establishes its outcome. Recovery is not
+unconditional: a source-only commit cannot complete workflow admission through
+this boundary unless the same signed request still passes admission policy.
+
 | Failure window | Required recovery / observation |
 | --- | --- |
 | Before source commit | Same currently authenticated request can retry; no workflow exists from that attempt |
-| Source commit, lost source response | Repeat signed admission; its stable receipt recovers the operation before runtime is called |
+| Source commit, lost source response | Repeat signed admission only while admission remains authorized; its stable receipt then recovers source custody before runtime is called |
 | Source committed, workflow not yet called | Retry the complete host operation while admission remains authorized; source replay must not suppress the missing workflow call |
-| Workflow SQL failure before commit | Preserve source custody; retry the same identities; no partial workflow receipt/record/effects |
+| Workflow SQL failure before commit | Preserve source custody; retry the same identities only while admission remains authorized; no partial workflow receipt/record/effects |
 | Workflow commit, process dies before response | Read-only outcome lookup recovers the committed outcome; normal authenticated replay also returns it if still permitted |
 | Expiry/revocation/purge prevents resubmission | Lookup can report an existing workflow without source re-admission; absent outcome remains not-found/undelivered, never recreate from a cached receipt |
+| Source commits, process dies before workflow admission, then source expires or authority is revoked | Authenticated retry is refused. With no workflow receipt, lookup returns not-found. The original uncertain attempt has no accepted workflow outcome and must not be reported as accepted or persisted no-match; do not complete it from a cached source receipt. No guaranteed recovery is promised. |
 | Lookup says absent while another writer is in flight | Absence is an observation at the read, not proof no concurrent commit can occur; retry admission uses the same identity if authorized |
 | Different payload, route, binding or pack version | Refuse/conflict; no fallback to a new ID, another pack or an available provider |
 
@@ -735,14 +744,16 @@ race/crash harnesses; a setup error or timeout is not a successful mutation kill
 | Receipt projection / G3 | Source and workflow digests are different and each enforced; valid accepted/no-match/absent results; corrupt embedded reference, canonical payload, ownership or foreign deployment rejected; generic lookup/replay behavior unchanged; no writes, clock changes or source-store access. |
 | Submission / G1, G2 | Body-only and unavailable source accepted; valid signed source reauthenticates on replay/key rotation; conflicting signed payload refuses; unknown binding, foreign host/org/namespace and license denial stop before mutation; copied result/model/dict and raw lead event cannot bypass admission; distinct events remain distinct workflow occurrences. |
 | Reviewable metadata / G2 | Exact bounded result schemas, source/workflow flags independently correct, original workflow outcome after later advancement, no invented receipt/IDs on absence, durable no-match not mislabeled as extraction or approval. |
-| Joined recovery / G3 | Separate-process concurrent submissions and deterministic barriers before/after each store commit, workflow row writes and lost response; no partial workflow or duplicate occurrence; same authenticated retry and read-only lookup recover the permitted outcomes. Source commit alone is never reported as workflow acceptance. |
+| Joined recovery / G3 | Separate-process concurrent submissions and deterministic barriers before/after each store commit, workflow row writes and lost response; no partial workflow or duplicate occurrence; retry and lookup obey [Recovery limits](#recovery-limits). Source commit alone is never reported as workflow acceptance. |
+| Source-only crash with lost authorization / G3 | Commit source custody, terminate before any workflow admission, then independently test deadline expiry and key revocation. Same signed retry must be refused; authorized lookup must return not-found with no workflow receipt/record/effects. Assert no accepted or persisted no-match result and no fallback using a copied source receipt. The original uncertain submission remains non-accepted/unknown; not-found is an observation, not a guarantee against another concurrent commit. |
 | Privacy/platform / G6 | Synthetic body sentinel absent from workflow rows, errors and logs; lookup survives source lifecycle changes without reading content; licensed scope enforced before absence; native Windows/Linux process and filesystem proof. |
 
 The source writer must be released before workflow admission. Revocation after
 source authorization linearizes may precede workflow commit; the accepted contract
 permits only the metadata outcome, not cached content authority. Test that ordering
-explicitly. An uncertain commit is unknown and recoverable, never a fabricated
-failure, no-match or success. Full foundation gates and live adoption remain open.
+explicitly. Apply [Recovery limits](#recovery-limits) to uncertain submissions;
+never fabricate failure, persisted no-match or acceptance from an uncertain commit.
+Full foundation gates and live adoption remain open.
 
 ### Non-scope, risks and recovery
 
@@ -767,6 +778,8 @@ Implementation summary: documentation only; no facade or store behavior changed.
 Cold diff audit: this work order names the current source owners, the demonstrated
 lookup gap and the smallest dependent increments; the status and stale final-scope
 summary are updated to point here. Gap audit: work-order review and implementation
-are **NOT DONE**. Required merge gates remain explicit oversight PASS, independent
-exact-head approval, completed/reconciled Codex review, green required CI and clean
-local/remote equality, followed by a guarded merge commit and reviewed-tree proof.
+are **NOT DONE**. Required merge gates remain explicit oversight PASS and an
+independent exact-head review reporting no open blockers (a `COMMENT` verdict may
+satisfy this; GitHub `APPROVED` state is not required), completed/reconciled Codex
+review, green required CI and clean local/remote equality, followed by a guarded
+merge commit and reviewed-tree proof.
