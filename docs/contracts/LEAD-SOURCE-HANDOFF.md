@@ -1,6 +1,6 @@
 # Lead source receipt to Automate: host handoff contract
 
-Status: **ACCEPTED CONTRACT; READ-ONLY CONNECTION INCREMENT AUTHORIZED.** No
+Status: **ACCEPTED CONTRACT; READ-ONLY RECEIPT LOOKUP INCREMENT AUTHORIZED.** No
 production receiver, Watcher adoption or complete foundation gate is approved.
 
 ## Operator acceptance
@@ -379,18 +379,94 @@ unchanged writer and schema tests prove coexistence. Rollback removes this unuse
 primitive and its tests without data migration. This is an incomplete foundation
 until the later receipt lookup and joined submission/recovery proof land.
 
+### Read-only receipt lookup implementation work order
+
+Operator work order: "Let’s start the read-only receipt lookup slice, with the
+work-order contract commit first." This section is committed before executable
+changes, on the merged read-connection foundation `6782cb7`. The accepted handoff
+contract remains authoritative; this is another bounded library increment.
+
+Root cause and owner: `WorkflowStore.admit_event` currently owns binding checks,
+receipt selection, conflict detection and original-outcome reconstruction inline.
+Its writer transaction can create records; runtime submission can dispatch even
+on replay. The new `read_connection` owns safe snapshots but does not retrieve an
+outcome. Copying the admission checks into a second reader would split ownership.
+The existing receipt checks originate in `3056cc1a`, with operation ownership
+strengthened in `ae5ba2c6` and `913ac870`; preserve those regressions unchanged.
+
+Required surface: factor one connection-scoped receipt reader inside
+`automate/store.py` and call it from both admission replay and a new internal
+`WorkflowStore.lookup_event` method. Lookup takes the existing trusted store
+identity (subject, pack ID/version, binding, source ID/kind, occurrence) plus an
+expected payload digest. This digest is SHA-256 of the canonical **workflow event**
+bytes, not the source envelope digest. The later host facade must construct and
+map its source reference explicitly. No lead-source vocabulary is introduced here.
+Return the existing `EventAdmission` with `applied=False` for persisted matched or
+no-match outcomes, or `None` for an absent receipt under a valid binding. Do not
+collapse those distinct results by truthiness. This is an internal store result,
+not either versioned host response schema defined above.
+
+The shared owner verifies the registered source/binding before observing absence,
+then pack revision and expected digest/binding conflicts. It verifies the stored
+payload against the existing event parser/canonicalizer, persisted digest and
+source-kind/occurrence identity before returning even a no-match receipt. Mixed
+record/event presence is corrupt. Matched receipts retain every existing
+record/event/operation ownership check and reconstruct the original event view,
+not the latest record projection. Invalid stored payloads and ownership produce
+bounded store errors without raw JSON or exception chains. New lookup input
+validation rejects empty/non-string identity fields, non-positive/non-integer pack
+versions and non-lowercase SHA-256 digests before SQL; these are internal API
+shape checks, not authenticated organization access.
+
+Lookup uses only `read_connection`; it never enters the writer, invokes selection,
+admits a source, changes clock state or dispatches an action. Receipt, binding,
+payload and original-outcome checks share one snapshot. The read-connection
+sidecar disclosure above applies unchanged. Missing/unreadable/invalid stores
+are errors, never not-found. Admission uses the same reader inside its existing
+writer transaction; fresh admission semantics and persisted bytes stay unchanged.
+
+Explicit non-scope: no PackRuntime or host API, licensing or deployment enrollment,
+new receipt event/trigger, source-store read, raw-source access, schema migration,
+pack-kit change, retention policy, action retry, UI or application adoption.
+The full host lookup's authorization, retirement and source-lifecycle tests remain
+in the joined submission/recovery slice. Scope strings here come from trusted
+internal callers; this primitive must not be exposed as an authenticated API.
+
+Verification plan: run unchanged event/replay/read-connection baseline first.
+Declare missing-method fail-first probes, then cover matched/no-match/not-found,
+reopen and original view after record advancement, valid mail/Unicode/schedule,
+wrong binding/scope identity/version/digest, invalid input types and empty values,
+and separate corrupted-row fixtures for each independent owner check. Restore
+schema triggers in corruption fixtures so schema validation cannot mask the row
+check. Exercise both admission replay and lookup against the shared owner.
+Prove no workflow row/action writes, no writer/selection/dispatch calls, and real
+separate-process commits during lookup with barriers rather than sleeps. Kill
+mutations that bypass the shared owner, omit critical checks, return current
+state or choose the writer. Add the new test file to native Windows from the first
+push; run adjacent local parity and lint, then exact-head Linux/Windows CI and
+independent/oversight review. Wait for any ready-triggered Codex review to finish
+before merging. Keep reproducible evidence outside worktrees.
+
+Regression risk: factoring the existing admission replay branch can alter its
+conflicts or historical view; unchanged existing tests and dual-entry corruption
+probes guard that boundary. Rollback removes lookup and restores the inline reader
+without deleting data or migrating a store. Stop at reviewed merge of this
+increment. Host submission/lookup integration, joined crash recovery and adoption
+remain NOT DONE; receipt metadata retention is still an operator decision before
+adoption.
+
 Rollback before adoption: disable the new host binding and preserve both stores
 and the prior signed pack/configuration. Do not delete receipts to retry, downgrade
 persisted data or reinterpret the new event as mail. Existing workflows keep their
 contracts; an older binary must fail closed on the new trigger. Recovery from
 backup divergence needs separate qualification before live use.
 
-The earlier contract PR was documentation-only. This implementation increment
-adds only the read primitive and its focused platform proof; cold diff must verify
-the declared surface. Existing source/auth vectors, workflow tests, schemas,
+The earlier contract PR was documentation-only. The read-connection increment
+is merged. The receipt-lookup increment adds the shared internal receipt reader
+and its focused platform proof; cold diff must verify the declared surface. Existing source/auth vectors, workflow tests, schemas,
 dependencies and application integrations remain unchanged.
 
 Gap audit: contract acceptance is **DONE**, as recorded above. Implementation and
-application adoption remain **NOT DONE**. Only the read-only connection increment
+application adoption remain **NOT DONE**. Only the read-only receipt lookup increment
 is started here under the operator's implementation work order. Stop at its
 reviewed merge; no live handoff or production adoption is claimed.
