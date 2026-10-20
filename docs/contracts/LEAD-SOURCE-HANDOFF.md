@@ -528,6 +528,24 @@ proof archetype before adoption; retain stores and signed packs, do not delete
 receipts or downgrade/reinterpret new-kind bindings. Old binaries reject the new
 trigger. Stop at this increment's reviewed merge.
 
+Review repair contract: the receipt import introduced in `1025b653` reaches the
+operational Lead Intake modules through the eager package initializer, contrary
+to the dependency-light requirement. Keep the common projection in place and make
+`lead_intake/__init__.py` the single owner of lazy public export resolution. Preserve
+all exported names and object identities; importing pure source/receipt contracts
+must not load admission, authentication or source-store modules. Regression probes
+run in fresh interpreters, including both import orders and a simulated future
+handoff import. No facade is implemented or exported by this repair.
+
+The same commit's kit proof lacked a regression for persistence followed by
+`EventInputError`: its existing fake returned success and was stopped by an earlier
+guard. Add a real-store write-then-refuse probe and demonstrate that removing the
+row-emptiness assertion makes it fail. Preserve production kit behavior. Run the
+new negative probes before the fix, then affected source, receipt and kit tests,
+lint and native Windows CI. No receipt fields, schema, signing bytes, authentication
+rules, public export names or accepted application behavior change. Rollback is
+limited to the lazy-export change and these tests; retained data is unchanged.
+
 Implementation summary: `ReceiptReference` now owns the unchanged common fields
 and interval validator, inherited by `SourceReceipt`. The event/trigger models,
 canonical scope validator, transactional registration check and receipt-only kit

@@ -169,3 +169,22 @@ def test_receipt_golden_bytes():
         event_catalogue=catalogue(),
     )
     assert signed == (root / "proof.signed.json").read_bytes()
+
+
+def test_kit_detects_refused_submission_that_still_persisted(monkeypatch):
+    from connect_automate.automate import PackRuntime
+    from connect_automate.automate.events import EventInputError
+
+    def refuse_after_write(self, *, binding, event, now):
+        self._store.create_record(
+            "probe",
+            "waiting",
+            now=now,
+            allowed_stages=frozenset({"waiting", "source-received"}),
+        )
+        raise EventInputError()
+
+    monkeypatch.setattr(PackRuntime, "submit_event", refuse_after_write)
+    with pytest.raises(k.KitError) as error:
+        k.check(k.build(receipt_spec()), catalog(), catalogue())
+    assert error.value.code == 5

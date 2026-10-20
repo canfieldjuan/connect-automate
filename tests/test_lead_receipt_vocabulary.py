@@ -504,3 +504,103 @@ def test_runtime_refusal_does_not_rely_on_engine_guard(tmp_path, monkeypatch):
         runtime.submit_event(
             binding="inbox", event=encoded(event()), now=datetime(2026, 1, 2, tzinfo=UTC)
         )
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        "connect_automate.automate.events",
+        "connect_automate.lead_intake.receipts",
+        "connect_automate.lead_intake.source",
+    ],
+)
+def test_contract_import_does_not_load_operational_lead_modules(entry):
+    import subprocess
+    import sys
+
+    script = """
+import importlib, sys
+importlib.import_module(sys.argv[1])
+for name in ('admission', 'auth', 'source_store'):
+    assert 'connect_automate.lead_intake.' + name not in sys.modules, name
+"""
+    result = subprocess.run([sys.executable, "-c", script, entry], capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("first", ["automate", "lead_intake"])
+def test_public_exports_survive_reverse_import_dependency(first):
+    import subprocess
+    import sys
+
+    # Simulate a future operational module consuming the workflow contract.
+    # A fresh interpreter is essential: a warm module cache hides this cycle.
+    script = """
+import importlib, importlib.machinery, sys
+original = importlib.machinery.SourceFileLoader.exec_module
+observed = []
+def load(self, module):
+    if module.__name__ == 'connect_automate.lead_intake.admission':
+        from connect_automate.automate.events import LeadSourceEvent
+        observed.append(LeadSourceEvent)
+    return original(self, module)
+importlib.machinery.SourceFileLoader.exec_module = load
+importlib.import_module('connect_automate.' + sys.argv[1])
+from connect_automate import lead_intake
+from connect_automate.automate.events import LeadSourceEvent
+from connect_automate.lead_intake.admission import SourceAdmission
+assert lead_intake.SourceAdmission is SourceAdmission
+assert observed == [LeadSourceEvent]
+"""
+    result = subprocess.run([sys.executable, "-c", script, first], capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_public_lead_export_identity_and_unknown_attributes():
+    import importlib
+
+    from connect_automate import lead_intake
+
+    owners = {
+        "admission": (
+            "SourceAdmission",
+            "SourceAdmissionConflict",
+            "SourceAdmissionResult",
+            "SourceReceipt",
+        ),
+        "auth": (
+            "AuthenticatedSource",
+            "SourceAuthenticationError",
+            "SourceKeyGrant",
+            "SourceRetentionPolicy",
+            "SourceTrustSnapshot",
+            "authenticate_source",
+            "source_signing_bytes",
+        ),
+        "source": (
+            "SourceInputError",
+            "UntrustedSource",
+            "canonical_payload",
+            "canonical_source",
+            "parse_untrusted_source",
+            "payload_digest",
+        ),
+        "source_store": (
+            "SourceStore",
+            "SourceStoreBusy",
+            "SourceStoreConflict",
+            "SourceStoreError",
+            "SourceStoreInputError",
+            "SourceStoreUnavailable",
+            "SourceStoreUncertain",
+        ),
+    }
+    assert set(lead_intake.__all__) == {name for names in owners.values() for name in names}
+    assert set(lead_intake.__all__) <= set(dir(lead_intake))
+    for module, names in owners.items():
+        owner = importlib.import_module("connect_automate.lead_intake." + module)
+        for name in names:
+            assert getattr(lead_intake, name) is getattr(owner, name)
+            assert getattr(lead_intake, name) is getattr(lead_intake, name)
+    with pytest.raises(AttributeError):
+        _ = lead_intake.unrecognized_export
