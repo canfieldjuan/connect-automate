@@ -98,7 +98,7 @@ def observe(store, entry, event=None, **updates):
     return replay(store, event, **updates)
 
 
-def corrupt(store, table, assignments, values=()):
+def corrupt(store, table, assignments="", values=(), *, delete=False):
     # Alter only synthetic rows; put the exact triggers back before reading so
     # schema validation cannot substitute for the row-integrity check under test.
     with store.connection() as db:
@@ -111,7 +111,10 @@ def corrupt(store, table, assignments, values=()):
             db.execute(f'DROP TRIGGER "{name}"')
         db.execute("PRAGMA ignore_check_constraints=ON")
         where = " WHERE sequence_no > 0" if table == "workflow_events" else ""
-        db.execute(f"UPDATE {table} SET {assignments}{where}", values)
+        if delete:
+            db.execute(f"DELETE FROM {table}{where}")
+        else:
+            db.execute(f"UPDATE {table} SET {assignments}{where}", values)
         for _, sql in triggers:
             db.execute(sql)
 
@@ -214,6 +217,45 @@ def test_each_ownership_guard_rejects_its_own_corruption(tmp_path, entry, table,
     corrupt(store, table, assignment, (value,))
     with pytest.raises(WorkflowStoreError, match="^invalid event receipt ownership$"):
         observe(store, entry)
+
+
+@pytest.mark.parametrize("entry", ["lookup", "replay"])
+@pytest.mark.parametrize("table", ["workflow_records", "workflow_events"])
+def test_deleted_owner_row_is_bounded_ownership_error(tmp_path, entry, table):
+    runtime, store, _ = event_runtime(tmp_path)
+    intake = runtime.submit_event(binding="inbox", event=encoded(mail_event()), now=NOW)
+    before = rows(store)
+    corrupt(store, table, delete=True)
+    damaged = rows(store)
+    assert damaged[table] != before[table]
+    for name in before.keys() - {table}:
+        assert damaged[name] == before[name]
+    # Preserve both receipt pointers. In particular, a missing record must not
+    # also break the event's record_id comparison and mask the missing-row guard.
+    with store.read_connection() as db:
+        receipt = db.execute("SELECT * FROM workflow_event_receipts").fetchone()
+        assert receipt["record_id"] == intake.record.record_id
+        assert receipt["event_id"] == intake.event_id
+        record = db.execute(
+            "SELECT * FROM workflow_records WHERE record_id=?", (receipt["record_id"],)
+        ).fetchone()
+        event = db.execute(
+            "SELECT * FROM workflow_events WHERE event_id=?", (receipt["event_id"],)
+        ).fetchone()
+        if table == "workflow_records":
+            assert record is None
+            assert event is not None and event["record_id"] == receipt["record_id"]
+        else:
+            assert event is None and record is not None
+    error = None
+    try:
+        observe(store, entry)
+    except Exception as caught:
+        error = caught
+    assert type(error) is WorkflowStoreError
+    assert str(error) == "invalid event receipt ownership"
+    assert error.__context__ is None and error.__cause__ is None
+    assert rows(store) == damaged
 
 
 @pytest.mark.parametrize("entry", ["lookup", "replay"])
