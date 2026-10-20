@@ -1,6 +1,7 @@
 # Lead source receipt to Automate: host handoff contract
 
-Status: **ACCEPTED CONTRACT; RECEIPT VOCABULARY AND DEPLOYMENT BINDING INCREMENT AUTHORIZED.** No
+Status: **ACCEPTED BASE CONTRACT; HOST HANDOFF WORK ORDER PREPARED FOR REVIEW.**
+Receipt vocabulary, binding and corruption-regression increments are merged. No
 production receiver, Watcher adoption or complete foundation gate is approved.
 
 ## Operator acceptance
@@ -236,14 +237,23 @@ does not re-enable submission. It must distinguish a prior pack revision from
 not-found without silently rerunning that event. License/scope denial cannot be
 converted to not-found.
 
+### Recovery limits
+
+This table owns the recovery rules for both the base contract and subsequent
+implementation work orders. An uncertain submission remains unknown until a
+permitted retry or historical lookup establishes its outcome. Recovery is not
+unconditional: a source-only commit cannot complete workflow admission through
+this boundary unless the same signed request still passes admission policy.
+
 | Failure window | Required recovery / observation |
 | --- | --- |
 | Before source commit | Same currently authenticated request can retry; no workflow exists from that attempt |
-| Source commit, lost source response | Repeat signed admission; its stable receipt recovers the operation before runtime is called |
+| Source commit, lost source response | Repeat signed admission only while admission remains authorized; its stable receipt then recovers source custody before runtime is called |
 | Source committed, workflow not yet called | Retry the complete host operation while admission remains authorized; source replay must not suppress the missing workflow call |
-| Workflow SQL failure before commit | Preserve source custody; retry the same identities; no partial workflow receipt/record/effects |
+| Workflow SQL failure before commit | Preserve source custody; retry the same identities only while admission remains authorized; no partial workflow receipt/record/effects |
 | Workflow commit, process dies before response | Read-only outcome lookup recovers the committed outcome; normal authenticated replay also returns it if still permitted |
 | Expiry/revocation/purge prevents resubmission | Lookup can report an existing workflow without source re-admission; absent outcome remains not-found/undelivered, never recreate from a cached receipt |
+| Source commits, process dies before workflow admission, then source expires or authority is revoked | Authenticated retry is refused. With no workflow receipt, lookup returns not-found. The original uncertain attempt has no accepted workflow outcome and must not be reported as accepted or persisted no-match; do not complete it from a cached source receipt. No guaranteed recovery is promised. |
 | Lookup says absent while another writer is in flight | Absence is an observation at the read, not proof no concurrent commit can occur; retry admission uses the same identity if authorized |
 | Different payload, route, binding or pack version | Refuse/conflict; no fallback to a new ID, another pack or an available provider |
 
@@ -574,9 +584,10 @@ and its focused platform proof; cold diff must verify the declared surface. Exis
 dependencies and application integrations remain unchanged.
 
 Gap audit: contract acceptance is **DONE**, as recorded above. Implementation and
-application adoption remain **NOT DONE**. Read-only receipt lookup is merged; only the receipt vocabulary and deployment
-binding increment is authorized by the current work order. Stop at its
-reviewed merge; no live handoff or production adoption is claimed.
+application adoption remain **NOT DONE**. Read-only receipt lookup, receipt
+vocabulary and binding are merged. The subsequent bounded work orders below
+record the regression repair and host-handoff preparation; no live handoff or
+production adoption is claimed.
 
 ## Work order: persisted binding shape regression
 
@@ -615,3 +626,160 @@ separate contract-first slice after this repair is qualified.
 Implementation summary and cold diff audit: to be recorded with test and mutation
 evidence in the follow-up PR. Gap audit: NOT DONE until regression proof, platform
 CI and exact-head approvals are complete.
+
+## Work order: authenticated host submission and outcome lookup
+
+Operator direction: "Let's do it", followed by "Continue", after the proposed
+sequence of test-only regression repair followed by contract-first host submission.
+The repair is merged in PR #27. This work-order change is documentation only;
+implementation must follow in bounded PRs, after this work order's review. It
+implements the accepted library-only boundary, not a production receiver.
+
+### Current code inventory and integration gap
+
+Source pin: `c1104a653c9eae092e8639359350cab55c83a62f`. Paths below are relative to
+`src/connect_automate/`. These findings are source-confirmed, not qualification
+results for the future combined boundary.
+
+| Existing owner | Current evidence and invariant to preserve |
+| --- | --- |
+| `lead_intake/source.py:228-269` | Parse untrusted syntax and compute canonical source-payload digest; neither establishes authority. Reuse these functions rather than parse or hash source bytes independently. |
+| `lead_intake/admission.py:160-235` | Every admission, including replay, authenticates signed bytes inside the source transaction; the returned receipt is constructed before leaving that transaction and returned after it exits. Preserve final authentication, replay, rotation and lifecycle rules. |
+| `automate/runtime.py:111-150,203-204` | Pack/grant verification and binding registration already belong to `PackRuntime.load`. Its public submit boundary checks the current runtime license. Keep those owners and the existing grant-at-load semantics. |
+| `automate/runtime.py:203-242`; `automate/engine.py:318-394` | Both generic event APIs refuse `LeadSourceEvent`; the engine has no matching branch for its trigger. Runtime dispatch is separate from admission and can run on replay. Do not repurpose generic submission for historical lookup. |
+| `automate/store.py:474-548` | One reader validates canonical stored payload, fingerprint, occurrence, binding, version and record/event ownership, returning the original outcome. It currently discards the validated payload projection. |
+| `automate/store.py:1019-1053` | `lookup_event` requires the digest of the complete canonical workflow event, not the source-payload digest; its result contains no source reference. |
+| `automate/store.py:1055-1140` | `admit_event` already owns transactional workflow receipt/record/effects persistence and replay. Keep its operation identity and transaction. |
+
+Root cause / required extension: source admission and workflow admission remain
+unconnected. In addition, the existing lookup signature cannot satisfy historical
+source lookup unchanged: event ID plus source-payload digest cannot reconstruct
+first-acceptance time, admission ID and deadline after source custody disappears.
+Do not obtain these fields by reading the source database or by accepting a caller's
+cached receipt. The validated workflow receipt already contains them.
+
+For `lookup_source_outcome`, `expected_payload_digest` means the canonical
+**source payload** digest from `lead_intake.source.payload_digest`, as carried by
+`ReceiptReference.payload_digest`. It never means the workflow-event fingerprint.
+The existing `lookup_event` argument retains its existing event-fingerprint meaning.
+Both digests remain validated independently; one must never substitute for the other.
+
+Proven work inventory: preserve the existing frozen source/auth fixtures,
+`test_lead_source_admission.py` replay/rotation/object-bypass tests, and source
+clock/content/race tests. Preserve `test_workflow_receipt_lookup.py` original
+outcome, no-match, revision, read-only and isolated-corruption tests, and
+`test_lead_receipt_vocabulary.py` registration/reopen/concurrency cases. Reuse
+`test_pack_kit_receipt.py` signed receipt-pack harness. Existing evidence is recorded
+with the merged PRs; it is not evidence that a joined host boundary works. No
+inference model, prompt, runtime settings or external provider participates here.
+
+### Required change surface and order
+
+Keep the following dependent implementation increments separately reviewable under
+this one work order. Every implementation PR identifies its increment and includes
+its own evidence. Do not expose the combined boundary as usable until all pass.
+
+- **Validated historical receipt projection.** Extend the shared receipt reader
+  at its existing owner to retain the validated event projection alongside the
+  original outcome. Add a source-specific store lookup that requires the configured
+  identity and source-payload digest, uses the existing read-only connection, and
+  validates the embedded reference against the durable deployment binding. Reuse
+  the same binding/version/canonical-bytes/ownership checks for admission, generic
+  lookup and source lookup; no copied SQL validator. Keep existing `lookup_event`
+  and `EventAdmission` public behavior compatible. No optional digest parameter
+  that disables validation. Return a bounded immutable projection, including the
+  stored source reference for both accepted and persisted no-match outcomes.
+- **Authenticated host composition.** Add the library-only handoff facade and
+  supported runtime operations from the accepted Submission section. Bind a real
+  `SourceAdmission` owner and host clock through trusted configuration associated
+  with the verified runtime; expose any necessary source deployment metadata
+  through its owner rather than reaching into private database state. Freeze the
+  configured binding/owner identity. License, pack and binding checks precede
+  store access. Parse untrusted source syntax only to reject scope mismatch before
+  mutation; authentication still belongs to `admit_source(raw)` on every submit.
+  Compare its fresh durable reference with the configured route and parsed request
+  before entering workflow admission. Never accept caller-created receipts or an
+  earlier authentication result as submission authority.
+- **Runtime selection and result boundary.** Factor the current engine selection
+  path narrowly so the trusted handoff can match `LeadSourceTrigger` with the same
+  initial-stage, ambiguity, version and effect rules. Keep both public generic
+  submission APIs rejecting receipt-shaped input. Internal receipt plumbing is
+  not a new public authorization API or reusable bypass token. Reuse existing
+  admission and permitted action dispatch owners; do not add a dispatcher. The
+  qualification pack has no actions. Return the exact closed/versioned result
+  and lookup schemas defined above, with separate source/workflow replay flags.
+- **Joined recovery and qualification.** Exercise the facade and both real stores
+  through the existing synthetic signed-pack/source harnesses. Caller-driven
+  retry retains the original signed request and route. Read-only lookup uses only
+  authorized workflow metadata, performs no admission or dispatch, and works after
+  expiry, purge, revocation and namespace retirement. Do not infer current source
+  authorization or content availability from the returned historical result.
+
+Potential files: `lead_intake/handoff.py` and its lazy export owner;
+`lead_intake/admission.py` only for supported deployment metadata if required;
+`automate/runtime.py`, `automate/engine.py` and the shared workflow receipt owner
+in `automate/store.py`; focused handoff/lookup tests and the Windows test list.
+The first increment must not introduce the facade or change engine admission.
+The existing source parser, auth, custody, content lifecycle and receipt schema
+are authoritative and must not acquire parallel implementations.
+
+Differences from proven work are limited to retaining validated receipt metadata,
+source-digest-specific lookup, trusted configuration and composition, explicit
+lead-trigger matching, and joined result/recovery proof. No schema migration,
+changed identity, new clock policy, source-lock extension or two-database commit.
+If evidence requires another difference, revise this canonical work order before
+editing code; a plausible implementation is not evidence of parity.
+
+### Verification and acceptance evidence
+
+Before executable changes, run unchanged baseline tests for each touched owner's
+existing contracts. Run new targeted fail-first tests, adjacent lanes, lint/format,
+then native Windows and Linux CI from the first implementation push. Every new
+security or data-integrity guard needs a corruption fixture that reaches that guard
+alone, with schema triggers restored, and behavioral mutation proof. Reuse existing
+race/crash harnesses; a setup error or timeout is not a successful mutation kill.
+
+| Increment / gate prerequisite | Required observable proof |
+| --- | --- |
+| Receipt projection / G3 | Source and workflow digests are different and each enforced; valid accepted/no-match/absent results; corrupt embedded reference, canonical payload, ownership or foreign deployment rejected; generic lookup/replay behavior unchanged; no writes, clock changes or source-store access. |
+| Submission / G1, G2 | Body-only and unavailable source accepted; valid signed source reauthenticates on replay/key rotation; conflicting signed payload refuses; unknown binding, foreign host/org/namespace and license denial stop before mutation; copied result/model/dict and raw lead event cannot bypass admission; distinct events remain distinct workflow occurrences. |
+| Reviewable metadata / G2 | Exact bounded result schemas, source/workflow flags independently correct, original workflow outcome after later advancement, no invented receipt/IDs on absence, durable no-match not mislabeled as extraction or approval. |
+| Joined recovery / G3 | Separate-process concurrent submissions and deterministic barriers before/after each store commit, workflow row writes and lost response; no partial workflow or duplicate occurrence; retry and lookup obey [Recovery limits](#recovery-limits). Source commit alone is never reported as workflow acceptance. |
+| Source-only crash with lost authorization / G3 | Commit source custody, terminate before any workflow admission, then independently test deadline expiry and key revocation. Same signed retry must be refused; authorized lookup must return not-found with no workflow receipt/record/effects. Assert no accepted or persisted no-match result and no fallback using a copied source receipt. The original uncertain submission remains non-accepted/unknown; not-found is an observation, not a guarantee against another concurrent commit. |
+| Privacy/platform / G6 | Synthetic body sentinel absent from workflow rows, errors and logs; lookup survives source lifecycle changes without reading content; licensed scope enforced before absence; native Windows/Linux process and filesystem proof. |
+
+The source writer must be released before workflow admission. Revocation after
+source authorization linearizes may precede workflow commit; the accepted contract
+permits only the metadata outcome, not cached content authority. Test that ordering
+explicitly. Apply [Recovery limits](#recovery-limits) to uncertain submissions;
+never fabricate failure, persisted no-match or acceptance from an uncertain commit.
+Full foundation gates and live adoption remain open.
+
+### Non-scope, risks and recovery
+
+No service, CLI receiver, mailbox polling, scheduler, new queue or workflow engine;
+no direct cross-application database access; no extraction, canonical lead creation,
+CRM adapter, new approval policy or EOM change. Do not change retention/deletion
+semantics, source authority, signed pack bytes or public mail/schedule behavior.
+Production metadata retention/encryption and durable producer retry custody remain
+unresolved adoption requirements. Employee authorization is not supplied by the
+licensed subject or this in-process configuration. Same-process hostile Python
+reflection is not a sandbox claim.
+
+Primary risks: weakening the shared receipt validator, exposing a copied-receipt
+submission path, conflating digests, dispatch during lookup, or reporting workflow
+acceptance after only source commit. Preserve original fixtures and test those
+paths directly. Rollback disables the configured host facade while retaining both
+stores and signed artifacts; never delete receipts to retry or reinterpret lead
+receipts as mail. Keep each increment unpublished to applications until joined
+qualification passes. A missing review or native Windows proof blocks merge.
+
+Implementation summary: documentation only; no facade or store behavior changed.
+Cold diff audit: this work order names the current source owners, the demonstrated
+lookup gap and the smallest dependent increments; the status and stale final-scope
+summary are updated to point here. Gap audit: work-order review and implementation
+are **NOT DONE**. Required merge gates remain explicit oversight PASS and an
+independent exact-head review reporting no open blockers (a `COMMENT` verdict may
+satisfy this; GitHub `APPROVED` state is not required), completed/reconciled Codex
+review, green required CI and clean local/remote equality, followed by a guarded
+merge commit and reviewed-tree proof.
