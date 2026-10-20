@@ -329,6 +329,13 @@ def _register_worker(path, index, config, barrier, results):
         "snapshot",
         "policy-bytes",
         "snapshot-bytes",
+        "snapshot-array-empty",
+        "snapshot-array-populated",
+        "snapshot-null",
+        "snapshot-bool",
+        "snapshot-number",
+        "snapshot-string-empty",
+        "snapshot-string-populated",
     ],
 )
 def test_persisted_binding_corruption_refuses_registration(tmp_path, case):
@@ -374,6 +381,18 @@ def test_persisted_binding_corruption_refuses_registration(tmp_path, case):
             snapshot = encoded({"inbox": {**config["inbox"], "scope": "different"}}).decode()
         if case == "snapshot-bytes":
             snapshot += " "
+        non_objects = {
+            "snapshot-array-empty": [],
+            "snapshot-array-populated": ["inbox"],
+            "snapshot-null": None,
+            "snapshot-bool": False,
+            "snapshot-number": 0,
+            "snapshot-string-empty": "",
+            "snapshot-string-populated": "inbox",
+        }
+        if case in non_objects:
+            # Canonical bytes pass the preceding check; only shape may reject these.
+            snapshot = encoded(non_objects[case]).decode()
         db.execute("UPDATE workflow_binding_sets SET bindings_json=?", (snapshot,))
         for row in triggers:
             db.execute(row[1])
