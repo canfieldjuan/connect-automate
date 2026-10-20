@@ -577,3 +577,41 @@ Gap audit: contract acceptance is **DONE**, as recorded above. Implementation an
 application adoption remain **NOT DONE**. Read-only receipt lookup is merged; only the receipt vocabulary and deployment
 binding increment is authorized by the current work order. Stop at its
 reviewed merge; no live handoff or production adoption is claimed.
+
+## Work order: persisted binding shape regression
+
+Operator work order: "Let's do it", after the post-merge oversight finding on the
+receipt vocabulary slice. Commit this work order before test changes.
+
+Root cause: the corruption fixture in `tests/test_lead_receipt_vocabulary.py`
+never supplies canonical non-object `bindings_json`. The production guard at
+`WorkflowStore._check_lead_deployment` is correct, but removing its dict check
+allows `.get` to raise an unbounded `AttributeError` without failing the existing
+corruption cases. The guard and coverage gap originated in `1025b653`.
+
+Required change surface: extend that existing fixture with canonical arrays,
+null, boolean, number and string values, including empty/falsy and populated
+representatives. Restore database triggers before invoking the real registration
+owner. Require `EventBindingError`; do not add exception-catching or validation to
+production. Prove unchanged object bindings remain accepted with adjacent tests.
+No schema, API, runtime, custody, workflow, kit, dependency or CI changes.
+
+Verification plan: record the existing corruption cases with only the dict guard
+removed in an isolated process. Add the cases and require behavioral failures
+from `.get` with that same mutant, then passing results with the production guard.
+Run the adjacent vocabulary/event/kit tests and lint/format. Native Windows and
+Linux CI must pass on the published head. Keep mutation output outside worktrees;
+restore triggers in fixtures and never mutate production data. Independent review,
+explicit oversight PASS and completed reconciled Codex review are all required
+on the final head before merge, with no unresolved threads or changes requested.
+
+Assumptions/blockers: this is missing regression proof, not an observed production
+failure. Oversight's full-suite mutant report remains attributed until reproduced;
+the targeted baseline is sufficient to isolate this fixture's gap. No new product
+behavior requires acceptance. Rollback removes only these added test cases;
+production behavior and stored data remain unchanged. Host submission remains a
+separate contract-first slice after this repair is qualified.
+
+Implementation summary and cold diff audit: to be recorded with test and mutation
+evidence in the follow-up PR. Gap audit: NOT DONE until regression proof, platform
+CI and exact-head approvals are complete.
