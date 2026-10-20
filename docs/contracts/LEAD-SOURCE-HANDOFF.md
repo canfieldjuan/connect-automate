@@ -960,3 +960,20 @@ Rollback removes optional host composition while retaining both stores and all
 existing raw-source and generic event behavior. No production adoption. Cold diff
 and evidence are recorded with the implementation. Gap audit: NOT DONE until this
 bounded increment passes; public handoff and joined qualification remain later.
+
+
+Implementation summary: optional owner/clock configuration is validated after
+pack/grant verification and before registration. Frozen private handoffs use the
+existing source admission and receipt models; private historical lookup uses the
+existing workflow reader. SourceBinding model validation/copying remains solely
+in the runtime binding owner; handoff does not duplicate it. Operational imports
+are deferred to configured loading, preserving pure receipt import paths.
+
+Cold diff: runtime composition and immutable binding maps, an I/O-free admission
+metadata property, a private handoff module, focused real-store tests, and the
+Windows lane entry. Existing source/auth/custody/engine/store implementations,
+package exports and old tests are unchanged. The focused suite uses a real
+signed-pack revision conflict and explicitly proves prepared metadata remains
+rejected by both generic submission APIs. Gap audit: local evidence accompanies
+the PR; native CI and both reviews remain pending. No public handoff, workflow
+acceptance, adoption or subsequent increment is claimed.

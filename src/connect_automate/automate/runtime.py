@@ -16,13 +16,15 @@ at load) is deferred hardening.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
+from types import MappingProxyType
+from typing import TYPE_CHECKING
 
 from .actions import ActionOutcome, ActionRunner, AdapterRegistry
 from .definition import MAX_NAME_LENGTH, LeadSourceTrigger, ScheduleTrigger, Workflow, WorkflowV2
-from .engine import DecisionOutcome, WorkflowEngine
+from .engine import DecisionOutcome, PackVersionError, WorkflowEngine
 from .events import (
     EventBindingError,
     EventInputError,
@@ -33,7 +35,11 @@ from .events import (
 )
 from .host import AutomateHost
 from .pack import LoadedPack, load_pack, verify_grant
-from .store import ACTION_DEDUPE_PREFIX, RecordView, WorkflowStore
+from .store import ACTION_DEDUPE_PREFIX, RecordView, WorkflowStore, _EventVersionConflict
+
+if TYPE_CHECKING:
+    from ..lead_intake.admission import SourceAdmission
+    from ..lead_intake.handoff import _SourceHandoff
 
 
 @dataclass(frozen=True)
@@ -76,6 +82,7 @@ class PackRuntime:
         registry: AdapterRegistry,
         subject: str = "",
         event_bindings: Mapping[str, SourceBinding] | None = None,
+        source_handoffs: Mapping[str, _SourceHandoff] | None = None,
         _token: object = None,
     ):
         if _token is not _VERIFIED:
@@ -89,7 +96,12 @@ class PackRuntime:
         self._engine = WorkflowEngine(store=store, host=host)
         self._runner = ActionRunner(store=store, registry=registry, host=host)
         self._subject = subject
-        self._event_bindings = {} if event_bindings is None else dict(event_bindings)
+        self._event_bindings = MappingProxyType(
+            {} if event_bindings is None else dict(event_bindings)
+        )
+        self._source_handoffs = MappingProxyType(
+            {} if source_handoffs is None else dict(source_handoffs)
+        )
 
     @property
     def pack(self) -> LoadedPack:
@@ -121,6 +133,8 @@ class PackRuntime:
         subject: str,
         now: datetime,
         event_bindings: Mapping[str, SourceBinding | Mapping[str, object]] | None = None,
+        source_admission: SourceAdmission | None = None,
+        source_clock: Callable[[], datetime] | None = None,
     ) -> PackRuntime:
         """Verify a pack and its per-PC grant, then return a runtime for its workflow.
 
@@ -132,11 +146,31 @@ class PackRuntime:
         sign an executable pack; pass the same mapping for both only when one authority holds
         both roles. A tampered pack, an untrusted key, or a missing/mismatched grant raises
         :class:`PackError` here, before any record is created.
+
+        Optional source_admission/source_clock are paired trusted-host configuration
+        for the private lead composition seams. They do not enable public source
+        submission or claim workflow acceptance in this increment.
         """
         host.require_license()
         pack = load_pack(pack_bytes, keys=publisher_keys)
         verify_grant(grant_bytes, keys=grant_keys, pack_id=pack.pack_id, subject=subject, now=now)
         bindings, configuration = cls._validate_bindings(pack.workflow, event_bindings)
+        handoffs = {}
+        if source_admission is not None or source_clock is not None:
+            # Keep operational imports out of pure event/receipt import paths.
+            from ..lead_intake.handoff import _SourceHandoff
+
+            lead_bindings = {
+                name: source
+                for name, source in bindings.items()
+                if source.source_kind == "lead.source.received"
+            }
+            if not lead_bindings:
+                raise EventBindingError()
+            handoffs = {
+                name: _SourceHandoff(source, source_admission, source_clock)
+                for name, source in lead_bindings.items()
+            }
         if isinstance(pack.workflow, WorkflowV2):
             store.register_bindings(subject, pack.pack_id, configuration)
         return cls(
@@ -146,6 +180,7 @@ class PackRuntime:
             registry=registry,
             subject=subject,
             event_bindings=bindings,
+            source_handoffs=handoffs,
             _token=_VERIFIED,
         )
 
@@ -199,6 +234,41 @@ class PackRuntime:
         except (ValueError, TypeError, RecursionError):
             pass
         raise EventBindingError()
+
+    def _lead_source_binding(self, binding: str) -> SourceBinding:
+        self._host.require_license()
+        if (
+            not isinstance(self._pack.workflow, WorkflowV2)
+            or not isinstance(binding, str)
+            or binding not in self._event_bindings
+            or self._event_bindings[binding].source_kind != "lead.source.received"
+        ):
+            raise EventBindingError()
+        return self._event_bindings[binding]
+
+    def _prepare_source(self, *, binding: str, raw_source_bytes: bytes):
+        """Private composition only; source custody is NOT workflow acceptance."""
+        self._lead_source_binding(binding)
+        handoff = self._source_handoffs.get(binding)
+        if handoff is None:
+            raise EventBindingError()
+        return handoff.prepare(raw_source_bytes)
+
+    def _lookup_source_receipt(self, *, binding: str, event_id: str, expected_payload_digest: str):
+        """Private historical projection; no admission, source access or dispatch."""
+        source = self._lead_source_binding(binding)
+        try:
+            return self._store.lookup_source_event(
+                subject=self._subject,
+                pack_id=self._pack.pack_id,
+                pack_version=self._pack.pack_version,
+                binding=binding,
+                source=source,
+                event_id=event_id,
+                expected_payload_digest=expected_payload_digest,
+            )
+        except _EventVersionConflict:
+            raise PackVersionError("event belongs to another pack revision") from None
 
     def submit_event(self, *, binding: str, event: bytes, now: datetime) -> EventRun:
         self._host.require_license()
