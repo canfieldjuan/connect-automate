@@ -175,6 +175,7 @@ def test_input_identity_before_open(tmp_path, monkeypatch, field, value):
         ("source", None),
         ("source", False),
         ("source", {}),
+        ("source", binding()),
         ("source", SourceBinding(source_id=OTHER, source_kind="mail.received", scope="mailbox")),
         ("source", SourceBinding.model_construct(**{**binding(), "scope": "corrupt"})),
         ("source", SourceBinding(**binding()).model_copy(update={"source_id": OTHER})),
@@ -235,6 +236,64 @@ def test_persisted_configuration_is_checked_before_absence(tmp_path, present, fa
     corrupt(store, "workflow_binding_sets", "bindings_json=?", (encoded(changed).decode(),))
     with pytest.raises(EventBindingError):
         store.lookup_source_event(**lookup_args())
+
+
+@pytest.mark.parametrize("entry", ["lookup", "register"])
+@pytest.mark.parametrize("present", [False, True])
+@pytest.mark.parametrize(
+    "fault",
+    ["same", "foreign", "invalid", "generic", "snapshot-only", "missing-snapshot"],
+)
+def test_complete_binding_snapshot_required(tmp_path, entry, present, fault):
+    store = configured_store(tmp_path / "workflow.db")
+    if present:
+        seed(store)
+    changed = configuration()
+    ghost = configuration(namespace_id=OTHER)["inbox"]
+    if fault == "foreign":
+        ghost = configuration(host_id=OTHER, namespace_id=OTHER)["inbox"]
+    elif fault == "invalid":
+        ghost = None
+    elif fault == "generic":
+        ghost = dict(source_kind="mail.received", source_id=OTHER, scope="mail", policy={})
+    if fault == "missing-snapshot":
+        corrupt(store, "workflow_binding_sets", delete=True)
+    elif fault == "snapshot-only":
+        # A different subject/pack has only a snapshot: no lead row can discover it.
+        with store.connection() as db:
+            db.execute(
+                "INSERT INTO workflow_binding_sets VALUES (?, ?, ?)",
+                ("ghost-subject", OTHER, encoded({"ghost": ghost}).decode()),
+            )
+    else:
+        changed["ghost"] = ghost
+        corrupt(store, "workflow_binding_sets", "bindings_json=?", (encoded(changed).decode(),))
+    before = rows(store)
+    reopened = WorkflowStore(store.path)
+    with pytest.raises(EventBindingError):
+        if entry == "lookup":
+            reopened.lookup_source_event(**lookup_args())
+        else:
+            reopened.register_bindings("new-subject", OTHER, configuration(namespace_id=EVENT))
+    assert rows(store) == before
+
+
+def test_complete_binding_snapshots_accept_mixed_and_empty_sets(tmp_path):
+    store = WorkflowStore(tmp_path / "workflow.db")
+    store.initialize()
+    mixed = configuration()
+    mixed["mail"] = dict(source_kind="mail.received", source_id=EVENT, scope="mail", policy={})
+    mixed["second"] = configuration(namespace_id=OTHER)["inbox"]
+    store.register_bindings(SUBJECT, PACK_ID, mixed)
+    store.register_bindings("other-subject", OTHER, configuration(namespace_id=EVENT))
+    store.register_bindings("empty-subject", OTHER, {})
+    store.register_bindings("generic-subject", OTHER, {"mail": mixed["mail"]})
+    reopened = WorkflowStore(store.path)
+    reopened.register_bindings(SUBJECT, PACK_ID, mixed)
+    assert reopened.lookup_source_event(**lookup_args()) is None
+    original = seed(reopened)
+    result = reopened.lookup_source_event(**lookup_args())
+    assert result.outcome.record == original.record
 
 
 @pytest.mark.parametrize("matched", [False, True])

@@ -596,9 +596,11 @@ receipt vocabulary slice. Commit this work order before test changes.
 
 Root cause: the corruption fixture in `tests/test_lead_receipt_vocabulary.py`
 never supplies canonical non-object `bindings_json`. The production guard at
-`WorkflowStore._check_lead_deployment` is correct, but removing its dict check
-allows `.get` to raise an unbounded `AttributeError` without failing the existing
-corruption cases. The guard and coverage gap originated in `1025b653`.
+`WorkflowStore._check_lead_deployment` at that revision had the required shape
+guard, but removing it allowed `.get` to raise an unbounded `AttributeError`
+without failing the existing corruption cases. The guard and coverage gap originated in `1025b653`. The later
+[projection review repair](#projection-review-repair-complete-binding-snapshots)
+replaces the one-way comparison and shape check with complete canonical equality.
 
 Required change surface: extend that existing fixture with canonical arrays,
 null, boolean, number and string values, including empty/falsy and populated
@@ -848,3 +850,32 @@ Existing tests, schemas, engine/runtime and source custody remain unchanged. Loc
 baseline, fail-first, affected parity and behavioral mutation proof are recorded
 with the implementation PR. Gap audit: NOT DONE until native platform CI and both
 exact-head reviews pass. Stop at this increment; no facade work here.
+
+### Projection review repair: complete binding snapshots
+
+Root cause: the deployment validator introduced in `1025b653` walks only durable
+lead binding rows. A canonical snapshot may contain an extra entry, or exist with
+no corresponding rows, without that configuration participating in validation.
+The projection reader inherited this one-way comparison. This session owns the
+origin defect; repair `_check_lead_deployment`, not a later lookup guard.
+
+Required change: reconstruct complete per-subject/pack configurations from durable
+rows and compare each canonical object snapshot to that complete map. Reject
+missing snapshots, extra entries, missing entries and snapshot-only configurations.
+Keep lead scope/policy validation in the same owner; registration and projection
+must both consume it. Valid empty and mixed generic/lead configurations remain
+supported. The existing registration comparison to incoming configuration still
+owns immutability of the requested configuration, including generic-only callers.
+No schema, API, custody, authentication or handoff changes. The earlier shape
+regression proves object shape only, not full configuration integrity.
+
+Verification: synthetic restored-trigger corruption tests through lookup (receipt
+present and absent) and registration; same/foreign deployment extras, malformed
+extra values, generic extras, snapshot-only sets and missing snapshots. Assert
+failures leave rows unchanged. Include valid mixed bindings across subjects/packs
+and empty snapshots. Pin refusal of a plain dictionary equal to a valid configured
+binding, before opening the store. Fail-first at the published implementation;
+then adjacent suites, lint/format and mutations of full-map equality, orphan-row
+refusal and the configured-model type guard. Native CI and both exact-head reviews
+remain required. Regression cases live in the new projection test module, already
+included in Windows CI; prior test files remain unchanged.

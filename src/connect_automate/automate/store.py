@@ -984,24 +984,28 @@ class WorkflowStore:
             return
         try:
             persisted = []
-            for row in db.execute(
-                "SELECT b.*, s.bindings_json FROM workflow_source_bindings b "
-                "LEFT JOIN workflow_binding_sets s ON b.subject=s.subject AND b.pack_id=s.pack_id "
-                "WHERE b.source_kind='lead.source.received'"
-            ):
+            configurations = {}
+            for row in db.execute("SELECT * FROM workflow_source_bindings"):
                 policy = json.loads(row["policy"])
-                config = json.loads(row["bindings_json"])
+                if row["policy"] != json.dumps(policy, sort_keys=True, separators=(",", ":")):
+                    raise ValueError("inconsistent binding policy")
                 stored = {key: row[key] for key in ("source_id", "source_kind", "scope")}
                 stored["policy"] = policy
-                if (
-                    row["policy"] != json.dumps(policy, sort_keys=True, separators=(",", ":"))
-                    or row["bindings_json"]
-                    != json.dumps(config, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-                    or not isinstance(config, dict)
-                    or config.get(row["binding"]) != stored
+                configurations.setdefault((row["subject"], row["pack_id"]), {})[row["binding"]] = (
+                    stored
+                )
+                if row["source_kind"] == "lead.source.received":
+                    persisted.append(stored)
+            for row in db.execute("SELECT * FROM workflow_binding_sets"):
+                actual = configurations.pop((row["subject"], row["pack_id"]), {})
+                # Compare exact canonical bytes to the COMPLETE row map. This also
+                # refuses non-object snapshots and snapshot-only phantom bindings.
+                if row["bindings_json"] != json.dumps(
+                    actual, sort_keys=True, separators=(",", ":"), ensure_ascii=False
                 ):
                     raise ValueError("inconsistent deployment binding")
-                persisted.append(stored)
+            if configurations:
+                raise ValueError("missing deployment snapshot")
             deployments = set()
             for source in [*incoming, *persisted]:
                 scope = lead_deployment_scope(source["scope"], source["source_id"])
