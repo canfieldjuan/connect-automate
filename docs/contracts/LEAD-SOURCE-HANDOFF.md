@@ -783,3 +783,60 @@ independent exact-head review reporting no open blockers (a `COMMENT` verdict ma
 satisfy this; GitHub `APPROVED` state is not required), completed/reconciled Codex
 review, green required CI and clean local/remote equality, followed by a guarded
 merge commit and reviewed-tree proof.
+
+## Implementation increment: validated historical receipt projection
+
+Operator direction: "Continue" after the bounded projection slice was identified.
+This is the first increment of the merged host-handoff work order. Commit this
+implementation contract before executable changes.
+
+Root cause: `_read_event_receipt` validates stored event bytes but discards their
+projection; `lookup_event` requires the workflow fingerprint, which callers with
+only the source-event identity/digest cannot reconstruct. Preserve this reader as
+the integrity owner; do not create a second receipt validator.
+
+Required change surface: `automate/store.py` retains a private validated event plus
+original outcome internally, unwrapping the unchanged `EventAdmission` for existing
+lookup/admission callers. Add `lookup_source_event` accepting configured subject,
+pack/version, binding, a revalidated lead `SourceBinding`, source event ID and
+required source-payload digest. Return a frozen `SourceEventReceipt` containing
+`source_receipt` and the original `outcome`, or None for valid scoped absence.
+The new store API is an internal persistence primitive, not licensed host access,
+authentication or submission authority. It reads no SourceStore or clock.
+
+Use the existing read-only connection, canonical scope validator and deployment
+binding integrity owner. Check configuration against durable scope and policy
+before absence; validate the embedded reference against that scope before exposing
+an outcome. Keep workflow fingerprint self-integrity distinct from the required
+source-payload comparison. Both digest modes are explicit and mandatory; no None
+or optional argument may disable a check. Generic lookup and replay retain their
+existing return types, fingerprint meanings and refusal behavior.
+
+Non-scope: no handoff facade, engine/runtime admission change, source authentication,
+custody or schema change, new dispatch, migration, wire result schema, library
+adoption or EOM behavior. No changes to existing fixtures/tests except adding the
+new focused test module to Windows CI. Existing models/validators remain the owners
+of their field syntax and canonical representation.
+
+Verification: run unchanged receipt/read-connection/event/vocabulary and source
+parser/auth baseline before production edits. Fail first on the missing supported
+lookup. Prove accepted/no-match/absence, original outcome after advancement/reopen,
+strict configured scope and required input checks before opening, independent source
+and event digests, immutable reference/outcome, and read-only snapshots under real
+separate-process commit. Corrupt one invariant at a time with restored triggers;
+cover payload, record/event ownership, persisted binding and embedded scope. Mutate
+new critical guards and require behavioral failures, not setup errors. Run adjacent
+legacy lanes unchanged, lint/format and native Windows/Linux CI on the published
+head. Baseline fixtures and existing schema text must remain unchanged.
+
+Assumptions: trusted host configuration will supply the binding in the later
+increment; this API cannot establish principal authorization. Receipt metadata is
+historical, not evidence of live content. No model/inference settings participate.
+Differences from proven code are only retaining its validated projection and adding
+the bounded source-specific read boundary. Rollback removes that unused read API;
+preserve stored receipts and all existing lookup/admission behavior. A changed
+shared validator is the primary regression risk, guarded by unchanged replay tests.
+
+Implementation summary/cold diff and verification evidence will be recorded with
+the implementation PR. Gap audit: NOT DONE until the bounded tests, native platform
+CI and both exact-head reviews pass. Stop at this increment; no facade work here.
