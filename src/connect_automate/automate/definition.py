@@ -390,10 +390,25 @@ class ScheduleTrigger(_Strict):
     every_seconds: Annotated[int, Field(strict=True, ge=MIN_PERIOD_SECONDS, le=MAX_PERIOD_SECONDS)]
 
 
+class LeadSourceTrigger(_Strict):
+    source_kind: Literal["lead.source.received"]
+    binding: _Name
+    match_all: Annotated[bool, Field(strict=True)]
+
+    @model_validator(mode="after")
+    def _validate(self):
+        if self.match_all is not True:
+            raise ValueError("receipt trigger requires explicit match_all")
+        return self
+
+
 class WorkflowDefinitionV2(_Strict):
     # Separate models prevent a v2 instance from satisfying a v1 model's isinstance check.
     name: _Name
-    trigger: Annotated[Trigger | MailTrigger | ScheduleTrigger, Field(discriminator="source_kind")]
+    trigger: Annotated[
+        Trigger | MailTrigger | ScheduleTrigger | LeadSourceTrigger,
+        Field(discriminator="source_kind"),
+    ]
     conditions: list[Condition] = Field(default_factory=list, max_length=MAX_CONDITIONS)
     effects: list[Effect] = Field(min_length=1, max_length=MAX_EFFECTS)
     actions: list[ActionEmit] = Field(default_factory=list, max_length=MAX_ACTIONS)

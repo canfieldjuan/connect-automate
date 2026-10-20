@@ -34,6 +34,8 @@ from .definition import (
 from .events import (
     AmbiguousEvent,
     Event,
+    EventInputError,
+    LeadSourceEvent,
     MailEvent,
     SourceBinding,
     canonical_event,
@@ -326,6 +328,10 @@ class WorkflowEngine:
         now: datetime,
     ):
         self._host.require_license()
+
+        if isinstance(event, LeadSourceEvent):
+            # Reserved for the later authenticated host handoff, never raw events.
+            raise EventInputError()
 
         def select():
             matches = []

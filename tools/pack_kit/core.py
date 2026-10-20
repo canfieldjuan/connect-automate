@@ -6,7 +6,7 @@ import base64
 import binascii
 import json
 import tomllib
-from typing import Annotated, BinaryIO
+from typing import Annotated, BinaryIO, Literal
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from pydantic import (
@@ -27,6 +27,7 @@ from connect_automate.automate import (
     ConnectInvokeCapability,
     ConnectInvokeRequest,
     DefinitionError,
+    LeadSourceTrigger,
     MailTrigger,
     PackError,
     ScheduleTrigger,
@@ -50,6 +51,7 @@ ARCHETYPES = {
     ARCHETYPE: None,
     "mail-review-then-act": "mail.received",
     "schedule-review-then-act": "schedule.tick",
+    "lead-source-receipt": "lead.source.received",
 }
 INTAKE_REQUEST = {
     "title": "Pack ready for review",
@@ -99,6 +101,15 @@ class Spec(StrictModel):
 class SpecV2(Spec):
     format_version: Annotated[StrictInt, Field(ge=2, le=2)]
     trigger: Annotated[MailTrigger | ScheduleTrigger, Field(discriminator="source_kind")]
+
+
+class ReceiptSpec(StrictModel):
+    format_version: Annotated[StrictInt, Field(ge=2, le=2)]
+    archetype: Literal["lead-source-receipt"]
+    pack_id: UuidV4
+    pack_version: Annotated[StrictInt, Field(ge=1)]
+    name: Annotated[StrictStr, Field(min_length=1, max_length=80)]
+    trigger: LeadSourceTrigger
 
 
 def canonical(value: object) -> bytes:
@@ -173,13 +184,15 @@ def _vocabulary(value: dict) -> None:
             raise KitError(3, "unsupported vocabulary") from exc
 
 
-def _spec(value: dict) -> Spec:
+def _spec(value: dict) -> Spec | ReceiptSpec:
     if not isinstance(value, dict):
         raise KitError(3, "invalid input")
     if isinstance(value.get("archetype"), str) and value["archetype"] not in ARCHETYPES:
         raise KitError(3, "unknown archetype")
     _vocabulary(value)
     try:
+        if value.get("archetype") == "lead-source-receipt":
+            return ReceiptSpec.model_validate(value)
         model = Spec if value.get("archetype") == ARCHETYPE else SpecV2
         spec = model.model_validate(value)
         if isinstance(spec, SpecV2) and spec.trigger.source_kind != ARCHETYPES[spec.archetype]:
@@ -210,6 +223,27 @@ def _spec(value: dict) -> Spec:
 
 def build(value: dict) -> bytes:
     spec = _spec(value)
+    if isinstance(spec, ReceiptSpec):
+        return _artifact(
+            spec,
+            {
+                "vocabulary_version": 2,
+                "name": spec.name,
+                "stages": ["waiting", "source-received"],
+                "initial_stage": "waiting",
+                "definitions": [
+                    {
+                        "name": "intake",
+                        "trigger": spec.trigger.model_dump(mode="json"),
+                        "conditions": [
+                            {"field": "record.stage", "op": "equals", "value": "waiting"}
+                        ],
+                        "effects": [{"kind": "record.transition", "to_stage": "source-received"}],
+                        "actions": [],
+                    }
+                ],
+            },
+        )
     try:
         content = spec.invoke.input.content.encode("utf-8")
     except UnicodeEncodeError as exc:
@@ -289,6 +323,10 @@ def build(value: dict) -> bytes:
             initial_stage="waiting",
             definitions=[intake, *definitions],
         )
+    return _artifact(spec, workflow_data)
+
+
+def _artifact(spec: Spec | ReceiptSpec, workflow_data: dict) -> bytes:
     try:
         workflow = parse_workflow(canonical(workflow_data))
         workflow_data = json.loads(canonical_workflow(workflow))
@@ -396,6 +434,16 @@ def new_spec(archetype: str, pack_id: str, name: str, pack_version: int) -> byte
 
     if archetype not in ARCHETYPES:
         raise KitError(3, "unknown archetype")
+    if archetype == "lead-source-receipt":
+        text = (
+            f"format_version = 2\narchetype = {quoted(archetype)}\n"
+            f"pack_id = {quoted(pack_id)}\npack_version = {pack_version}\nname = {quoted(name)}\n"
+            "\n# Vocabulary proof only; authenticated handoff is not implemented.\n"
+            '[trigger]\nsource_kind = "lead.source.received"\n'
+            'binding = "lead-source"\nmatch_all = true\n'
+        ).encode()
+        build(parse_spec(text))
+        return text
     version = 1 if archetype == ARCHETYPE else 2
     text = (
         f"format_version = {version}\narchetype = {quoted(archetype)}\n"

@@ -11,6 +11,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, BeforeValidator, ConfigDict, TypeAdapter, model_validator
 
 from ..entitlement import UuidV4
+from ..lead_intake.receipts import ReceiptReference
 
 MAX_EVENT_BYTES = 8192
 MAX_MESSAGE_ID_BYTES = 512
@@ -75,10 +76,32 @@ class _Strict(BaseModel):
     )
 
 
+class LeadDeploymentScope(_Strict):
+    host_id: UuidV4
+    organization_id: UuidV4
+    namespace_id: UuidV4
+
+
+def lead_deployment_scope(scope: str, source_id: str) -> LeadDeploymentScope:
+    """Single owner for the new kind's canonical deployment binding."""
+    _byte_string(scope, minimum=1, maximum=MAX_SCOPE_BYTES)
+    value = LeadDeploymentScope.model_validate(json.loads(scope, object_pairs_hook=_unique))
+    canonical = json.dumps(value.model_dump(), sort_keys=True, separators=(",", ":"))
+    if scope != canonical or source_id != value.namespace_id:
+        raise ValueError("invalid lead deployment scope")
+    return value
+
+
 class SourceBinding(_Strict):
     source_id: UuidV4
-    source_kind: Literal["mail.received", "schedule.tick"]
+    source_kind: Literal["mail.received", "schedule.tick", "lead.source.received"]
     scope: _bounded(1, MAX_SCOPE_BYTES)
+
+    @model_validator(mode="after")
+    def _deployment(self):
+        if self.source_kind == "lead.source.received":
+            lead_deployment_scope(self.scope, self.source_id)
+        return self
 
 
 class MailEvent(_Strict):
@@ -92,6 +115,12 @@ class MailEvent(_Strict):
 class ScheduleEvent(_Strict):
     source_kind: Literal["schedule.tick"]
     scheduled_at: UtcInstant
+
+
+class LeadSourceEvent(_Strict):
+    source_kind: Literal["lead.source.received"]
+    schema_version: Literal["1.0"]
+    source_receipt: ReceiptReference
 
 
 class MailFilter(_Strict):
@@ -108,7 +137,7 @@ class MailFilter(_Strict):
         return self
 
 
-Event = MailEvent | ScheduleEvent
+Event = MailEvent | ScheduleEvent | LeadSourceEvent
 _EVENT = TypeAdapter(Event)
 
 
@@ -145,10 +174,17 @@ def parse_event(raw: bytes) -> Event:
 def check_event_time(event: Event, now: datetime) -> None:
     if not isinstance(now, datetime) or now.tzinfo is None or now.utcoffset() != timedelta(0):
         raise EventInputError()
-    instant = event.received_at if isinstance(event, MailEvent) else event.scheduled_at
-    if timestamp(instant) > now:
+    if isinstance(event, LeadSourceEvent):
+        instant = datetime.fromisoformat(event.source_receipt.accepted_at)
+    else:
+        instant = timestamp(
+            event.received_at if isinstance(event, MailEvent) else event.scheduled_at
+        )
+    if instant > now:
         raise EventInputError()
 
 
 def occurrence(event: Event) -> str:
+    if isinstance(event, LeadSourceEvent):
+        return event.source_receipt.event_id
     return event.message_id if isinstance(event, MailEvent) else event.scheduled_at
