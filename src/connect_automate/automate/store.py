@@ -39,10 +39,16 @@ from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import TypeAdapter
+
+from ..entitlement import UuidV4
+from ..lead_intake.receipts import ReceiptReference
 from .events import (
+    Event,
     EventBindingError,
     EventConflict,
     EventInputError,
+    SourceBinding,
     canonical_event,
     lead_deployment_scope,
     parse_event,
@@ -410,6 +416,29 @@ class EventAdmission:
 
 
 @dataclass(frozen=True)
+class SourceEventReceipt:
+    """Historical workflow metadata, never source submission or content authority."""
+
+    source_receipt: ReceiptReference
+    outcome: EventAdmission
+
+
+@dataclass(frozen=True)
+class _EventReceipt:
+    event: Event
+    outcome: EventAdmission
+
+
+@dataclass(frozen=True)
+class _SourceReceiptQuery:
+    source: SourceBinding
+    payload_digest: str
+
+
+_SOURCE_EVENT_ID = TypeAdapter(UuidV4)
+
+
+@dataclass(frozen=True)
 class OperationReplay:
     """The recorded outcome of a prior operation, for replay-before-matching lookups.
 
@@ -471,7 +500,7 @@ def _event_operation_key(identity: tuple[str, str, str, str, str]) -> str:
     return "pack.event:" + hashlib.sha256(canonical).hexdigest()
 
 
-def _stored_event_payload(prior: sqlite3.Row, source_kind: str, occurrence: str) -> dict:
+def _stored_event_payload(prior: sqlite3.Row, source_kind: str, occurrence: str) -> Event:
     """Validate stored bytes at their owner, before either replay consumer sees them."""
     try:
         raw = prior["payload"].encode("utf-8")
@@ -482,10 +511,21 @@ def _stored_event_payload(prior: sqlite3.Row, source_kind: str, occurrence: str)
             and parsed.source_kind == source_kind
             and event_occurrence(parsed) == occurrence
         ):
-            return parsed.model_dump(mode="json")
+            return parsed
     except (ValueError, TypeError, AttributeError, RecursionError):
         pass
     raise WorkflowStoreError("invalid event receipt payload")
+
+
+def _validate_event_lookup(identity, binding, pack_version, expected_payload_digest) -> None:
+    if (
+        any(not isinstance(value, str) or not value for value in (*identity, binding))
+        or type(pack_version) is not int
+        or pack_version < 1
+        or not isinstance(expected_payload_digest, str)
+        or re.fullmatch(r"[0-9a-f]{64}", expected_payload_digest) is None
+    ):
+        raise EventInputError()
 
 
 def _read_event_receipt(
@@ -494,8 +534,8 @@ def _read_event_receipt(
     identity: tuple[str, str, str, str, str],
     pack_version: int,
     binding: str,
-    fingerprint: str,
-) -> EventAdmission | None:
+    fingerprint: str | _SourceReceiptQuery,
+) -> _EventReceipt | None:
     """Single owner for binding, receipt integrity and historical replay checks."""
     subject, pack_id, source_id, source_kind, occurrence = identity
     owner = db.execute(
@@ -510,6 +550,12 @@ def _read_event_receipt(
         source_kind,
     ):
         raise EventBindingError()
+    if isinstance(fingerprint, _SourceReceiptQuery):
+        # Reuse the registration owner's persisted policy/snapshot/deployment checks.
+        # This runs in the caller's read snapshot and never opens a writer.
+        WorkflowStore._check_lead_deployment(
+            db, [{**fingerprint.source.model_dump(), "policy": {"schema_version": "1.0"}}]
+        )
     prior = db.execute(
         (
             "SELECT * FROM workflow_event_receipts WHERE subject = ? AND pack_id = ? "
@@ -521,13 +567,28 @@ def _read_event_receipt(
         return None
     if prior["pack_version"] != pack_version:
         raise _EventVersionConflict("event belongs to another pack revision")
-    if prior["fingerprint"] != fingerprint or prior["binding"] != binding:
+    if prior["binding"] != binding or (
+        not isinstance(fingerprint, _SourceReceiptQuery) and prior["fingerprint"] != fingerprint
+    ):
         raise EventConflict()
-    payload = _stored_event_payload(prior, source_kind, occurrence)
+    parsed = _stored_event_payload(prior, source_kind, occurrence)
+    if isinstance(fingerprint, _SourceReceiptQuery):
+        # The shared parser above has already enforced the lead event kind.
+        reference = parsed.source_receipt
+        scope = lead_deployment_scope(fingerprint.source.scope, fingerprint.source.source_id)
+        if (reference.host_id, reference.organization_id, reference.namespace_id) != (
+            scope.host_id,
+            scope.organization_id,
+            scope.namespace_id,
+        ):
+            raise WorkflowStoreError("invalid source receipt scope")
+        if reference.payload_digest != fingerprint.payload_digest:
+            raise EventConflict()
+    payload = parsed.model_dump(mode="json")
     if (prior["record_id"] is None) != (prior["event_id"] is None):
         raise WorkflowStoreError("invalid event receipt ownership")
     if prior["record_id"] is None:
-        return EventAdmission(False, False, None, None)
+        return _EventReceipt(parsed, EventAdmission(False, False, None, None))
     record = db.execute(
         "SELECT * FROM workflow_records WHERE record_id = ?", (prior["record_id"],)
     ).fetchone()
@@ -545,7 +606,9 @@ def _read_event_receipt(
         or record["pack_version"] != pack_version
     ):
         raise WorkflowStoreError("invalid event receipt ownership")
-    return EventAdmission(True, False, _replay_view(record, event), prior["event_id"])
+    return _EventReceipt(
+        parsed, EventAdmission(True, False, _replay_view(record, event), prior["event_id"])
+    )
 
 
 def _normalize_effects(effects: Sequence[Mapping[str, object]]) -> list[dict[str, object]]:
@@ -915,7 +978,7 @@ class WorkflowStore:
 
     @staticmethod
     def _check_lead_deployment(db: sqlite3.Connection, sources: list[dict]) -> None:
-        """Validate deployment scope under the registration writer, across subjects."""
+        """Validate deployment scope in the caller's transaction, across subjects."""
         incoming = [item for item in sources if item["source_kind"] == "lead.source.received"]
         if not incoming:
             return
@@ -1035,22 +1098,61 @@ class WorkflowStore:
         Never use admission or action dispatch to implement historical lookup.
         """
         identity = (subject, pack_id, source_id, source_kind, occurrence)
-        if (
-            any(not isinstance(value, str) or not value for value in (*identity, binding))
-            or type(pack_version) is not int
-            or pack_version < 1
-            or not isinstance(expected_payload_digest, str)
-            or re.fullmatch(r"[0-9a-f]{64}", expected_payload_digest) is None
-        ):
-            raise EventInputError()
+        _validate_event_lookup(identity, binding, pack_version, expected_payload_digest)
         with self.read_connection() as db:
-            return _read_event_receipt(
+            receipt = _read_event_receipt(
                 db,
                 identity=identity,
                 pack_version=pack_version,
                 binding=binding,
                 fingerprint=expected_payload_digest,
             )
+            return receipt.outcome if receipt is not None else None
+
+    def lookup_source_event(
+        self,
+        *,
+        subject: str,
+        pack_id: str,
+        pack_version: int,
+        binding: str,
+        source: SourceBinding,
+        event_id: str,
+        expected_payload_digest: str,
+    ) -> SourceEventReceipt | None:
+        """Read a source reference and original workflow outcome under configured scope.
+
+        Internal persistence primitive, not a licensed host or submission boundary.
+        The required digest identifies the source payload, NOT the canonical workflow
+        event; the stored event fingerprint is independently checked by the shared reader.
+        None means scoped absence at this read, not a guarantee against a later commit.
+        """
+        valid = False
+        try:
+            if not isinstance(source, SourceBinding):
+                raise ValueError("missing configured source")
+            source = SourceBinding.model_validate(source)
+            if source.source_kind != "lead.source.received":
+                raise ValueError("wrong source kind")
+            event_id = _SOURCE_EVENT_ID.validate_python(event_id)
+            valid = True
+        except (ValueError, TypeError, RecursionError):
+            pass
+        if not valid:
+            raise EventInputError()
+        identity = (subject, pack_id, source.source_id, source.source_kind, event_id)
+        _validate_event_lookup(identity, binding, pack_version, expected_payload_digest)
+        with self.read_connection() as db:
+            receipt = _read_event_receipt(
+                db,
+                identity=identity,
+                pack_version=pack_version,
+                binding=binding,
+                fingerprint=_SourceReceiptQuery(source, expected_payload_digest),
+            )
+            if receipt is None:
+                return None
+            return SourceEventReceipt(receipt.event.source_receipt, receipt.outcome)
 
     def admit_event(
         self,
@@ -1086,7 +1188,7 @@ class WorkflowStore:
                 fingerprint=fingerprint,
             )
             if prior is not None:
-                return prior
+                return prior.outcome
             selection = select()
             outcome = None
             if selection is not None:

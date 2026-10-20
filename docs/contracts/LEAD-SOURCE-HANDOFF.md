@@ -837,6 +837,14 @@ the bounded source-specific read boundary. Rollback removes that unused read API
 preserve stored receipts and all existing lookup/admission behavior. A changed
 shared validator is the primary regression risk, guarded by unchanged replay tests.
 
-Implementation summary/cold diff and verification evidence will be recorded with
-the implementation PR. Gap audit: NOT DONE until the bounded tests, native platform
-CI and both exact-head reviews pass. Stop at this increment; no facade work here.
+Implementation summary: the shared reader retains its parsed event and original
+outcome, and `lookup_source_event` returns a frozen source-reference projection.
+Existing lookup/admission callers unwrap the unchanged outcome. Deployment and
+policy checks reuse the registration owner within the read-only snapshot.
+
+Cold diff: production changes are confined to `automate/store.py`; a focused new
+test module covers source lookup and is added to the existing Windows lane.
+Existing tests, schemas, engine/runtime and source custody remain unchanged. Local
+baseline, fail-first, affected parity and behavioral mutation proof are recorded
+with the implementation PR. Gap audit: NOT DONE until native platform CI and both
+exact-head reviews pass. Stop at this increment; no facade work here.
