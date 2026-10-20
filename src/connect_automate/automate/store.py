@@ -275,6 +275,22 @@ def _verify_event_schema(db, *, allow_absent=False):
         raise WorkflowStoreError("incompatible event schema")
 
 
+def _read_authorizer(action, _first, _second, _database, _trigger):
+    # Internal SELECTs only: in particular, ATTACH can create another file even
+    # when main is mode=ro, and COMMIT would discard the validated read snapshot.
+    return (
+        sqlite3.SQLITE_OK
+        if action
+        in (
+            sqlite3.SQLITE_SELECT,
+            sqlite3.SQLITE_READ,
+            sqlite3.SQLITE_FUNCTION,
+            sqlite3.SQLITE_RECURSIVE,
+        )
+        else sqlite3.SQLITE_DENY
+    )
+
+
 def _schema_statements():
     statement = ""
     for line in _SCHEMA.splitlines(keepends=True):
@@ -719,6 +735,41 @@ class WorkflowStore:
             connection.commit()
         finally:
             connection.close()
+
+    @contextmanager
+    def read_connection(self) -> Iterator[sqlite3.Connection]:
+        """Yield a validated, consistent SELECT snapshot of an existing store.
+
+        This is an internal query primitive, not a license/organization boundary
+        or a sandbox for hostile Python. Keep URI mode=ro (not immutable) so live
+        WAL commits are visible. No initialization, repair or checkpoint occurs.
+        """
+        connection = None
+        try:
+            connection = sqlite3.connect(
+                self.path.absolute().as_uri() + "?mode=ro", uri=True, isolation_level=None
+            )
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA query_only=ON")
+            connection.execute("BEGIN")
+            # This first read pins the snapshot before the caller sees it.
+            _verify_event_schema(connection)
+            connection.set_authorizer(_read_authorizer)
+            yield connection
+            return
+        except sqlite3.Error:
+            pass
+        finally:
+            if connection is not None:
+                connection.close()
+        # contextmanager throws a caller's SQL error into this generator while
+        # that exception is still active. Detach it explicitly before a bare
+        # re-raise; leaving the local handler alone does not remove that context.
+        try:
+            raise WorkflowStoreError("workflow store read unavailable") from None
+        except WorkflowStoreError as error:
+            error.__context__ = None
+            raise
 
     def initialize(self) -> None:
         # mode=0o700 applies only when mkdir creates the directory, so a dedicated parent

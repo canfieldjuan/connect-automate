@@ -1,7 +1,6 @@
 # Lead source receipt to Automate: host handoff contract
 
-Status: **ACCEPTED CONTRACT; IMPLEMENTATION NOT AUTHORIZED.** This work order is
-documentation-only. Implementation requires a separate operator work order. No
+Status: **ACCEPTED CONTRACT; READ-ONLY CONNECTION INCREMENT AUTHORIZED.** No
 production receiver, Watcher adoption or complete foundation gate is approved.
 
 ## Operator acceptance
@@ -332,21 +331,66 @@ remain mandatory; green tests alone do not establish production readiness.
 
 ## Rollback, cold diff and gap audit
 
+### Read-only connection implementation increment
+
+After accepting the contract, the operator instructed **"Start implementing"**.
+The coding session selected the bounded read-only connection foundation first,
+as contemplated by the acceptance record. Contract PR checks and merge remain
+independent gates; this increment may be developed on its accepted revision but
+must not bypass those gates. The rest of the handoff is not implemented here.
+
+Root cause: the existing general `WorkflowStore.connection` opens SQLite with
+create-if-missing and commits on successful exit (`automate/store.py:708-721` at
+the baseline; introduced by `bf1cd1d`). Those are intentional writer semantics,
+unsuitable for the future historical-outcome lookup. Preserve them for writers.
+
+Required surface: add `WorkflowStore.read_connection` at that owner, a focused
+test file, and its native Windows CI selection. Open an existing file with a
+properly escaped SQLite `mode=ro` URI; do not use `immutable=1`, which could hide
+live WAL commits. Start one read transaction and use the existing event-schema
+validator before yielding. Refuse absent/incomplete event schema rather than
+initializing it. Pin the snapshot across all caller SELECTs. Restrict yielded SQL
+to reads, including refusing ATTACH and transaction-control statements, so a
+caller cannot accidentally create a second database or end the read snapshot.
+This is a trusted internal query interface, not a sandbox for hostile Python.
+SQLite errors become a bounded WorkflowStoreError without source/path/SQL details
+or exception context; valid missing-row results remain ordinary empty reads.
+Always close the connection on success, setup failure and caller failure.
+
+Verification: reproduce file creation by the old writer helper in a temporary
+directory; a missing read API test fails before implementation. Then prove missing
+file/parent refusal, empty/unrelated/corrupt/weakened schema refusal without repair,
+valid SELECTs and missing rows, escaped/relative paths, write/DDL/ATTACH/transaction
+denial, live WAL visibility, stable snapshots across a real concurrent process
+commit, and resource release on every exit. Mutate URI mode, snapshot BEGIN,
+schema validation and the read SQL guard independently; each must fail a targeted
+assertion. Run unchanged parser/auth and adjacent workflow parity, lint/format,
+and exact-head Linux/Windows CI plus independent review. A read transaction may
+participate in SQLite WAL shared-memory coordination, including creating absent
+`-wal` and `-shm` sidecars for an existing database and leaving them after the read
+connection closes. Read-only access does not promise an unchanged filesystem
+footprint or byte-for-byte immutability of sidecars. It must not write application
+rows, create a missing database, initialize schema or checkpoint/migrate the store.
+
+Non-scope: do not route existing getters through this method, change writer
+semantics or schema, add receipt lookup/submission, alter source custody, or add
+an application service. Regression risk is confined to the new read primitive;
+unchanged writer and schema tests prove coexistence. Rollback removes this unused
+primitive and its tests without data migration. This is an incomplete foundation
+until the later receipt lookup and joined submission/recovery proof land.
+
 Rollback before adoption: disable the new host binding and preserve both stores
 and the prior signed pack/configuration. Do not delete receipts to retry, downgrade
 persisted data or reinterpret the new event as mail. Existing workflows keep their
 contracts; an older binary must fail closed on the new trigger. Recovery from
 backup divergence needs separate qualification before live use.
 
-Implementation summary for this PR: one contract added and its direct operator
-acceptance recorded; no runtime,
-schema, dependency, fixture, workflow or application behavior changes. Cold diff
-must confirm that scope and validate each cited baseline file/range. Code tests
-are not rerun for this documentation-only change; the prior gate is attributed
-above with its tested head and merge-tree equality.
+The earlier contract PR was documentation-only. This implementation increment
+adds only the read primitive and its focused platform proof; cold diff must verify
+the declared surface. Existing source/auth vectors, workflow tests, schemas,
+dependencies and application integrations remain unchanged.
 
 Gap audit: contract acceptance is **DONE**, as recorded above. Implementation and
-application adoption remain **NOT DONE** and require separate authorization.
-Review approval or a docs merge does not authorize executable work. Stop after
-the documentation review/merge process; do not begin implementation under this
-work order.
+application adoption remain **NOT DONE**. Only the read-only connection increment
+is started here under the operator's implementation work order. Stop at its
+reviewed merge; no live handoff or production adoption is claimed.
