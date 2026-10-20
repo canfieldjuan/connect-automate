@@ -1,6 +1,6 @@
 # Lead source receipt to Automate: host handoff contract
 
-Status: **ACCEPTED CONTRACT; READ-ONLY RECEIPT LOOKUP INCREMENT AUTHORIZED.** No
+Status: **ACCEPTED CONTRACT; RECEIPT VOCABULARY AND DEPLOYMENT BINDING INCREMENT AUTHORIZED.** No
 production receiver, Watcher adoption or complete foundation gate is approved.
 
 ## Operator acceptance
@@ -455,6 +455,83 @@ increment. Host submission/lookup integration, joined crash recovery and adoptio
 remain NOT DONE; receipt metadata retention is still an operator decision before
 adoption.
 
+### Receipt vocabulary and deployment binding work order
+
+Operator work order: "Lets get started", following the proposed bounded receipt
+vocabulary and deployment-binding slice. Commit this work order separately before
+executable changes. The merged receipt lookup remains the recovery foundation.
+
+Root cause: `automate/events.py` and `automate/definition.py` only recognize mail
+and schedule source events. `WorkflowStore.register_bindings` freezes source
+configuration per subject but has no store-wide deployment invariant. A new
+receipt projection must preserve the existing source receipt validators rather
+than duplicate timestamp/identity rules or pull custody IO into the event parser.
+
+Required change surface: factor the common receipt projection and interval
+validation into a dependency-light `lead_intake/receipts.py`, keeping
+`admission.SourceReceipt` and all persisted canonical bytes compatible. Extend
+event parsing/canonicalization/occurrence, trigger validation and exports. Extend
+`SourceBinding` with a strictly canonical deployment scope for the new kind;
+namespace equals source ID. Register new-kind scopes and their explicit immutable
+policy in the existing writer transaction, enforcing one host/organization across
+subjects and packs, checking persisted scopes on reopen. No database schema change.
+The explicit policy is `{"schema_version":"1.0"}` for this receipt-only binding;
+it expresses no time scheduling, approval or delivery policy.
+
+Generic `PackRuntime.submit_event` and `WorkflowEngine.submit_event` must reject
+this kind before selection, receipt creation or effects. Syntax is not source
+authentication. The authenticated host facade and engine handoff path are a later
+work order; do not introduce a bypass token or simulate one in pack-kit. Event time
+and occurrence helpers preserve acceptance microseconds and original event ID,
+but their support must not itself activate submission.
+
+Extend the existing pack-kit compiler with a receipt-only proof archetype,
+`lead-source-receipt`, containing one guarded transition to `source-received`
+and no actions. Its new/build/check/sign path uses existing signing, manifest,
+binding and event validators. Its offline check explicitly proves registration,
+reopen, canonical receipt parsing, and refusal by generic submission with no
+records/actions; report these as vocabulary/binding checks, not a successful
+source handoff. Existing mail/schedule/business archetypes and golden bytes stay
+unchanged. The later authenticated handoff slice must prove the actual transition.
+
+Non-scope: source custody semantics, schema migration, host submission/lookup API,
+joined recovery, extraction, sender routing, action execution/retries, real mailbox
+access, lead creation, application adoption and retention decisions. No new
+services, workflow engine or poller. Existing mail/schedule scope semantics remain
+unchanged. Trusted in-process deployment configuration is not employee identity.
+
+Verification: unchanged source/auth/receipt and event/pack baseline; fail-first
+unsupported-event/trigger/binding probes; strict missing/extra/duplicate/coerced
+fields, timestamp precision and interval, canonical UUID/digest/version, byte cap,
+source-ID/scope mismatch, host/organization disagreement, multiple namespaces,
+reopen and changed binding/policy refusal. Corrupt one persisted scope invariant
+at a time and restore schema triggers so checks cannot mask each other. Run
+separate-process concurrent registrations with barriers, including competing
+subjects/deployments and compatible namespaces. Prove generic runtime and engine
+submission cannot create even a no-match receipt. Preserve old signed fixtures;
+prove kit build/sign/load and corrupt-artifact refusal with synthetic data. Add
+new tests to native Windows on first push; run affected local tests, lint/format,
+then exact-head Linux/Windows CI and independent/oversight review. Keep evidence
+outside worktrees. Targeted mutations must fail behaviorally for critical guards.
+
+Assumptions: accepted canonical scope fits the existing scope byte limit; current
+receipt validators are the authoritative pre-production implementation, with no
+model or inference settings involved. The only factoring difference is shared
+ownership of the identical fields and interval validator; unchanged source tests
+and canonical receipt comparisons must prove parity before new vocabulary claims.
+
+Regression risks: receipt inheritance could alter schema/default/canonical bytes;
+new event union could change legacy parsing; registration checks could leak scope
+across unrelated kinds; pack-kit branching could change existing artifacts. The
+unchanged parity lanes guard these. Rollback removes the unused vocabulary and
+proof archetype before adoption; retain stores and signed packs, do not delete
+receipts or downgrade/reinterpret new-kind bindings. Old binaries reject the new
+trigger. Stop at this increment's reviewed merge.
+
+Implementation summary/cold diff/gap audit: to be recorded against executable
+proof. The full handoff and foundation gates remain NOT DONE. No production
+retention decision or adoption is implied.
+
 Rollback before adoption: disable the new host binding and preserve both stores
 and the prior signed pack/configuration. Do not delete receipts to retry, downgrade
 persisted data or reinterpret the new event as mail. Existing workflows keep their
@@ -467,6 +544,6 @@ and its focused platform proof; cold diff must verify the declared surface. Exis
 dependencies and application integrations remain unchanged.
 
 Gap audit: contract acceptance is **DONE**, as recorded above. Implementation and
-application adoption remain **NOT DONE**. Only the read-only receipt lookup increment
-is started here under the operator's implementation work order. Stop at its
+application adoption remain **NOT DONE**. Read-only receipt lookup is merged; only the receipt vocabulary and deployment
+binding increment is authorized by the current work order. Stop at its
 reviewed merge; no live handoff or production adoption is claimed.
