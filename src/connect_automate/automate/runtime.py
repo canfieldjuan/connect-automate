@@ -21,9 +21,16 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from .actions import ActionOutcome, ActionRunner, AdapterRegistry
-from .definition import MAX_NAME_LENGTH, ScheduleTrigger, Workflow, WorkflowV2
+from .definition import MAX_NAME_LENGTH, LeadSourceTrigger, ScheduleTrigger, Workflow, WorkflowV2
 from .engine import DecisionOutcome, WorkflowEngine
-from .events import EventBindingError, SourceBinding, check_event_time, parse_event
+from .events import (
+    EventBindingError,
+    EventInputError,
+    LeadSourceEvent,
+    SourceBinding,
+    check_event_time,
+    parse_event,
+)
 from .host import AutomateHost
 from .pack import LoadedPack, load_pack, verify_grant
 from .store import ACTION_DEDUPE_PREFIX, RecordView, WorkflowStore
@@ -185,6 +192,8 @@ class PackRuntime:
                     if policies
                     else None
                 )
+                if isinstance(matching[0], LeadSourceTrigger):
+                    policy = {"schema_version": "1.0"}
                 configuration[name] = {**source.model_dump(mode="json"), "policy": policy}
             return bindings, configuration
         except (ValueError, TypeError, RecursionError):
@@ -194,6 +203,9 @@ class PackRuntime:
     def submit_event(self, *, binding: str, event: bytes, now: datetime) -> EventRun:
         self._host.require_license()
         parsed = parse_event(event)
+        if isinstance(parsed, LeadSourceEvent):
+            # A receipt-shaped value is not authenticated source custody.
+            raise EventInputError()
         if (
             not isinstance(self._pack.workflow, WorkflowV2)
             or not isinstance(binding, str)

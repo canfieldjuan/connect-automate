@@ -9,20 +9,18 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 from collections.abc import Callable
 from datetime import datetime
 from typing import Annotated, Literal
 from uuid import uuid4
 
-from pydantic import BeforeValidator, Field, model_validator
+from pydantic import BeforeValidator, Field
 
 from ..entitlement import UuidV4
 from .auth import SourceAuthenticationError, authenticate_source
+from .receipts import ReceiptReference
 from .source import (
     MAX_SOURCE_BYTES,
-    Digest,
-    Instant,
     Revision,
     SourceIdentity,
     _Closed,
@@ -40,40 +38,13 @@ from .source_store import (
 )
 
 
-def _decision_time(value: object) -> str:
-    if (
-        type(value) is not str
-        or re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z", value)
-        is None
-    ):
-        raise ValueError("invalid decision time")
-    datetime.fromisoformat(value.replace("Z", "+00:00"))
-    return value
-
-
-class SourceReceipt(_Closed):
+class SourceReceipt(ReceiptReference):
     schema_name: Literal["lead.source.receipt"] = Field(alias="schema")
     schema_version: Literal["1.0"]
-    admission_id: UuidV4
-    host_id: UuidV4
-    organization_id: UuidV4
-    namespace_id: UuidV4
-    event_id: UuidV4
-    payload_digest: Digest
-    accepted_at: Annotated[str, BeforeValidator(_decision_time)]
     key_id: UuidV4
     trust_generation: Revision
     policy_id: UuidV4
     policy_version: Revision
-    recovery_deadline: Instant
-
-    @model_validator(mode="after")
-    def _interval(self):
-        if datetime.fromisoformat(self.accepted_at) >= datetime.fromisoformat(
-            self.recovery_deadline
-        ):
-            raise ValueError("empty custody interval")
-        return self
 
 
 def _receipt_value(value: object) -> object:

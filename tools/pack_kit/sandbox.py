@@ -32,7 +32,11 @@ from connect_automate.automate.events import (
     EventBindingError,
     EventConflict,
     EventInputError,
+    LeadSourceEvent,
     MailEvent,
+    canonical_event,
+    lead_deployment_scope,
+    parse_event,
     timestamp,
 )
 from connect_automate.automate_connect import ConnectV2CapabilityInvoker
@@ -464,6 +468,40 @@ def _event_boundaries(env, data):
         require(db.execute("SELECT count(*) FROM workflow_event_receipts").fetchone()[0] == 1)
 
 
+def _receipt_vocabulary(env, data):
+    """Qualify syntax and binding only; no manufactured authenticated handoff."""
+    catalogue = env["event_catalogue"]
+    event = parse_event(catalogue.event_bytes())
+    require(isinstance(event, LeadSourceEvent))
+    require(canonical_event(event) == catalogue.event_bytes())
+    scope = lead_deployment_scope(catalogue.binding.scope, catalogue.binding.source_id)
+    receipt = event.source_receipt
+    require(
+        (scope.host_id, scope.organization_id, scope.namespace_id)
+        == (receipt.host_id, receipt.organization_id, receipt.namespace_id)
+    )
+    # Reopen the real configuration owner and repeat exact registration through load.
+    kwargs = {**env["kwargs"], "store": WorkflowStore(env["store"].path)}
+    reopened = PackRuntime.load(env["pack"], env["signed_grant"], **kwargs)
+    try:
+        reopened.submit_event(
+            binding=catalogue.binding.name, event=catalogue.event_bytes(), now=NOW
+        )
+    except EventInputError:
+        pass
+    else:
+        raise KitError(5, "check failed")
+    with env["store"].read_connection() as db:
+        for table in (
+            "workflow_event_receipts",
+            "workflow_records",
+            "workflow_events",
+            "workflow_actions",
+        ):
+            require(db.execute(f"SELECT count(*) FROM {table}").fetchone()[0] == 0)
+    require(not env["calls"] and not env["apps"].submitted)
+
+
 def run_check(raw: bytes, catalogue_bytes: bytes, event_bytes: bytes | None = None) -> dict:
     # Bounded decoding precedes schemas, and catalogue schema precedes artifact consistency.
     json_object(raw, ARTIFACT_LIMIT)
@@ -484,6 +522,8 @@ def run_check(raw: bytes, catalogue_bytes: bytes, event_bytes: bytes | None = No
     ]
     if event_catalogue is not None:
         scenarios += [("event-replay", _event_replay), ("event-boundaries", _event_boundaries)]
+    if data["archetype"] == "lead-source-receipt":
+        scenarios = [("receipt-vocabulary-binding-only", _receipt_vocabulary)]
     completed = []
     try:
         for name, scenario in scenarios:

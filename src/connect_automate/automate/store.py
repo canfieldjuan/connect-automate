@@ -44,6 +44,7 @@ from .events import (
     EventConflict,
     EventInputError,
     canonical_event,
+    lead_deployment_scope,
     parse_event,
 )
 from .events import (
@@ -912,6 +913,43 @@ class WorkflowStore:
             if sidecar.exists():
                 _restrict(sidecar, 0o600)
 
+    @staticmethod
+    def _check_lead_deployment(db: sqlite3.Connection, sources: list[dict]) -> None:
+        """Validate deployment scope under the registration writer, across subjects."""
+        incoming = [item for item in sources if item["source_kind"] == "lead.source.received"]
+        if not incoming:
+            return
+        try:
+            persisted = []
+            for row in db.execute(
+                "SELECT b.*, s.bindings_json FROM workflow_source_bindings b "
+                "LEFT JOIN workflow_binding_sets s ON b.subject=s.subject AND b.pack_id=s.pack_id "
+                "WHERE b.source_kind='lead.source.received'"
+            ):
+                policy = json.loads(row["policy"])
+                config = json.loads(row["bindings_json"])
+                stored = {key: row[key] for key in ("source_id", "source_kind", "scope")}
+                stored["policy"] = policy
+                if (
+                    row["policy"] != json.dumps(policy, sort_keys=True, separators=(",", ":"))
+                    or row["bindings_json"]
+                    != json.dumps(config, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+                    or not isinstance(config, dict)
+                    or config.get(row["binding"]) != stored
+                ):
+                    raise ValueError("inconsistent deployment binding")
+                persisted.append(stored)
+            deployments = set()
+            for source in [*incoming, *persisted]:
+                scope = lead_deployment_scope(source["scope"], source["source_id"])
+                if source["policy"] != {"schema_version": "1.0"}:
+                    raise ValueError("invalid receipt policy")
+                deployments.add((scope.host_id, scope.organization_id))
+            if len(deployments) != 1:
+                raise ValueError("conflicting deployment")
+        except (ValueError, TypeError, KeyError, RecursionError):
+            raise EventBindingError() from None
+
     def register_bindings(self, subject: str, pack_id: str, bindings: Mapping[str, dict]) -> None:
         """Freeze the complete configuration, atomically, across runtime revisions."""
         canonical = json.dumps(
@@ -924,6 +962,7 @@ class WorkflowStore:
                 {(source["source_kind"], source["scope"]) for source in sources}
             ) != len(sources):
                 raise EventBindingError()
+            self._check_lead_deployment(db, sources)
             for binding in sources:
                 owners = db.execute(
                     "SELECT source_id, source_kind, scope, policy FROM workflow_source_bindings "

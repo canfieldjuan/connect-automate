@@ -528,8 +528,20 @@ proof archetype before adoption; retain stores and signed packs, do not delete
 receipts or downgrade/reinterpret new-kind bindings. Old binaries reject the new
 trigger. Stop at this increment's reviewed merge.
 
-Implementation summary/cold diff/gap audit: to be recorded against executable
-proof. The full handoff and foundation gates remain NOT DONE. No production
+Implementation summary: `ReceiptReference` now owns the unchanged common fields
+and interval validator, inherited by `SourceReceipt`. The event/trigger models,
+canonical scope validator, transactional registration check and receipt-only kit
+path implement the bounded surface above. Both generic submission methods reject
+the new event before persistence. New synthetic tests and fixtures cover the
+boundary and concurrent registration; native Windows includes both new test files.
+
+Cold diff audit: receipt changes are factoring only; event/definition exports and
+runtime policy are additive; the store uses its existing registration transaction
+and tables; kit compilation reuses the existing artifact/signing owner. Existing
+tests, golden fixtures, source/auth schema owners and dependencies are unchanged.
+Durable proof and final CI/review status are recorded with the implementation PR.
+Gap audit: the full handoff and foundation gates remain NOT DONE. This increment
+is not merge-qualified until exact-head platform CI and reviews pass. No production
 retention decision or adoption is implied.
 
 Rollback before adoption: disable the new host binding and preserve both stores
