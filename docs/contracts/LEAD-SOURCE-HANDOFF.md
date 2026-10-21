@@ -977,3 +977,53 @@ signed-pack revision conflict and explicitly proves prepared metadata remains
 rejected by both generic submission APIs. Gap audit: local evidence accompanies
 the PR; native CI and both reviews remain pending. No public handoff, workflow
 acceptance, adoption or subsequent increment is claimed.
+
+## Closed result contract split work order
+
+Operator direction: "lets continue" authorizes splitting the reviewed runtime
+increment into a result-contract PR on main and a runtime-operations PR stacked
+on it. This work order precedes executable changes. The stacked final tree must
+match the reviewed implementation at 364124f4221c534f0ab544bc6533ec95833b46a2.
+The joined-recovery work order stays local and unpublished until the stack merges.
+
+### Inventory and bounded ownership
+
+Reuse the reviewed results.py models, dependency-free _event_limits.py owner,
+automate.events re-export, lazy lead_intake exports and pure result tests without
+behavior changes. The existing receipt-vocabulary test gains only the additive
+export inventory. The existing source/auth/receipt/store implementations and
+public runtime operations remain unchanged in this PR. The reviewed implementation
+and its durable lead-runtime-results evidence are the port specification; there
+is no inference model, prompt, service, migration or destination involved.
+
+The result models own strict immutable result/lookup variants, the existing byte
+cap, required workflow projections, unknown-field rejection and the bounded
+SourceHandoffUnknown exception. Accepted outcomes require a complete projection;
+no_match and not_found prohibit one. Lookup never claims newly applied work.
+The neutral cap owner prevents result imports from loading runtime or store owners.
+
+### Differences and verification
+
+Only partitioning changes: pure tests retain their original function bodies in
+test_lead_runtime_results.py; the stacked PR restores the full reviewed file and
+canonical runtime work order. This bounded work order replaces the combined one
+until that PR. Put the existing Windows test entry in this first PR so its pure
+tests receive native coverage from the first push; the second PR expands the same
+file without needing another CI edit. No production behavior differs from the
+reviewed implementation. All other files selected here remain byte-identical.
+
+Prove both valid and invalid variants, required/extra/mixed fields, falsy values,
+identifier and size bounds, frozen instances, copied-instance revalidation and
+fresh-interpreter import purity. Run focused result/receipt/event tests and lint;
+CI owns the broad Linux and native Windows gates. Record blob/function parity and
+the stacked final-tree comparison in durable lead-runtime-split evidence. Prior
+combined baseline and mutation evidence is attributed to its tested revision,
+not claimed as new execution. Both exact-head approvals, reconciled Codex, green
+required CI and clean local/remote equality remain merge requirements.
+
+Risk: moving the cap could change import behavior or break existing imports;
+retain the old re-export and run existing event tests. Rollback removes the new
+result consumer and restores the prior cap location, without database changes.
+No public submission, workflow selection, joined recovery, adoption or retention
+policy change is authorized by this first PR. Gap audit: NOT DONE until native CI
+and fresh reviews pass; the second PR owns runtime behavior and issue #33.

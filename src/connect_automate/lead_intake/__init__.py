@@ -8,6 +8,9 @@ Parsed source data is not authenticated admission.
 from importlib import import_module as _import_module
 
 _EXPORT_MODULES = {
+    "SourceHandoffResult": ".results",
+    "SourceHandoffLookup": ".results",
+    "SourceHandoffUnknown": ".results",
     "SourceAdmission": ".admission",
     "SourceAdmissionConflict": ".admission",
     "SourceAdmissionResult": ".admission",

@@ -581,6 +581,7 @@ def test_public_lead_export_identity_and_unknown_attributes():
     from connect_automate import lead_intake
 
     owners = {
+        "results": ("SourceHandoffResult", "SourceHandoffLookup", "SourceHandoffUnknown"),
         "admission": (
             "SourceAdmission",
             "SourceAdmissionConflict",
