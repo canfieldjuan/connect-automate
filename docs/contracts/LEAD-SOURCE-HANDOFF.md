@@ -1395,3 +1395,26 @@ Local evidence: 611 adjacent tests passed; injected replay suppression, rollback
 commit, early commit and body logging were each rejected by behavioral assertions.
 Evidence alias: `lead-joined-crash-proof`. Native platform CI and both exact-head
 reviews are pending; this record does not qualify later slices or adoption.
+
+### First slice repair contract: explicit child completion
+
+Native Windows run 39540934788 at `11b97059d5f9179277615913d046ddc40b195266`
+failed the new joined tests in `run_child`: its read loop polls after all messages
+have arrived, assuming closure will be reported by recv as EOFError. Windows
+PeekNamedPipe can instead raise BrokenPipeError from poll. This session introduced
+that assumption in the same commit, tests/test_lead_joined_recovery.py:170-183.
+
+Repair the harness protocol at its owner: the child sends a final completion
+marker after its trace/logs and before deliberate exit; the parent consumes through
+that marker and then independently verifies process exit, checkpoints, outcomes
+and durable stores. Remove EOF-as-success, rather than catching arbitrary I/O errors
+or increasing timeouts. Missing completion, timeout, unexpected exits and incomplete
+outcomes remain failures. Search found no second copy of this EOF-draining loop in
+the adjacent lead or workflow-lookup harnesses.
+
+Reproduce with the real spawn harness and a parent-side pipe adapter that reports
+peer closure as Windows poll does. Test normal and deliberate-crash completion,
+and a missing-marker negative case. Run the repaired lane, lint/format and mutation
+sensitivity, then require native Windows CI and both fresh reviews. Only this test
+file and contract change; production, existing tests, timeout policy and CI gates
+stay frozen. Rollback removes this harness repair without touching stored data.
