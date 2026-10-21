@@ -23,6 +23,7 @@ from .actions import ACTION_KINDS, CONNECT_INVOKE
 from .definition import (
     MAX_NAME_LENGTH,
     Condition,
+    LeadSourceTrigger,
     MailTrigger,
     ScheduleTrigger,
     Workflow,
@@ -330,8 +331,37 @@ class WorkflowEngine:
         self._host.require_license()
 
         if isinstance(event, LeadSourceEvent):
-            # Reserved for the later authenticated host handoff, never raw events.
+            # Receipt syntax is never authority at this public generic boundary.
             raise EventInputError()
+
+        return self._admit_event(
+            workflow,
+            subject=subject,
+            pack_id=pack_id,
+            pack_version=pack_version,
+            binding=binding,
+            source=source,
+            event=event,
+            now=now,
+        )
+
+    def _admit_event(
+        self,
+        workflow: WorkflowV2,
+        *,
+        subject: str,
+        pack_id: str,
+        pack_version: int,
+        binding: str,
+        source: SourceBinding,
+        event: Event,
+        now: datetime,
+    ):
+        """Private shared transaction path; callers must establish submission authority.
+
+        Generic submission rejects receipts; PackRuntime's source entry authenticates
+        raw bytes on every call before reaching this path. No prepared-token API.
+        """
 
         def select():
             matches = []
@@ -353,6 +383,8 @@ class WorkflowEngine:
                         )
                         for item in trigger.filters
                     )
+                elif isinstance(trigger, LeadSourceTrigger) and isinstance(event, LeadSourceEvent):
+                    matched = trigger.match_all
                 elif isinstance(trigger, ScheduleTrigger):
                     seconds = int(
                         (timestamp(event.scheduled_at) - timestamp(trigger.anchor)).total_seconds()
