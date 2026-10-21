@@ -1083,3 +1083,17 @@ CI and clean local/remote parity remain mandatory before guarded merge.
 Gap audit: NOT DONE until this increment passes its gates. The public methods
 are library-only; the combined boundary remains unqualified for adoption until
 the subsequent joined recovery increment and deployment prerequisites pass.
+
+
+### Pre-publication repair: result contract import boundary
+
+The new result module initially imported MAX_EVENT_BYTES from automate.events.
+Python first executes automate/__init__.py, which imports runtime/store; the new
+fresh-interpreter regression fails on that operational dependency. This was
+introduced by this increment's uncommitted results.py import, not by the source
+or receipt owners. Move the unchanged event cap to a dependency-free package-root
+`_event_limits.py` and re-export it from automate.events. Both event parser and
+result models use that single owner. No event parsing, bytes, schema or cap value
+changes, and no automate package initializer rewrite. Retain the fresh-interpreter
+failure as the regression; prove import/validation purity and existing event tests.
+Rollback restores the prior cap location when removing the new result consumer.
