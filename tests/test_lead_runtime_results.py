@@ -802,3 +802,42 @@ assert "connect_automate.automate.runtime" not in sys.modules
 assert "connect_automate.automate.store" not in sys.modules
 """
     subprocess.run([sys.executable, "-c", code], check=True)
+
+
+@pytest.mark.parametrize("fault", ["failed", "pending"])
+@pytest.mark.parametrize("bad_index", [0, 1])
+def test_unsettled_dispatch_is_unknown_on_submit_and_replay(setup, fault, bad_index):
+    from test_lead_receipt_vocabulary import workflow
+
+    from connect_automate.automate import AdapterRegistry
+    from connect_automate.lead_intake import SourceHandoffUnknown
+
+    args, _, _ = setup
+    value = workflow()
+    actions = [
+        {"action": "notify.local", "request": {"title": "Review", "body": "synthetic"}}
+        for _ in range(2)
+    ]
+    if fault == "failed":
+        actions[bad_index]["request"].pop("title")
+    else:
+        args["registry"] = AdapterRegistry()
+    value["definitions"][0]["actions"] = actions
+    signed_workflow(args, value)
+    runtime = PackRuntime.load(**args)
+    original_rows = None
+    for _ in range(2):
+        with pytest.raises(
+            SourceHandoffUnknown, match="^lead source handoff outcome unknown$"
+        ) as caught:
+            submit(runtime)
+        assert caught.value.__context__ is None and caught.value.__cause__ is None
+        found = lookup(runtime)
+        assert found.workflow_outcome == "accepted" and found.workflow_applied is False
+        rows = args["store"].list_actions(found.workflow_record_id)
+        expected = ["settled", "settled"] if fault == "failed" else ["pending", "pending"]
+        expected[bad_index] = fault
+        assert [row.status for row in rows] == expected
+        if original_rows is not None:
+            assert rows == original_rows
+        original_rows = rows

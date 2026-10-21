@@ -37,7 +37,13 @@ from .events import (
 )
 from .host import AutomateHost, AutomateLicenseError
 from .pack import LoadedPack, load_pack, verify_grant
-from .store import ACTION_DEDUPE_PREFIX, RecordView, WorkflowStore, _EventVersionConflict
+from .store import (
+    ACTION_DEDUPE_PREFIX,
+    ACTION_SETTLED,
+    RecordView,
+    WorkflowStore,
+    _EventVersionConflict,
+)
 
 if TYPE_CHECKING:
     from ..lead_intake.admission import SourceAdmission
@@ -329,10 +335,11 @@ class PackRuntime:
                         **_workflow_projection(outcome),
                     )
                 )
-                self._dispatch_event_actions(
+                actions = self._dispatch_event_actions(
                     outcome.record, outcome.event_id, outcome.applied, prepared.now
                 )
-                return result
+                if all(action.status == ACTION_SETTLED for action in actions):
+                    return result
             except (
                 EventBindingError,
                 EventConflict,

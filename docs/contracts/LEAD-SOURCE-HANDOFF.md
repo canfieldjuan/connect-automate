@@ -1132,6 +1132,7 @@ Raw evidence is retained outside the worktree under the lead-runtime-results ali
 Native CI and both exact-head reviews remain publication/merge gates. Gap audit:
 NOT DONE until those gates pass. Joined process recovery, retirement/expiry proof,
 real producer transport and deployment/adoption remain outside this increment.
+
 ### Review repair: returned dispatch failures
 
 Root cause: this session's 364124f (ported as d55fcbd),
