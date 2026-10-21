@@ -1150,3 +1150,37 @@ settled replay and no-action success; fail-first regression, adjacent tests, lin
 Rollback removes only this status check. This repairs the accepted dispatch-failure
 contract and intentionally breaks frozen-tree equality; record the exact delta.
 Gap audit: NOT DONE until regression proof, CI and both fresh approvals pass.
+
+
+### Issue #37 work order: isolated public refusal classifications
+
+Operator direction: "lets pick up 37 next". Baseline is merged runtime
+`6be0f5521b0161251d70ef513c9db3e67d7a4216`; joined-recovery preparation stays on
+its separate local branch. Commit this test-only contract before executable tests.
+
+Root cause: the public runtime refusal handlers added in 364124f (ported as
+d55fcbd) are correct, but existing coverage does not independently pin phase-two
+EventBindingError/EventConflict or public-lookup EventInputError. Removing those
+exceptions from their handler tuples must fail behaviorally rather than hide as
+SourceHandoffUnknown. This is a coverage defect, not a production behavior defect.
+
+Required surface: extend tests/test_lead_runtime_results.py using its real signed
+source/pack fixtures and the existing trigger-restoring corruption helper. Reach
+the workflow reader only after successful authenticated source preparation. Change
+one binding or receipt field per case, assert bounded exact refusal and unchanged
+workflow rows, restore that field and prove valid replay. Lookup cases separately
+cover malformed event ID/digest, including falsy/wrong types and digest boundaries;
+assert refusal before any source/workflow storage access and a valid control.
+Existing native Windows selection already includes this file; no CI edit needed.
+
+Verification: unchanged focused baseline; new tests pass on unchanged production;
+in-memory mutations remove only the named exception from its actual public-method
+handler tuple. Each corresponding test must then fail with SourceHandoffUnknown,
+not fixture/schema/setup failure. Run adjacent runtime/receipt lookup tests, lint,
+format and cold diff; retain raw outputs outside worktrees. No broad duplicate CI
+suite. No schema, runtime, store, authentication, dispatch, retry, retention,
+dependency or joined-recovery change. Rollback removes only these new tests.
+Assumption: existing behavior matches the issue; a reproduced implementation defect
+requires its own origin analysis and repair contract before production edits.
+Gap audit: NOT DONE until test and mutation proof, native CI and both exact-head
+reviews pass. This slice does not qualify joined recovery or production adoption.
