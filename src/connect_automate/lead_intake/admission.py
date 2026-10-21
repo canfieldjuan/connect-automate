@@ -77,6 +77,11 @@ class SourceAdmission:
             raise SourceStoreInputError()
         self._store, self._clock = store, clock
 
+    @property
+    def deployment(self) -> tuple[str, str]:
+        """Configured host/organization only; no I/O or source authorization."""
+        return self._store.host_id, self._store.organization_id
+
     def _existing(self, db, row) -> tuple[SourceReceipt, str]:
         ident, org, namespace, event, raw_receipt, envelope_hash = row
         receipt = SourceReceipt.model_validate_json(raw_receipt)

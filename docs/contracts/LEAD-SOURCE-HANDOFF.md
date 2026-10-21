@@ -879,3 +879,101 @@ then adjacent suites, lint/format and mutations of full-map equality, orphan-row
 refusal and the configured-model type guard. Native CI and both exact-head reviews
 remain required. Regression cases live in the new projection test module, already
 included in Windows CI; prior test files remain unchanged.
+
+
+## Implementation increment: authenticated host composition
+
+Operator direction: "Let's start the next slice", after the reviewed projection
+increment merged. This implementation contract is committed before executable
+changes. Baseline is `de27e0a992e7ef176ceb0860e47bfc448109ee0f`.
+
+Root cause: verified `PackRuntime.load` owns pack/grant and binding registration,
+but has no trusted source owner or host workflow clock. `SourceAdmission` already
+authenticates raw bytes on every call and releases its writer before returning.
+`WorkflowStore.lookup_source_event` now provides historical metadata. Compose
+those owners; do not implement another verifier or access another owner's SQL.
+
+Proven inventory: reuse source/auth frozen fixtures, real SourceStore bootstrap,
+source replay/key-rotation/conflict/uncertain-commit tests, the signed pack/grant
+fixtures, licensed host harness, and projection/read-only tests. No model, prompt,
+provider or runtime tuning participates. Source parsing, payload hashing, receipt
+models, deployment syntax, event time and licensed access retain their current
+owners. No baseline fixtures change.
+
+Required change surface:
+- `SourceAdmission.deployment` exposes only its configured host/organization tuple,
+  without I/O. It is configuration metadata, not authenticated authority.
+- Optional paired `source_admission` and `source_clock` configuration on verified
+  `PackRuntime.load`. Validate the real owner, callable clock and all lead routes
+  after pack/grant verification and before durable binding registration. Freeze
+  route copies and owner/clock references for the runtime lifetime. Reject partial
+  configuration, a foreign deployment, or supplying an owner to a non-lead pack.
+  Existing runtimes without these options remain compatible.
+- A private immutable `lead_intake/handoff.py` composition object prepares a
+  metadata-only event from raw signed bytes. The runtime gate checks license and
+  configured lead binding before reaching it. It parses only to reject mismatched
+  host/organization/namespace before mutation; then calls the real admission owner
+  every time. Its fresh validated receipt must agree with the route and request's
+  identity, digest and recovery deadline. Sample the configured workflow clock and
+  reuse event-time validation. Never accept caller-supplied receipts/results as
+  input, never call back under a source transaction, and propagate source uncertainty.
+- Private runtime preparation and historical lookup paths are the testable
+  composition seams for the next increment. Lookup delegates to the existing
+  source receipt reader with the verified subject/pack/version and frozen binding;
+  it uses no source owner or clock, so it also works in a lookup-only runtime with
+  no source admission configured. Map the existing pack-version refusal as the
+  generic engine already does.
+
+Increment boundary clarification: the work order reserves selection and public
+closed/versioned results for the next increment. Therefore this increment does
+not publish `submit_source` or `lookup_source_outcome`, export a facade/result as
+public authority, add a callback accepting prepared receipts, or claim workflow
+acceptance. Private preparation commits source custody only; its immutable metadata
+is not a reusable submission credential. Next increment must compose it inline
+from raw bytes, never accept it from a caller. Generic runtime and engine receipt
+submission refusal stays unchanged. Lazy package exports remain unchanged until
+there is a complete supported public boundary.
+
+Non-scope: engine selection, workflow admission/dispatch, public result schemas,
+joined crash qualification, migrations, retention, content, source authentication,
+EOM, live application adoption and issue #31's separate test-only follow-up.
+No two-store transaction or source lock extension. Same-process hostile reflection
+is not a sandbox claim; employee authorization and production retention remain open.
+
+Verification: unchanged touched-owner baseline before source edits; missing-config
+API fail-first; real signed-source preparation for available/unavailable bodies,
+replay, key rotation, conflicts and revoked signatures. License, pack/grant,
+binding and deployment failures must precede store mutation; malformed inputs and
+copied result/model/dict cannot skip admission. Probe each fresh receipt mismatch
+independently, with valid neighboring fields, and fail closed on owner drift.
+Prove both owner/clock references and binding mappings cannot be reassigned through
+public configuration, and private preparation cannot create workflow rows or call
+dispatch. Historical lookup must use only workflow reads and preserve receipt
+absence/accepted/no-match/revision/digest behavior. Reuse unchanged import-cycle,
+parser/auth/admission/runtime/projection lanes; add focused tests to Windows from
+the first push. Mutate each new security/integrity clause and require behavioral
+failures. Native Linux/Windows CI and both exact-head reviews gate merge.
+
+Risks: returning source custody as workflow acceptance, accidentally trusting a
+parsed request or copied receipt, eager import cycles, and mutable route rebinding.
+Rollback removes optional host composition while retaining both stores and all
+existing raw-source and generic event behavior. No production adoption. Cold diff
+and evidence are recorded with the implementation. Gap audit: NOT DONE until this
+bounded increment passes; public handoff and joined qualification remain later.
+
+
+Implementation summary: optional owner/clock configuration is validated after
+pack/grant verification and before registration. Frozen private handoffs use the
+existing source admission and receipt models; private historical lookup uses the
+existing workflow reader. SourceBinding model validation/copying remains solely
+in the runtime binding owner; handoff does not duplicate it. Operational imports
+are deferred to configured loading, preserving pure receipt import paths.
+
+Cold diff: runtime composition and immutable binding maps, an I/O-free admission
+metadata property, a private handoff module, focused real-store tests, and the
+Windows lane entry. Existing source/auth/custody/engine/store implementations,
+package exports and old tests are unchanged. The focused suite uses a real
+signed-pack revision conflict and explicitly proves prepared metadata remains
+rejected by both generic submission APIs. Gap audit: local evidence accompanies
+the PR; native CI and both reviews remain pending. No public handoff, workflow
+acceptance, adoption or subsequent increment is claimed.
