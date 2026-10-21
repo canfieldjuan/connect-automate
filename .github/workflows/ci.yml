@@ -57,6 +57,7 @@ jobs:
           tests/test_source_event_receipt_lookup.py
           tests/test_lead_host_composition.py
           tests/test_lead_runtime_results.py
+          tests/test_lead_joined_recovery.py
           tests/test_lead_receipt_vocabulary.py
           tests/test_pack_kit_receipt.py
           tests/test_pack_kit_events.py
