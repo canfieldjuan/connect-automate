@@ -1418,3 +1418,92 @@ and a missing-marker negative case. Run the repaired lane, lint/format and mutat
 sensitivity, then require native Windows CI and both fresh reviews. Only this test
 file and contract change; production, existing tests, timeout policy and CI gates
 stay frozen. Rollback removes this harness repair without touching stored data.
+
+## Joined concurrency qualification work order
+
+Operator direction: "Lets start", following the merged crash/transaction slice.
+Baseline: `580ffb51ef71b09e38b6cd517d232a71bb24ccaa` (PR #39), tree identical
+to reviewed `17e82c02570bcefca80c24ca2667db9f53b57e97`. Commit this work order
+before executable changes. This is only slice 2 of the bounded qualification stack.
+
+Root cause of the evidence gap: separate-store races and joined sequential crash
+recovery do not prove overlapping public submissions, independent source/workflow
+winners, or a public historical read across a joined writer commit. The canonical
+[Recovery limits](#recovery-limits) and preceding joined work order own semantics;
+this slice adds proof without redefining identity, retry or delivery behavior.
+
+Inventory to preserve: the signed no-action pack and source fixture, fixed NOW,
+real private SQLite stores and unique per-child entitlement paths from
+`tests/test_lead_joined_recovery.py:37,66`; its post-load connection hooks at :87,
+explicit completion protocol at :172 and reopened custody validators at :213.
+Reuse source writer-contention detection from `test_lead_source_races.py:25` and
+the rotated authority/signature fixture pattern from
+`test_lead_source_admission.py:219`. Reuse the pinned read-snapshot pattern at
+`test_workflow_receipt_lookup.py:404`. Production owners remain
+`SourceAdmission.admit_source`, `SourceStore._transaction`, `PackRuntime.submit_source`
+and `WorkflowStore.admit_event/read_connection`. No runtime/model/prompt is added.
+
+Required surface: add `tests/test_lead_joined_concurrency.py` and its first-push
+native Windows CI selection. Extend the existing test worker with optional start,
+pause and release signals, an observed source SQLITE_BUSY notification, and bounded
+refusal results. Factor the shared parent message reader so completion recognition
+has one owner and the merged Windows fix remains authoritative. Reuse fixture,
+source signing, child runtime reconstruction and durable-state helpers. Extend the
+custody inspection oracle only to accept the explicitly expected original envelopes
+for multi-event and rotated-signature cases. Preserve all prior assertions/tests.
+
+The planned differences from the inventory are controlled simultaneous workers,
+SQLITE_BUSY observation after a real BEGIN attempt, and snapshot timing around the
+public lookup. Controls are test-only and installed after runtime load. Every
+worker waits for explicit parent release; no sleep-based ordering. Existing store
+busy deadlines, signing inputs, clock, pack, record lifecycle and production code
+stay unchanged. Only a reproduced product defect could justify a separately
+recorded repair contract and regression; do not hide defects in the harness.
+
+Required cases:
+- Same signed event: two spawned public submissions overlap at the source writer;
+  observe the second process's SQLITE_BUSY before releasing the first. Exactly one
+  source receipt and workflow record/receipt, stable IDs and one applied flag per
+  owner; authenticated replay adds nothing.
+- Distinct event IDs for one message: the same overlap yields distinct admissions
+  and workflow records for both events. Message identity alone must not collapse
+  source-event identity; content and outcome cardinalities are checked.
+- Signed conflicting payload for one event: the first source transaction wins;
+  the contender receives the definite source conflict, never a second receipt,
+  workflow record, or invented success. The original request remains replayable.
+- Rotated-key replay: first preserve a source-only receipt, publish a new active
+  grant while revoking the old one with the existing authority owner, then overlap
+  two valid new-key submissions. Original receipt/content remain unchanged; only
+  one workflow is created. The old signed request is refused, not used as authority.
+- Opposite winners: pause the original submit after source return, let another
+  process replay the same source and win workflow admission, then release the first.
+  Assert source_applied/workflow_applied are independent for both responses.
+- Snapshot lookup: pin the real workflow read snapshot before a spawned public
+  writer commits. Observe its pre-commit checkpoint, release and finish the writer,
+  then let that lookup finish on its original snapshot. It may report not_found;
+  a subsequent fresh public read reports the committed original outcome. No lookup
+  mutation, admission or dispatch is permitted.
+
+Every case asserts observed checkpoints, successful process completion or explicit
+expected refusal, both stores' exact durable cardinalities, retained original
+content, stable receipt/workflow metadata, empty no-action outbox and body exclusion
+from serialized outcomes/traces/workflow rows. Bound IPC waits, release/terminate/
+join children and close handles on failure. Unexpected closure/timeout is a harness
+failure, never a passing concurrency or mutation result.
+
+Verification: unchanged joined recovery and adjacent source-race/receipt/public
+result baseline; new focused concurrency lane; causal in-memory mutations at real
+owners for event identity, replay/receipt reuse and independent applied flags.
+Mutations must fail behavioral assertions, not setup, timeouts or absent overlap.
+Run lint/format/cold diff and both native platforms; retain evidence outside the
+worktree. No duplicate broad local CI suite. Both exact-head independent approval
+and oversight PASS, clean Codex reconciliation and required CI remain merge gates.
+
+Risk: false concurrency proof through sequential execution or confusing load-time
+transactions with admission. Controls start only after both runtimes load, writer
+contention is observed before release, and stored state is the outcome oracle.
+Rollback removes only this test extension and its CI selection. No migrations,
+source schema changes, retention decisions, new dispatcher, application adoption,
+EOM changes or effect delivery. Arbitrary revocation/lifecycle ordering and copied
+authority remain slice 3. Gap audit: contract only; implementation, native proof
+and both reviews are NOT DONE.
