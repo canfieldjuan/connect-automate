@@ -1009,7 +1009,9 @@ lead-trigger matching; public runtime submit/lookup; pure closed result models
 and sanitized uncertainty handling. Existing generic methods still reject leads.
 The obsolete host-composition assertion that submit_source is absent is replaced
 with proof that calling private preparation still cannot admit a workflow. No
-other existing test behavior or fixtures are rewritten.
+other existing test behavior or fixtures are rewritten. The exact public-export
+inventory test also adds the declared result/unknown names while preserving
+all prior names and identity assertions.
 
 ### Required surface, invariants and failure semantics
 
