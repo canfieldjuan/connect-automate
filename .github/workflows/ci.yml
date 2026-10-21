@@ -59,6 +59,7 @@ jobs:
           tests/test_lead_runtime_results.py
           tests/test_lead_joined_recovery.py
           tests/test_lead_joined_concurrency.py
+          tests/test_lead_joined_lifecycle.py
           tests/test_lead_receipt_vocabulary.py
           tests/test_pack_kit_receipt.py
           tests/test_pack_kit_events.py

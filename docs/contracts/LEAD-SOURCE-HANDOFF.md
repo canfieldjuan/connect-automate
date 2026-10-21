@@ -1618,3 +1618,26 @@ expanding code scope. Rollback removes only this test extension and CI selection
 Risk is false historical proof via a live source owner or fixture-only metadata;
 reopened real stores, forbidden-call probes and owner mutations address it.
 Gap audit: contract only; implementation, native proof and reviews NOT DONE.
+
+
+### Authorization/lifecycle implementation record
+
+The unchanged joined/content/public-result baseline completed successfully before
+shared-worker edits. The joined crash, concurrency and lifecycle lanes then passed
+44 tests. Existing crash test functions and the concurrency file are unchanged;
+only the worker's bounded refusal channel adds SourceAuthenticationError. The new
+lane is selected in native Windows CI. Production, dependencies and schemas have
+no diff against the merged concurrency baseline.
+
+Four real-owner in-memory mutations fail behavioral assertions: use historical
+instead of current authority, over-purge later captures, project the current
+instead of original record, and prepare source during historical lookup. The first
+projection mutation reached a writer guard, and the first lookup mutation failed
+an earlier preliminary lookup. Refined probes use the existing read transaction
+for current-record projection and the post-erasure historical test for source
+preparation, isolating the intended checks. Initial probe outcomes are retained
+but are not counted as those isolated proofs. No timeout/setup failure is counted.
+
+Evidence alias: `lead-joined-lifecycle`. Lint, format and cold diff pass. Native
+CI and both exact-head reviews remain pending; this is no adoption or effect
+qualification. Workflow-writer lock proof is tracked separately in issue #41.
