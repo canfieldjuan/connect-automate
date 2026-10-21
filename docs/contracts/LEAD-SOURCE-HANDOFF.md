@@ -1132,3 +1132,20 @@ Raw evidence is retained outside the worktree under the lead-runtime-results ali
 Native CI and both exact-head reviews remain publication/merge gates. Gap audit:
 NOT DONE until those gates pass. Joined process recovery, retirement/expiry proof,
 real producer transport and deployment/adoption remain outside this increment.
+### Review repair: returned dispatch failures
+
+Root cause: this session's 364124f (ported as d55fcbd),
+`PackRuntime.submit_source`, discarded returned ActionOutcome values; only raised
+failures reached the bounded error path. A missing-title local action reproduces
+accepted on first submit and replay while its durable action remains failed.
+Required surface: inspect dispatch statuses at this owner; only settled outcomes
+permit the existing result. Pending/failed outcomes use the already-contracted
+SourceHandoffUnknown path outside exception handlers. Historical lookup still
+reports known workflow acceptance; unknown does not assert absence or retryability.
+Non-scope: result schema/exports, generic APIs, action runner/store/retry rules,
+source custody and the deferred refusal pins. No compensating downstream checks.
+Verification: real adapter failure, pending, mixed success/failure, safe replay,
+settled replay and no-action success; fail-first regression, adjacent tests, lint.
+Rollback removes only this status check. This repairs the accepted dispatch-failure
+contract and intentionally breaks frozen-tree equality; record the exact delta.
+Gap audit: NOT DONE until regression proof, CI and both fresh approvals pass.
