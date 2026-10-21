@@ -841,3 +841,115 @@ def test_unsettled_dispatch_is_unknown_on_submit_and_replay(setup, fault, bad_in
         if original_rows is not None:
             assert rows == original_rows
         original_rows = rows
+
+
+def _track_source_preparation(runtime, monkeypatch):
+    prepared = []
+    original = runtime._prepare_source
+
+    def prepare(**kwargs):
+        result = original(**kwargs)
+        prepared.append(result)
+        return result
+
+    monkeypatch.setattr(runtime, "_prepare_source", prepare)
+    return prepared
+
+
+def test_phase_two_binding_refusal_is_not_unknown(setup, monkeypatch):
+    from test_lead_source_admission import counts
+    from test_lead_source_auth import OTHER
+    from test_workflow_receipt_lookup import corrupt, rows
+
+    from connect_automate.automate.events import EventBindingError
+
+    args, owner, _ = setup
+    runtime = PackRuntime.load(**args)
+    prepared = _track_source_preparation(runtime, monkeypatch)
+    source_id = args["event_bindings"]["inbox"]["source_id"]
+    corrupt(args["store"], "workflow_source_bindings", "source_id=?", (OTHER,))
+    before = rows(args["store"])
+    with pytest.raises(EventBindingError, match="^invalid event binding$") as caught:
+        submit(runtime)
+    assert caught.value.__context__ is None and caught.value.__cause__ is None
+    assert len(prepared) == 1 and prepared[0].source_applied is True
+    assert counts(owner) == (1, 1, 1)
+    assert rows(args["store"]) == before
+    corrupt(args["store"], "workflow_source_bindings", "source_id=?", (source_id,))
+    recovered = submit(runtime)
+    assert recovered.source_applied is False and recovered.workflow_applied is True
+    assert recovered.source_receipt == prepared[0].event.source_receipt
+
+
+def test_phase_two_receipt_conflict_is_not_unknown(setup, monkeypatch):
+    from test_lead_source_admission import counts
+    from test_workflow_receipt_lookup import corrupt, rows
+
+    from connect_automate.automate.events import EventConflict
+
+    args, owner, _ = setup
+    runtime = PackRuntime.load(**args)
+    first = submit(runtime)
+    prepared = _track_source_preparation(runtime, monkeypatch)
+    with args["store"].read_connection() as db:
+        fingerprint = db.execute("SELECT fingerprint FROM workflow_event_receipts").fetchone()[0]
+    corrupt(args["store"], "workflow_event_receipts", "fingerprint=?", ("b" * 64,))
+    before = rows(args["store"])
+    with pytest.raises(EventConflict, match="^event identity conflict$") as caught:
+        submit(runtime)
+    assert caught.value.__context__ is None and caught.value.__cause__ is None
+    assert len(prepared) == 1 and prepared[0].source_applied is False
+    assert prepared[0].event.source_receipt == first.source_receipt
+    assert counts(owner) == (1, 1, 1)
+    assert rows(args["store"]) == before
+    corrupt(args["store"], "workflow_event_receipts", "fingerprint=?", (fingerprint,))
+    replay = submit(runtime)
+    assert replay.source_applied is False and replay.workflow_applied is False
+    assert replay.workflow_record_id == first.workflow_record_id
+    assert replay.workflow_event_id == first.workflow_event_id
+
+
+@pytest.mark.parametrize(
+    "field,bad",
+    [
+        pytest.param("event_id", None, id="id-null"),
+        pytest.param("event_id", False, id="id-false"),
+        pytest.param("event_id", 0, id="id-zero"),
+        pytest.param("event_id", "", id="id-empty"),
+        pytest.param("event_id", "not-a-uuid", id="id-malformed"),
+        pytest.param("event_id", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".upper(), id="id-case"),
+        pytest.param("expected_payload_digest", None, id="digest-null"),
+        pytest.param("expected_payload_digest", False, id="digest-false"),
+        pytest.param("expected_payload_digest", 0, id="digest-zero"),
+        pytest.param("expected_payload_digest", "", id="digest-empty"),
+        pytest.param("expected_payload_digest", "a" * 63, id="digest-short"),
+        pytest.param("expected_payload_digest", "a" * 65, id="digest-long"),
+        pytest.param("expected_payload_digest", "A" * 64, id="digest-case"),
+        pytest.param("expected_payload_digest", "g" * 64, id="digest-nonhex"),
+    ],
+)
+def test_public_lookup_input_refusal_is_not_unknown(setup, monkeypatch, field, bad):
+    from test_lead_source_admission import counts
+    from test_workflow_receipt_lookup import rows
+
+    from connect_automate.automate.events import EventInputError
+
+    args, owner, _ = setup
+    runtime = PackRuntime.load(**args)
+    valid = lookup(runtime)
+    assert valid.workflow_outcome == "not_found"
+    before = rows(args["store"])
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("invalid lookup accessed storage")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(owner, "_transaction", forbidden)
+        patch.setattr(args["store"], "connection", forbidden)
+        patch.setattr(args["store"], "read_connection", forbidden)
+        with pytest.raises(EventInputError, match="^invalid event input$") as caught:
+            lookup(runtime, **{field: bad})
+        assert caught.value.__context__ is None and caught.value.__cause__ is None
+    assert lookup(runtime) == valid
+    assert rows(args["store"]) == before
+    assert counts(owner) == (0, 0, 0)
