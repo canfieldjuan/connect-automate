@@ -10,10 +10,10 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, TypeAdapter, model_validator
 
+from .._event_limits import MAX_EVENT_BYTES as MAX_EVENT_BYTES
 from ..entitlement import UuidV4
 from ..lead_intake.receipts import ReceiptReference
 
-MAX_EVENT_BYTES = 8192
 MAX_MESSAGE_ID_BYTES = 512
 MAX_SENDER_BYTES = 256
 MAX_SUBJECT_BYTES = 1024

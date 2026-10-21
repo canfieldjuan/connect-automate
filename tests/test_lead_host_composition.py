@@ -104,7 +104,7 @@ def test_real_source_preparation_reauthenticates_and_only_commits_custody(setup,
     with args["store"].read_connection() as db:
         assert db.execute("SELECT count(*) FROM workflow_event_receipts").fetchone()[0] == 0
         assert db.execute("SELECT count(*) FROM workflow_records").fetchone()[0] == 0
-    assert not hasattr(runtime, "submit_source")
+    # Public submission exists; private preparation still cannot admit workflows.
 
 
 def test_admission_deployment_metadata_has_no_io(setup, monkeypatch):

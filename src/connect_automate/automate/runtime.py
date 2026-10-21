@@ -26,20 +26,23 @@ from .actions import ActionOutcome, ActionRunner, AdapterRegistry
 from .definition import MAX_NAME_LENGTH, LeadSourceTrigger, ScheduleTrigger, Workflow, WorkflowV2
 from .engine import DecisionOutcome, PackVersionError, WorkflowEngine
 from .events import (
+    AmbiguousEvent,
     EventBindingError,
+    EventConflict,
     EventInputError,
     LeadSourceEvent,
     SourceBinding,
     check_event_time,
     parse_event,
 )
-from .host import AutomateHost
+from .host import AutomateHost, AutomateLicenseError
 from .pack import LoadedPack, load_pack, verify_grant
 from .store import ACTION_DEDUPE_PREFIX, RecordView, WorkflowStore, _EventVersionConflict
 
 if TYPE_CHECKING:
     from ..lead_intake.admission import SourceAdmission
     from ..lead_intake.handoff import _SourceHandoff
+    from ..lead_intake.results import SourceHandoffLookup, SourceHandoffResult
 
 
 @dataclass(frozen=True)
@@ -148,8 +151,8 @@ class PackRuntime:
         :class:`PackError` here, before any record is created.
 
         Optional source_admission/source_clock are paired trusted-host configuration
-        for the private lead composition seams. They do not enable public source
-        submission or claim workflow acceptance in this increment.
+        for library-only authenticated source submission. Omitting both permits
+        historical lookup only; deployment/adoption qualification remains separate.
         """
         host.require_license()
         pack = load_pack(pack_bytes, keys=publisher_keys)
@@ -269,6 +272,119 @@ class PackRuntime:
             )
         except _EventVersionConflict:
             raise PackVersionError("event belongs to another pack revision") from None
+
+    def submit_source(self, *, binding: str, raw_source_bytes: bytes) -> SourceHandoffResult:
+        """Authenticate raw source bytes, then admit a metadata-only workflow event.
+
+        A refusal never asserts that earlier source custody is absent. Operational
+        uncertainty may follow either commit; use historical lookup or an authorized
+        retry with the same signed request, not a cached receipt or a new event ID.
+        """
+        from ..lead_intake.auth import SourceAuthenticationError
+        from ..lead_intake.results import (
+            SourceHandoffResult,
+            SourceHandoffUnknown,
+            _workflow_projection,
+        )
+        from ..lead_intake.source import SourceInputError
+        from ..lead_intake.source_store import (
+            SourceStoreError,
+            SourceStoreUnavailable,
+            SourceStoreUncertain,
+        )
+
+        try:
+            prepared = self._prepare_source(binding=binding, raw_source_bytes=raw_source_bytes)
+        except (SourceStoreUnavailable, SourceStoreUncertain):
+            pass
+        except (
+            SourceInputError,
+            SourceAuthenticationError,
+            SourceStoreError,
+            EventBindingError,
+            AutomateLicenseError,
+        ):
+            raise
+        except Exception:
+            pass
+        else:
+            try:
+                self._host.require_license()
+                outcome = self._engine._admit_event(
+                    self._pack.workflow,
+                    subject=self._subject,
+                    pack_id=self._pack.pack_id,
+                    pack_version=self._pack.pack_version,
+                    binding=binding,
+                    source=self._event_bindings[binding],
+                    event=prepared.event,
+                    now=prepared.now,
+                )
+                result = SourceHandoffResult.model_validate(
+                    dict(
+                        schema="lead.source.handoff.result",
+                        schema_version="1.0",
+                        source_receipt=prepared.event.source_receipt,
+                        source_applied=prepared.source_applied,
+                        **_workflow_projection(outcome),
+                    )
+                )
+                self._dispatch_event_actions(
+                    outcome.record, outcome.event_id, outcome.applied, prepared.now
+                )
+                return result
+            except (
+                EventBindingError,
+                EventConflict,
+                AmbiguousEvent,
+                PackVersionError,
+                AutomateLicenseError,
+            ):
+                raise
+            except Exception:
+                pass
+        # Raise after leaving handlers: no body/path/SQL/validation exception chain.
+        raise SourceHandoffUnknown()
+
+    def lookup_source_outcome(
+        self,
+        *,
+        binding: str,
+        event_id: str,
+        expected_payload_digest: str,
+    ) -> SourceHandoffLookup:
+        """Read historical workflow metadata only; never read or authorize source content."""
+        from ..lead_intake.results import (
+            SourceHandoffLookup,
+            SourceHandoffUnknown,
+            _workflow_projection,
+        )
+
+        try:
+            receipt = self._lookup_source_receipt(
+                binding=binding,
+                event_id=event_id,
+                expected_payload_digest=expected_payload_digest,
+            )
+            return SourceHandoffLookup.model_validate(
+                dict(
+                    schema="lead.source.handoff.lookup",
+                    schema_version="1.0",
+                    source_receipt=receipt.source_receipt if receipt is not None else None,
+                    **_workflow_projection(receipt.outcome if receipt is not None else None),
+                )
+            )
+        except (
+            EventInputError,
+            EventBindingError,
+            EventConflict,
+            PackVersionError,
+            AutomateLicenseError,
+        ):
+            raise
+        except Exception:
+            pass
+        raise SourceHandoffUnknown()
 
     def submit_event(self, *, binding: str, event: bytes, now: datetime) -> EventRun:
         self._host.require_license()

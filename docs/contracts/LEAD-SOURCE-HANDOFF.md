@@ -1097,3 +1097,38 @@ result models use that single owner. No event parsing, bytes, schema or cap valu
 changes, and no automate package initializer rewrite. Retain the fresh-interpreter
 failure as the regression; prove import/validation purity and existing event tests.
 Rollback restores the prior cap location when removing the new result consumer.
+
+
+### Runtime/result implementation evidence
+
+The implementation adds the public submit/lookup pair and closed result models,
+with a private shared engine admission owner and an explicit lead-trigger branch.
+Generic submission still rejects receipts. Known bounded refusals remain refusals;
+operational uncertainty raises SourceHandoffUnknown without sensitive exception
+context, including source custody committed before clock/receipt validation fails.
+Historical lookup does not touch the source owner, clock, writer or dispatcher.
+The event byte cap has one dependency-free owner, re-exported at its former path.
+
+The new tests use real signed sources and packs, source-only commits, replay and
+historical projection. A valid lead trigger always matches its guarded initial
+stage; no-match coverage therefore seeds a historical receipt through the existing
+store harness and proves it replays unchanged. Invalid initial-stage packs remain
+negative tests. Issue #33 clock-order and mixed-pack regressions are included and
+both corresponding mutations are detected without changing those production paths.
+
+Cold diff: source/auth/admission/custody/content and workflow store/actions/definition
+owners are byte-identical to the merged baseline. Existing generic runtime methods
+and private preparation/lookup are AST-identical. The factored engine transaction
+and selector are AST-identical after removing the new lead branch. Only the obsolete
+absence assertion and additive export inventory change in prior test files; the
+new test file is included in native Windows CI. No source schema or migration.
+
+Local evidence: unchanged baseline 715 passed; missing-method fail-first 2 failed;
+final adjacent lane 1123 passed; 19 behavioral mutants killed; lint, format and
+diff checks passed. The first expanded fixtures incorrectly targeted a non-initial
+stage and were corrected at the test owner. The new result import caused runtime
+loading and was repaired at the shared limit dependency; its regression passes.
+Raw evidence is retained outside the worktree under the lead-runtime-results alias.
+Native CI and both exact-head reviews remain publication/merge gates. Gap audit:
+NOT DONE until those gates pass. Joined process recovery, retirement/expiry proof,
+real producer transport and deployment/adoption remain outside this increment.

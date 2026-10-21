@@ -1,7 +1,7 @@
 """Private host composition; not workflow acceptance or a submission credential.
 
-Only the verified runtime calls this seam. Public submission/result schemas and
-engine selection are a later increment; no consumer may submit prepared metadata.
+Only the verified runtime calls this seam. Public submission reauthenticates raw
+bytes every time; no consumer may submit prepared metadata as authority.
 """
 
 from __future__ import annotations
