@@ -1525,3 +1525,96 @@ SourceAdmissionConflict; parsing is now an explicit prerequisite of that test.
 No production defect was reproduced. Evidence alias: `lead-joined-concurrency`.
 Native Windows/Linux CI and both exact-head reviews are pending. This slice does
 not qualify the deferred authorization/lifecycle slice or production adoption.
+
+
+## Step 4 slice 3 work order: joined authorization and lifecycle proof
+
+Root cause: the prior joined crash and concurrency proofs do not establish that
+recovery still requires current authorization after source-only custody, or that
+historical workflow lookup remains independent of source lifecycle. This is a
+qualification gap, not a demonstrated production defect. The canonical
+[Recovery limits](#recovery-limits) and the joined proof matrix above own behavior.
+
+Inventory: merged concurrency head `5c8f73283e4978efec6fb60da8e61e803a57bf2b`
+(tree preserved by merge `91631d9b74b95aa3a75bd63c331a1d489e09879e`) provides
+`test_lead_joined_recovery.make_case/open_runtime/run_child/read_trace` and
+`test_lead_joined_concurrency.workers/accepted`. Preserve its signed no-action
+pack, synthetic signed body-only/unavailable source envelopes, real SQLite owners,
+fixed NOW, spawn context, explicit completion protocol and checkpoint controls.
+Reuse `test_lead_source_content.identity`, authority `next_snapshot`, existing
+source-content APIs, public `submit/lookup`, and workflow-row inspection. Existing
+public-result tests supply the signed advancement pack and refusal vocabulary.
+There is no inference runtime, model, prompt or external service in this lane.
+
+Production ownership stays with SourceAdmission (current authentication),
+SourceStore (authority/clock/lifecycle transactions), SourceContent (content
+lifecycle), PackRuntime (public handoff), and WorkflowStore (historical outcome).
+Do not duplicate their validators or reinterpret receipt metadata as authority.
+
+Required surface: add `tests/test_lead_joined_lifecycle.py` and select it in native
+Windows CI from the first push. The shared joined worker may report bounded
+SourceAuthenticationError refusals through its existing refusal channel. Preserve
+all prior assertions and crash/concurrency cases. The canonical work order is
+committed before these test changes.
+
+Differences from the inventory: controlled authority/lifecycle operations between
+observed process checkpoints; explicit clock samples at the signed recovery
+boundary; a separately signed no-action advancement definition where needed;
+lookup-only runtime reconstruction without a source owner; and negative spies on
+source access, clocks, writes and dispatch. These changes are test-only. Reuse the
+existing completion and process-cleanup owners rather than a second IPC protocol.
+
+Required cases:
+- Crash after source commit before its reply, then revoke the key or reach the
+  recovery deadline. Retry the same signed request through the public boundary:
+  definite authentication refusal, unchanged custody and no workflow rows. An
+  authorized lookup-only runtime returns not_found, never an invented receipt.
+  Include available and unavailable body sources, and the just-before-deadline
+  positive control. Clock movement must follow the existing authority policy.
+- Obtain original receipt/result/prepared metadata before revocation. After
+  revocation reject those copied values and serialized event metadata at public
+  submission and the generic event entry; the original signed request is also
+  refused. Only current authenticated bytes can recover unfinished work.
+- Commit a workflow, separately revoke its key, expire/read or clean its content,
+  purge its message, retire its namespace, and clean retired custody. Reopen a
+  lookup-only runtime with the original authorized pack/binding. It returns the
+  original metadata with no source database access, source clock update, admission
+  or dispatch. Prove unavailable content through its owner when policy requires
+  unavailability; key revocation alone does not revoke host content access.
+- Force lifecycle-before-admission and source-commit-before-lifecycle orders for
+  revocation, message purge and retirement. The first order refuses admission.
+  In the second, hold the submitter after source return; complete the lifecycle
+  operation through its owner while the submitter remains held, then let metadata
+  workflow admission finish. This proves the source writer was released and
+  preserves the contract's final-source-decision boundary.
+- A late message purge removes all admissions captured at/before its cutoff and
+  preserves a later capture and unrelated message. Historical workflow metadata
+  for every committed occurrence survives. Exercise same-message distinct events;
+  do not turn event identity into a deletion boundary.
+- Advance a workflow with a signed no-action decision definition, then remove
+  source custody. Historical lookup returns original stage/version/event, not the
+  current record. Digest, pack revision, license and binding refusals remain
+  distinct from not_found after lifecycle changes.
+
+Every case inspects real durable rows, preserves exact original receipts and
+workflow identities, verifies an empty action outbox and excludes synthetic body
+sentinels from results, traces, logs and bounded exceptions. Capture observations
+outside the worktree. Unexpected timeout/closure is a harness failure, not proof.
+
+Verification: run the unchanged joined lanes and adjacent source-content/public
+result baseline before edits. Run the new lane and shared-helper callers after
+edits; lint, format and cold diff. Use real-owner in-memory mutations to invalidate
+current authentication, original historical projection and lookup independence;
+only behavioral assertion failures count, with setup/timeout failures excluded.
+Native Linux/Windows CI and both exact-head reviews remain required before merge.
+No broad duplicate local CI run is planned absent a failure requiring it.
+
+Explicit non-scope: no production code, schemas, migrations, runtime adoption,
+retention decisions, new dispatcher/poller, EOM behavior or effect delivery.
+The workflow-writer contention gap from the concurrency review is a separately
+tracked non-blocking follow-up; this slice does not claim to qualify that lock.
+If production fails, reproduce/isolate it and record a repair contract before
+expanding code scope. Rollback removes only this test extension and CI selection.
+Risk is false historical proof via a live source owner or fixture-only metadata;
+reopened real stores, forbidden-call probes and owner mutations address it.
+Gap audit: contract only; implementation, native proof and reviews NOT DONE.
