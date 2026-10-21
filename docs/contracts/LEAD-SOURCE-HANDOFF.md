@@ -1507,3 +1507,21 @@ source schema changes, retention decisions, new dispatcher, application adoption
 EOM changes or effect delivery. Arbitrary revocation/lifecycle ordering and copied
 authority remain slice 3. Gap audit: contract only; implementation, native proof
 and both reviews are NOT DONE.
+
+### Concurrency slice implementation record
+
+The unchanged joined/source-race/receipt/public-result baseline passed 340 tests
+before helper edits. The completed joined lanes passed 23 tests, retaining the
+original crash and Windows-completion test functions unchanged. Four real-owner
+mutations were rejected by behavioral assertions: namespace substituted for event
+identity, prior workflow receipt ignored, applied flags coupled, and the workflow
+read snapshot unpinned. No timeout or setup failure is counted as mutation proof.
+
+Only the work order, optional test-worker controls/shared reader, new concurrent
+cases and Windows CI selection changed. The initial conflict fixture incorrectly
+retained the old body length/digest after changing text; it was rejected before
+contention. Repairing those fixture fields and signing again reaches the intended
+SourceAdmissionConflict; parsing is now an explicit prerequisite of that test.
+No production defect was reproduced. Evidence alias: `lead-joined-concurrency`.
+Native Windows/Linux CI and both exact-head reviews are pending. This slice does
+not qualify the deferred authorization/lifecycle slice or production adoption.

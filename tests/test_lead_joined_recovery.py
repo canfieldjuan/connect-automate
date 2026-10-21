@@ -24,8 +24,13 @@ from test_lead_source_store import private_root, store
 from test_workflow_receipt_lookup import rows
 
 from connect_automate.automate import AdapterRegistry, PackRuntime
+from connect_automate.automate.events import EventConflict
 from connect_automate.automate.store import WorkflowStore
-from connect_automate.lead_intake import SourceAdmission, SourceHandoffUnknown
+from connect_automate.lead_intake import (
+    SourceAdmission,
+    SourceAdmissionConflict,
+    SourceHandoffUnknown,
+)
 from connect_automate.lead_intake.content import SourceContent
 
 CRASH_EXIT = 81
@@ -84,7 +89,7 @@ def _write_label(sql):
     return " ".join(match.groups()).upper() if match else None
 
 
-def _child(case, target, fault, channel):
+def _child(case, target, fault, channel, control=None):
     # Load first: registration/setup commits cannot satisfy a submit checkpoint.
     runtime, owner, admission, _ = open_runtime(case)
     output = io.StringIO()
@@ -93,9 +98,15 @@ def _child(case, target, fault, channel):
     logging.getLogger().setLevel(logging.DEBUG)
     original_connect = sqlite3.connect
     write_index = 0
+    paused = False
 
     def checkpoint(name):
+        nonlocal paused
         channel.send(("checkpoint", name))
+        if control is not None and not paused and name == control["pause"]:
+            paused = True
+            channel.send(("paused", name))
+            assert control["release"].wait(30), "parent did not release observed checkpoint"
         if name != target:
             return
         channel.send(("logs", output.getvalue()))
@@ -107,11 +118,26 @@ def _child(case, target, fault, channel):
     class ObservedConnection(sqlite3.Connection):
         role = None
         wrote = False
+        blocked = False
 
         def execute(self, sql, *args, **kwargs):
             nonlocal write_index
             start = len(self.trace)
-            result = super().execute(sql, *args, **kwargs)
+            try:
+                result = super().execute(sql, *args, **kwargs)
+            except sqlite3.OperationalError as exc:
+                if (
+                    control is not None
+                    and sql == "BEGIN IMMEDIATE"
+                    and getattr(exc, "sqlite_errorcode", 0) & 0xFF
+                    in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
+                    and not self.blocked
+                ):
+                    self.blocked = True
+                    channel.send(("blocked", self.role))
+                raise
+            if control is not None and self.role == "source" and sql == "BEGIN IMMEDIATE":
+                checkpoint("source-locked")
             label = _write_label(sql)
             if label:
                 # Derive checkpoints from SQL actually executed, not mock calls.
@@ -154,10 +180,25 @@ def _child(case, target, fault, channel):
     admission.admit_source = admitted
     try:
         with redirect_stdout(output), redirect_stderr(output):
+            if control is not None:
+                channel.send(("ready", None))
+                assert control["start"].wait(30), "parent did not start submission"
             try:
                 result = submit(runtime, case["raw"])
             except SourceHandoffUnknown as exc:
                 channel.send(("unknown", (exc.args, exc.__cause__, exc.__context__)))
+            except (SourceAdmissionConflict, EventConflict) as exc:
+                channel.send(
+                    (
+                        "refusal",
+                        (
+                            type(exc).__name__,
+                            exc.args,
+                            exc.__cause__ is None,
+                            exc.__context__ is None,
+                        ),
+                    )
+                )
             else:
                 checkpoint("response-lost")
                 channel.send(("result", result.model_dump(mode="json", by_alias=True)))
@@ -169,6 +210,16 @@ def _child(case, target, fault, channel):
         channel.close()
 
 
+def read_trace(reader, messages):
+    """One completion protocol for crash and concurrency consumers; EOF is failure."""
+    assert reader.poll(40), "child failed to reach a checkpoint or complete IPC"
+    message = reader.recv()
+    if message == ("complete", None):
+        return None
+    messages.append(message)
+    return message
+
+
 def run_child(case, target=None, fault=None):
     context = multiprocessing.get_context("spawn")
     reader, writer = context.Pipe(duplex=False)
@@ -177,12 +228,8 @@ def run_child(case, target=None, fault=None):
     child.start()
     writer.close()
     try:
-        while True:
-            assert reader.poll(40), "child failed to reach a checkpoint or complete IPC"
-            message = reader.recv()
-            if message == ("complete", None):
-                break
-            messages.append(message)
+        while read_trace(reader, messages) is not None:
+            pass
         child.join(10)
         assert not child.is_alive(), "child did not exit after IPC closed"
         assert child.exitcode == (CRASH_EXIT if fault == "crash" else 0), messages
@@ -210,7 +257,7 @@ def run_child(case, target=None, fault=None):
     return messages, results[0] if results else None
 
 
-def inspect(case):
+def inspect(case, *, expected_sources=None):
     runtime, owner, admission, workflow = open_runtime(case)
     # Use the existing custody validator, not a second receipt implementation.
     with owner._transaction() as db:
@@ -219,11 +266,13 @@ def inspect(case):
             "envelope_sha256 FROM source_receipts"
         ).fetchall()
         receipts = [admission._existing(db, row)[0] for row in durable]
-    for receipt in receipts:
-        assert (
-            SourceContent(owner, clock=lambda: NOW).read_content(receipt.admission_id)
-            == (case["raw"])
-        )
+    contents = [
+        SourceContent(owner, clock=lambda: NOW).read_content(r.admission_id) for r in receipts
+    ]
+    if expected_sources is None:
+        assert all(raw == case["raw"] for raw in contents)
+    else:
+        assert set(contents) == set(expected_sources)
     found = lookup(runtime, case["raw"]).model_dump(mode="json", by_alias=True)
     durable_workflow = rows(workflow)
     assert BODY not in json.dumps([found, durable_workflow], default=str)
