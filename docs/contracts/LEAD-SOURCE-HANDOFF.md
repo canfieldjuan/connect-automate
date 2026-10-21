@@ -1150,3 +1150,197 @@ settled replay and no-action success; fail-first regression, adjacent tests, lin
 Rollback removes only this status check. This repairs the accepted dispatch-failure
 contract and intentionally breaks frozen-tree equality; record the exact delta.
 Gap audit: NOT DONE until regression proof, CI and both fresh approvals pass.
+
+
+## Joined recovery and qualification work order
+
+Operator direction: "lets merge and continue", given directly in the Codex
+session and recorded on PR #36 in comment 6306879217. PR #35 and PR #36 have
+merged in order. Baseline is `6be0f5521b0161251d70ef513c9db3e67d7a4216`, whose
+tree equals the reviewed dispatch repair `fc76748ef1ce3c2782875c32240405bae3143edd`.
+This reconciles the unpublished preparation `e2417a8` against merged code; that
+preparation remains historical and is not cherry-picked over the repaired parent.
+Oversight's merge verification and bounded-stack direction are recorded in mailbox
+message dated 2026-10-21T03:11:34+00:00. Contract commits precede executable changes
+in each qualification PR; both approvals remain required for every published head.
+
+### Source inventory and preserved specification
+
+Paths and lines below refer to the merged baseline, not production readiness.
+Existing proof uses synthetic Ed25519-signed envelopes,
+signed no-action packs, real SQLite files, licensed test hosts and explicit UTC
+clocks. No model, prompt, external mail service or inference runtime participates.
+
+| Existing owner / harness | Reuse and gap |
+| --- | --- |
+| `lead_intake/admission.py:165`, `source_store.py:383` | Source authentication, replay, custody and commit uncertainty remain at the source owner. |
+| `lead_intake/handoff.py:55` | Fresh receipt checks and workflow clock sampling happen after source admission; do not cache this prepared value as authority. |
+| `automate/runtime.py:282,356` | Public submit/lookup compose the owners; source/workflow flags remain independent. Returned failed/pending actions now use bounded unknown, while settled replay and no-action success remain valid. |
+| `automate/store.py:876,1116,1161,1270,1532` | Existing writer, historical reader and workflow transaction own receipt/record/effect atomicity; do not add tables or a recovery dispatcher. |
+| `lead_intake/content.py:75,101,124,156,168` | Read, expiry cleanup, capture-cutoff message purge, namespace retirement and retired cleanup remain authoritative. |
+| `tests/test_lead_host_composition.py:61`, `test_lead_runtime_results.py:58,422` | Reuse signed pack/source setup and parent in-process failure proofs; they do not prove joined process-crash recovery. |
+| `tests/test_lead_source_admission.py:394,422,475` | Reuse spawn-process startup, bounded joins, observed exit codes, real SQLite commit hooks and guaranteed child/IPC cleanup. |
+| `tests/test_lead_source_races.py:25,108` | Reuse checkpoint/release signaling and observed writer contention, without timing-based ordering. |
+| `tests/test_workflow_receipt_lookup.py:384,404` | Reuse separate-process commit/read-snapshot proof; absence is only an observation at a read. |
+
+Root cause of the qualification gap: the parent proves in-process composition
+and each store already has its own recovery tests, but no test drives the public
+host boundary through both stores across an actual process exit or concurrent
+process submission. A source-only receipt cannot establish workflow acceptance.
+The accepted [Recovery limits](#recovery-limits) table remains the single owner
+of outcome semantics; this work order specifies evidence, not a new recovery policy.
+
+### Minimal surface and differences from existing proof
+
+Add the bounded qualification files listed below to the existing native Windows
+lane when each first publishes; Linux already collects tests. Reuse existing
+synthetic signing,
+source-store construction, workflow setup and lifecycle helpers. A bounded test
+harness may extend their instrumentation to distinguish the two database files
+and public call boundaries. Keep instrumentation in tests, never production hooks.
+Use spawn-compatible module-level workers and durable parent-held request/route
+fixtures. Each child reconstructs its own verified runtime against the same stores
+and signed pack revision. Give each child's test entitlement files their own path;
+do not race license fixture creation. Complete runtime load/binding registration
+before installing submission crash hooks so setup commits cannot masquerade as
+source/workflow submission checkpoints.
+
+The only planned departures are joined-store observation, public-boundary process
+fault injection, and lifecycle-aware historical lookup. Production code, schema,
+source/wire contracts, timing policy, authentication, retention and result variants
+must remain unchanged. If qualification reproduces a defect, isolate its first
+owner and introducing commit, record a repair contract before code changes, and
+retain the reproduction as a regression; do not mask it in the test harness or
+change accepted behavior silently. Technical repairs remain with this coding arc.
+
+### Bounded stack and dispatch-repair reconciliation
+
+Split qualification into these ordered PRs, each targeting about 1,000 changed
+lines or less including its contract, tests and CI selection. If the measured diff
+needs another split, partition proof responsibilities before publication; do not
+omit failure cases or compress assertions to satisfy the size target.
+
+1. **Joined crash and transaction proof**, starting from the merged baseline:
+   `tests/test_lead_joined_recovery.py`. Cover observed source/workflow commit
+   checkpoints, lost responses, workflow row-write rollback, retained-request
+   replay, durable identities/flags and body-sentinel exclusion. Reuse a no-action
+   pack; explicitly assert its outbox is empty. This is the first implementation
+   slice, with this work-order commit first.
+2. **Joined concurrent identity proof**, stacked on the first:
+   `tests/test_lead_joined_concurrency.py`, reusing its spawn/checkpoint harness.
+   Cover same event, distinct events per message, signed conflict, rotated-key
+   replay, opposite source/workflow winners and snapshot lookup during commit.
+   Its bounded work order must be committed before extending the harness or tests.
+3. **Joined authorization and lifecycle proof**, stacked on the concurrency slice:
+   `tests/test_lead_joined_lifecycle.py`. Cover source-only recovery denial after
+   revocation/deadline, copied-authority refusal, both lifecycle/admission orders,
+   lookup-only operation after content cleanup/purge/retirement, and original
+   metadata after advancement. Commit its focused work order before tests.
+
+This preserves the complete matrix below; it does not claim any slice qualifies
+another's behavior. Reconcile each child against repairs to its parent before
+publishing it. Both exact-head reviews and native platform gates apply separately.
+
+The inspected source, custody, content, handoff, workflow store and reused harness
+files are byte-identical to the prior inventory. The runtime difference is the
+merged dispatch-status repair. Preserve that check and its regression unchanged:
+failed or pending dispatch cannot return a plain successful handoff; Unknown does
+not promise absence or retryability, and lookup reports historical workflow state.
+The qualification pack remains no-action, so process qualification does not claim
+to prove effect delivery. Existing real-action regressions remain adjacent checks.
+No other runtime, schema, clock, signing, fixture or policy difference is planned.
+
+### Required proof matrix
+
+- Crash before source commit, after source commit before its reply, after source
+  return before workflow admission, before workflow commit, immediately after
+  workflow commit, and after public completion before a response is delivered.
+  Observe the targeted checkpoint before termination. Reopen both stores and
+  inspect durable rows through their existing owners. Retry the original signed
+  bytes and configured route only while authorization remains valid. Assert
+  stable source/workflow IDs, flags and original outcome, and no duplicate records.
+- Inject SQL failures and process exits between observed workflow row writes in
+  the real admission transaction, including bootstrap, transition/operation and
+  receipt writes. Derive the checkpoint list from the actual SQL trace so every
+  exercised row write is accounted for. Before commit, no partial receipt, record,
+  event, operation or action may survive. The qualification pack has no actions;
+  verify its outbox remains empty. Do not invent effect delivery qualification.
+- Concurrent spawned submissions cover the same signed event, different signed
+  events for the same message, a signed conflicting payload, and key-rotated replay.
+  Rendezvous before the public call; use observed transaction checkpoints for
+  controlled overlap. Assert compatible outcomes and exact durable cardinalities,
+  not merely that both child processes exited successfully. Replays preserve the
+  first receipt and workflow occurrence. Also force the source-commit winner to
+  pause while the replaying process wins workflow admission: source_applied and
+  workflow_applied must remain independent, not tied to one process winning both
+  stores. A conflict never creates an alternate ID.
+- After source-only crash, separately expire the recovery deadline and revoke
+  the signing grant before retry. Both retries must refuse current admission;
+  authorized historical lookup must return not_found with no workflow rows or
+  effects. Attempted recovery from a copied receipt/prepared result remains denied.
+- For a committed workflow, exercise lookup after key revocation, expiry and
+  content cleanup, message-wide purge, namespace retirement and retired cleanup.
+  Reopen a lookup-only runtime with the original authorized binding/pack. It must
+  return the original result without source database access, admission, a clock
+  update or dispatch. Prove source content is unavailable through its owner where
+  lifecycle policy requires it; workflow metadata never implies live content.
+- Control both orders around the source authorization boundary: a lifecycle change
+  before admission refuses under existing policy; one after final source commit
+  but before workflow commit may coexist with metadata-only workflow acceptance.
+  Show the source writer is released before the workflow transaction. Preserve
+  the accepted late-deletion capture cutoff; do not reinterpret purge as deleting
+  later captures or workflow metadata.
+- Concurrent historical lookup may see absence before a later workflow commit;
+  a subsequent read sees the committed outcome. Keep original record state after
+  later advancement, source-payload digest conflict, pack revision refusal and
+  licensed/binding refusal distinct from not_found. Use the existing snapshot
+  reader; no new read/validation implementation.
+- Verify synthetic raw-body sentinels are absent from workflow rows, serialized
+  public results, captured logs and bounded exceptions. Retain metadata/privacy
+  limitations: correlation IDs persist and no secure-erasure/compliance claim is
+  established by these tests.
+
+### Verification gates, risk and recovery
+
+At each bounded slice, run the existing directly affected source-admission,
+race/lifecycle, workflow snapshot and public-result baseline unchanged. New tests
+must exercise actual operations rather than source-text assertions or mocked
+successful outcomes. For existing-correct behavior, baseline success is expected;
+prove causal regression sensitivity with in-memory mutants at the real owner.
+For a reproduced defect, record failing-before/passing-after evidence before signoff.
+
+Require deterministic assertions for the intended checkpoint, child exit status,
+both stores' durable state, response flags and retry/lookup result. Timeouts are
+harness failures, never successful crash/mutation proof. Flush checkpoint signaling
+before abrupt exits; bound waits and always release/terminate/join children and
+close IPC on failure. Do not use sleeps, fork-only state, global production paths,
+private customer data or oversized parametrized test IDs. Native Windows and Linux
+must run this lane from the first implementation push.
+
+Run focused and adjacent lanes, lint/format, cold diff and causal mutations that
+would suppress workflow admission on source replay, admit copied authority, lose
+transaction atomicity or make lookup depend on live source custody. Source-level
+corruption/replay fixtures remain unchanged and authoritative. Preserve artifacts
+outside worktrees, including raw checkpoint traces, expected/actual outcomes and
+platform results. Both independent exact-head approval and oversight PASS, Codex
+reconciliation, green required CI, no unresolved threads, clean local/remote parity
+and guarded merge/tree proof remain required.
+
+Regression risk is primarily instrumentation at the wrong commit or a concurrency
+harness that passes without overlap. Separate setup from operation hooks, assert
+checkpoint identity and observed contention, and use real durable state as the
+oracle. Rollback removes only the new qualification lane and its CI selection;
+keep evidence, stores and signed fixtures. Any production repair needs its own
+explicit rollback/recovery note without deleting receipts or rewriting history.
+
+Non-scope: no new workflow engine, mailbox poller, watcher integration, scheduler,
+stranded-receipt scan, queue, cross-store atomic commit, canonical lead/extraction,
+approval/delivery, external effect, retention policy, authentication enrollment,
+application adoption or EOM change. This proves caller-driven library recovery
+under an explicitly retained request, not unattended production recovery.
+
+Gap audit: reconciled work-order preparation only. Parent reviews and merges are
+verified; executable qualification tests, joined recovery proof and native platform
+qualification are NOT DONE. No tests are claimed executed by this documentation
+commit. Full foundation gates and
+production adoption remain open even after this bounded qualification succeeds.
