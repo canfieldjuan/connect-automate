@@ -1377,3 +1377,21 @@ verified; executable qualification tests, joined recovery proof and native platf
 qualification are NOT DONE. No tests are claimed executed by this documentation
 commit. Full foundation gates and
 production adoption remain open even after this bounded qualification succeeds.
+
+### First slice implementation record
+
+The preparation was normally merged with `12d31d61e740b1a719f5f253373ea0a651f96c17`
+(PR #38), retaining its isolated refusal tests and both work orders. This parent
+adds no production changes to the inventory. Operator direction for this slice:
+"lets merge and pick up next slice". Only the first bounded slice is implemented
+here; concurrency and authorization/lifecycle remain separate work orders.
+
+The new spawn harness observes the actual SQLite commits after runtime loading,
+derives workflow write checkpoints from executed SQL, and reopens both owners
+before replaying the retained signed request. Available and unavailable bodies,
+lost responses, SQL rollback and abrupt exits are covered. The no-action outbox
+must stay empty. Existing production and existing test files remain unchanged.
+Local evidence: 611 adjacent tests passed; injected replay suppression, rollback
+commit, early commit and body logging were each rejected by behavioral assertions.
+Evidence alias: `lead-joined-crash-proof`. Native platform CI and both exact-head
+reviews are pending; this record does not qualify later slices or adoption.
