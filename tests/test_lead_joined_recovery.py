@@ -100,6 +100,7 @@ def _child(case, target, fault, channel):
             return
         channel.send(("logs", output.getvalue()))
         if fault == "crash":
+            channel.send(("complete", None))
             os._exit(CRASH_EXIT)
         raise sqlite3.OperationalError("synthetic workflow write failure")
 
@@ -161,6 +162,7 @@ def _child(case, target, fault, channel):
                 checkpoint("response-lost")
                 channel.send(("result", result.model_dump(mode="json", by_alias=True)))
         channel.send(("logs", output.getvalue()))
+        channel.send(("complete", None))
     finally:
         sqlite3.connect = original_connect
         logging.getLogger().removeHandler(handler)
@@ -176,11 +178,11 @@ def run_child(case, target=None, fault=None):
     writer.close()
     try:
         while True:
-            assert reader.poll(40), "child failed to reach a checkpoint or close IPC"
-            try:
-                messages.append(reader.recv())
-            except EOFError:
+            assert reader.poll(40), "child failed to reach a checkpoint or complete IPC"
+            message = reader.recv()
+            if message == ("complete", None):
                 break
+            messages.append(message)
         child.join(10)
         assert not child.is_alive(), "child did not exit after IPC closed"
         assert child.exitcode == (CRASH_EXIT if fault == "crash" else 0), messages
@@ -317,3 +319,62 @@ def test_each_observed_workflow_write_rolls_back(make_case, fault):
             source_applied=False,
             workflow_applied=True,
         )
+
+
+def windows_closure(monkeypatch, *, drop_completion=False):
+    """Real IPC, but expose peer closure from poll as Windows PeekNamedPipe does."""
+    original = multiprocessing.get_context
+    context = original("spawn")
+
+    class Reader:
+        def __init__(self, reader):
+            self.reader = reader
+
+        def poll(self, timeout):
+            while self.reader.poll(timeout):
+                try:
+                    self.pending = self.reader.recv()
+                except EOFError:
+                    error = BrokenPipeError("[WinError 109] The pipe has been ended")
+                    error.winerror = 109
+                    raise error from None
+                if drop_completion and self.pending == ("complete", None):
+                    continue
+                return True
+            return False
+
+        def recv(self):
+            return self.pending
+
+        def close(self):
+            self.reader.close()
+
+    class Context:
+        def Pipe(self, **kwargs):
+            reader, writer = context.Pipe(**kwargs)
+            return Reader(reader), writer
+
+        def Process(self, **kwargs):
+            return context.Process(**kwargs)
+
+    monkeypatch.setattr(
+        multiprocessing,
+        "get_context",
+        lambda method=None: Context() if method == "spawn" else original(method),
+    )
+
+
+@pytest.mark.parametrize("point", [None, "source-after"])
+def test_completion_does_not_poll_closed_peer(make_case, monkeypatch, point):
+    windows_closure(monkeypatch)
+    case = make_case()
+    run_child(case, point, "crash" if point else None)
+    count, _, found, _ = inspect(case)
+    assert count == (1, 1, 1)
+    assert found["workflow_outcome"] == ("not_found" if point else "accepted")
+
+
+def test_missing_completion_is_not_success(make_case, monkeypatch):
+    windows_closure(monkeypatch, drop_completion=True)
+    with pytest.raises(BrokenPipeError):
+        run_child(make_case())
