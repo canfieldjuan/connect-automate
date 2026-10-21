@@ -977,3 +977,107 @@ signed-pack revision conflict and explicitly proves prepared metadata remains
 rejected by both generic submission APIs. Gap audit: local evidence accompanies
 the PR; native CI and both reviews remain pending. No public handoff, workflow
 acceptance, adoption or subsequent increment is claimed.
+
+
+## Runtime selection and public result work order
+
+Operator direction: "lets start the next slice", after the reviewed merge of
+host composition. This is the runtime selection and result boundary increment
+of the accepted host-submission work order. Commit this section before executable
+changes. Joined process-crash qualification and adoption remain a later increment.
+
+### Inventory, root cause and differences
+
+Baseline: `2b762a8e641a1316c3b35c3db97e6586eddc142b`. The existing
+`lead_intake/handoff.py:_SourceHandoff.prepare` reauthenticates raw signed bytes,
+validates the fresh durable reference and samples the workflow clock after source
+admission. `PackRuntime._prepare_source` and `_lookup_source_receipt` own the
+licensed configured route. `WorkflowEngine.submit_event` owns selection inside
+`WorkflowStore.admit_event` but rejects lead events and cannot match their trigger.
+`WorkflowStore.lookup_source_event` already returns the validated original outcome
+and stored source reference without source reads. Reuse these owners unchanged
+where possible, along with `_dispatch_event_actions`; no second selector,
+transaction, dispatcher, source reader or digest implementation.
+
+Validated fixtures are the existing source/auth/admission lanes, private host
+composition tests, event/engine/runtime tests and source-event receipt lookup
+harness. They use synthetic Ed25519 sources, signed packs, real SQLite stores and
+fixed host clocks, without a model or external service. Their merged evidence is
+not joined-boundary proof. Record an unchanged baseline before implementation.
+The only intended departures are a private shared engine admission path with
+lead-trigger matching; public runtime submit/lookup; pure closed result models
+and sanitized uncertainty handling. Existing generic methods still reject leads.
+The obsolete host-composition assertion that submit_source is absent is replaced
+with proof that calling private preparation still cannot admit a workflow. No
+other existing test behavior or fixtures are rewritten.
+
+### Required surface, invariants and failure semantics
+
+Expose keyword-only `PackRuntime.submit_source(binding, raw_source_bytes)` and
+`lookup_source_outcome(binding, event_id, expected_payload_digest)`. No public
+operation accepts prepared data or a receipt as authority. Submission always calls
+the existing authenticated preparation, even on replay, then checks the current
+license and calls the private shared engine owner. Factor selection/admission from
+`submit_event` narrowly; initial-stage conditions, ambiguity, immutable occurrence,
+pack revision, effects and outbox rules stay the same. Add only explicit matching
+for LeadSourceTrigger and LeadSourceEvent. Reuse permitted event dispatch and
+safe-replay behavior. The proof pack emits no actions; no external effect enabled.
+
+Pure immutable result models live in `lead_intake/results.py`, with lazy exports.
+They implement the exact schema names/versions in Submission above, strict Boolean
+flags, ReceiptReference and bounded workflow identifiers/stage/version. The workflow
+projection fields are `workflow_record_id`, `workflow_event_id`, `stage` and
+`state_version`. Accepted requires all four; no_match requires nulls and false
+workflow_applied. Lookup adds not_found with null source_receipt and null projection,
+never source_applied and always false workflow_applied. Unknown/extra fields and
+coercion fail closed. Validate and enforce MAX_EVENT_BYTES on every returned model.
+Share result projection/validation ownership; invalid internal outcomes must fail
+closed rather than return partial success or manufacture absence.
+
+Known input, authentication, route, license, conflict, ambiguity and revision
+refusals retain their bounded existing exceptions; none asserts absence of prior
+source custody. Unclassified operational failures, source unavailable/uncertain,
+post-admission clock refusal, workflow I/O, dispatch failure and invalid result
+projection raise a fixed input-free SourceHandoffUnknown outside the caught
+exception context. This error asserts neither source nor workflow absence. Do
+not expose raw bodies, SQL, paths, exception chains or result-validation payloads.
+Use authenticated retry or historical lookup to determine durable state. Lookup
+must never map store errors to not_found; its errors are also bounded. Missing
+source-owner configuration still allows authorized lookup-only operation.
+
+### Verification, risk and rollback
+
+First record missing-public-method fail-first evidence. Then prove real body-only
+and unavailable source submission, persisted no-match, independent source/workflow
+replay flags, original outcome after later advancement, replay after source-only
+commit, key rotation and revocation, conflicting signed payload, distinct events,
+foreign/invalid route and license refusal, copied-result/raw-event bypass, mixed
+lead/generic packs, initial-stage/ambiguous trigger selection and pack-version
+conflicts. Test public lookup absence/accepted/no-match without source access,
+clock, writers or dispatch. Test strictly closed result variants, falsy values,
+size boundaries, and sanitized errors before/after source and workflow commits.
+Keep result unknown when source commit has happened but preparation fails.
+
+Use unchanged source/receipt harnesses and real stores, focused fail-first plus
+adjacent tests and lint. Add the new test lane to native Windows on first push.
+Behavioral mutations must separately pin lead selection, reauthentication,
+source-replay continuation, uncertainty mapping, projection and lookup no-effects.
+The clock-order and mixed-pack regression gaps from issue #33 may be covered in
+this directly affected boundary with causal proof; do not change their correct
+production semantics. Existing generic tests prove parity before new behavior.
+Full separate-process joined concurrency/crash/retirement qualification remains
+the next increment, not a claim of this slice.
+
+Risk: factoring selection can regress generic events; preserve their tests and
+transaction owner. Result mapping can overstate success after partial commits;
+real owner fault injection and historical lookup guard this. Rollback disables
+public submission and restores the generic-only engine caller while preserving
+both stores and signed packs; no receipt deletion, migration or downgrade. No
+new services, mailbox path, extraction, approval, delivery, scheduler, application
+adoption, retention-policy change or cross-store transaction. Both exact-head
+independent approval and oversight PASS, completed Codex reconciliation, native
+CI and clean local/remote parity remain mandatory before guarded merge.
+
+Gap audit: NOT DONE until this increment passes its gates. The public methods
+are library-only; the combined boundary remains unqualified for adoption until
+the subsequent joined recovery increment and deployment prerequisites pass.
