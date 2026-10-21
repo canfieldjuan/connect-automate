@@ -29,6 +29,7 @@ from connect_automate.automate.store import WorkflowStore
 from connect_automate.lead_intake import (
     SourceAdmission,
     SourceAdmissionConflict,
+    SourceAuthenticationError,
     SourceHandoffUnknown,
 )
 from connect_automate.lead_intake.content import SourceContent
@@ -187,7 +188,7 @@ def _child(case, target, fault, channel, control=None):
                 result = submit(runtime, case["raw"])
             except SourceHandoffUnknown as exc:
                 channel.send(("unknown", (exc.args, exc.__cause__, exc.__context__)))
-            except (SourceAdmissionConflict, EventConflict) as exc:
+            except (SourceAdmissionConflict, SourceAuthenticationError, EventConflict) as exc:
                 channel.send(
                     (
                         "refusal",
