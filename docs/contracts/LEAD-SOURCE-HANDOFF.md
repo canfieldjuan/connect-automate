@@ -1742,8 +1742,9 @@ in Watcher queue rows, serialized requests, spools or retry caches. Ordinary
 Watcher body-view storage keeps its separate purpose and retention; intake must
 not pin or copy it for retries. Bind stable UUID source event,
 Watcher event digest, rule/version, full physical message identity, organization,
-namespace, provider identity and pack/route before the prepare request. Bind the
-payload digest and source deadline before the first content-submission effect. Do not derive source event identity from a daily summary or
+namespace, provider identity and pack/route before the prepare request. Before
+content submission, persist the complete [recovery metadata](#persisted-recovery-metadata)
+defined by Decision B. Do not derive source event identity from a daily summary or
 mint a fresh event on retry. Attachment presence/count is recorded as unprocessed;
 attachments are not fetched or extracted by this first body-only integration.
 
@@ -1820,6 +1821,39 @@ admission. These support receiver custody, but do not implement the application
 protocol below. The receiver must use owner APIs, never query source tables from
 the wrapper or return bodies to Watcher for replay.
 
+#### Persisted recovery metadata
+
+This section owns the application persistence/usage rule; digest computation stays
+with the existing source helpers. **CONFIRMED:** CA
+`lead_intake/source.py:257-269` separates canonical signed envelope bytes from the
+payload digest independent of authorization. `automate/runtime.py:356-375` requires
+`expected_payload_digest` for historical workflow lookup. An envelope hash cannot
+supply that argument, and lookup must still work after source content is purged.
+
+| Persisted field | Computation and consumer |
+| --- | --- |
+| `envelope_sha256` | SHA-256 of `canonical_source(source)`, the actual canonical signed artifact sent. Used for transport integrity and exact retained-envelope custody cross-check; never passed as `expected_payload_digest`. |
+| `payload_digest` | Existing `lead_intake.source.payload_digest(source)` from that same parsed source. Supplied as `expected_payload_digest` to `PackRuntime.lookup_source_outcome`; never derived from an envelope hash or workflow-event fingerprint. |
+
+Watcher owns atomic persistence of **both** fields with the job intent's capture
+metadata and signed deadline before the first content-submission effect. A partial
+pair is not eligible for dispatch. The receiver binds the complete pair to the
+same job/organization/namespace/event and pinned route, verifies both against the
+submitted envelope through the source helpers before source admission, and retains
+the pair in reference-only job state for status/resume. Claimed digests are neither
+authorization nor proof of custody. Conflicting metadata is refused, not repaired
+by overwriting identity or inventing a new job.
+
+Both application metadata owners retain these fields under Decision A's metadata
+window independently of raw-content retention. They must not obtain a missing
+payload digest by reopening custody, hashing a receipt or rereading mail. Such a
+missing field is an incomplete recovery record, not workflow not-found. Transport
+replay keeps the same signed artifact; rotating an authorization key can change
+its envelope hash without changing the payload hash and is not permission to
+silently replace either pinned field on an existing job.
+
+#### Handoff protocol
+
 Proposed protocol and failure boundary:
 
 1. Watcher first persists reference-only intent in its existing queue: stable
@@ -1829,18 +1863,22 @@ Proposed protocol and failure boundary:
    intent visibly waiting for capture; do not fetch/sign an intake body or claim
    durable capture. A mailbox message may disappear while waiting.
 2. With the receiver ready, Watcher captures and canonicalizes once in bounded
-   memory, signs the fixed deadline and persists only the envelope digest/capture
-   metadata against that intent before sending the existing Connect input artifact.
-   The receiver pins the same digest before source admission and calls the source
-   owner. This makes transport and custody canonical bytes identical. No disk
+   memory, signs the fixed deadline and atomically persists the complete
+   [recovery metadata](#persisted-recovery-metadata) against that intent before
+   sending the existing Connect input artifact. The receiver validates and pins
+   that metadata as specified there before calling the source owner. Transport
+   and custody use the same canonical signed bytes. No disk
    spool, swap/crash-dump payload persistence or request-body logging may become a
    hidden Watcher retry copy; platform memory/protection behavior needs qualification.
 3. Until source commit, the live attempt may reuse its bounded transient bytes.
    Readiness and a durable job intent are **not** durable content acknowledgements.
    After a lost response or restart, Watcher asks for that job's outcome. The receiver
-   first checks historical workflow outcome, then resolves exact source custody
-   through a new host-authorized source-owner lookup keyed by organization,
-   namespace and event, cross-checking digest and pinned route. This covers a crash
+   first checks historical workflow outcome using the persisted `payload_digest`
+   as `expected_payload_digest` per the [metadata mapping](#persisted-recovery-metadata),
+   without reading source content. If no workflow outcome is found, it resolves exact
+   source custody through a new host-authorized source-owner lookup keyed by
+   organization, namespace and event, cross-checking `envelope_sha256` and pinned
+   route per the same mapping. This covers a crash
    after source commit but before recording its admission reference in job state.
 4. If custody exists and workflow admission is unfinished, the authenticated resume
    operation reads retained signed bytes through the content owner and calls the
@@ -1867,14 +1905,28 @@ in that interval. Raw disk loss is likewise unrecoverable under Decision A's
 no-raw-backup policy. Juan must accept this limitation before adoption.
 
 **NEW / UNQUALIFIED boundaries:** a versioned authenticated prepare/status/resume
-contract over the existing Connect provider transport; reference-only durable job
-mapping; source-owner keyed custody resolution; and per-job serialization/fencing
+contract over the existing Connect provider transport; Watcher's atomic persistence
+of the complete recovery metadata and the receiver's verified durable job mapping
+as specified [above](#persisted-recovery-metadata); source-owner keyed custody
+resolution; and per-job serialization/fencing
 that prevents a supposedly settled attempt from committing later. Reuse Connect's
 existing invocation, job IDs, queue and reconciliation; do not invent a parallel
 transport or dispatcher. Specify legal states and crash recovery before coding.
 Source and workflow commits remain separate; job mapping must recover each gap
 through owner APIs. No source-store scan or completion from a cached receipt.
 Existing artifact submission does not imply any of these APIs already exists.
+
+Required regression fixtures for the application work order: crash after source
+commit but before job-to-admission mapping; crash after workflow commit before
+acknowledgement; historical lookup after raw purge with content reads forbidden;
+and restart with reference-only state. In each, use the persisted metadata mapping,
+not fixture access to the original envelope. Negative cases must remove only the
+payload digest, substitute the envelope digest, mix a valid envelope hash with a
+wrong payload hash, and present only one field. Assert no dispatch or false
+not-found/accepted result. A valid complete pair must recover the existing outcome
+without source bytes. Authorization-only changes and changed payloads must prove
+that the two digests are distinct. These are required future application tests;
+the docs-only signature probe is not proof that those application owners exist.
 
 Reserve bounded receiver storage before capture. Size its quota using the signed
 envelope limit and full retention window. A full disk/quota refuses new capture
