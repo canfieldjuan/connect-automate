@@ -259,10 +259,12 @@ this boundary unless the same signed request still passes admission policy.
 
 For this proof, the synthetic host harness retains the same signed request and
 configured route through simulated restarts. This demonstrates caller-driven
-recovery, **not unattended discovery of stranded source receipts**. A producer's
-durable retry custody, retention deadline, route pin and host startup retry path
-must be qualified before real adoption. Do not add a scheduler, queue, source-store
-scan or dispatch table speculatively. If the joined crash proof shows missing
+recovery, **not unattended discovery of stranded source receipts**. Durable retry
+custody, retention deadlines, route pins and the host restart path must be qualified
+before real adoption. The proposed application custody owner is defined in
+[Decision B](#decision-b-receiver-owned-custody-and-reference-only-retries); it is
+not an accepted change to this library's raw-request authentication boundary. Do
+not add a scheduler, queue, source-store scan or dispatch table speculatively. If the joined crash proof shows missing
 bookkeeping, document the precise failure and revise this contract before adding it.
 
 ## Privacy, retention and Watcher prerequisites
@@ -763,9 +765,10 @@ No service, CLI receiver, mailbox polling, scheduler, new queue or workflow engi
 no direct cross-application database access; no extraction, canonical lead creation,
 CRM adapter, new approval policy or EOM change. Do not change retention/deletion
 semantics, source authority, signed pack bytes or public mail/schedule behavior.
-Production metadata retention/encryption and durable producer retry custody remain
-unresolved adoption requirements. Employee authorization is not supplied by the
-licensed subject or this in-process configuration. Same-process hostile Python
+Production metadata retention/encryption and application retry custody remain
+unresolved adoption requirements; [Decision B](#decision-b-receiver-owned-custody-and-reference-only-retries)
+owns the proposed custody placement, pending acceptance. Employee authorization
+is not supplied by the licensed subject or this in-process configuration. Same-process hostile Python
 reflection is not a sandbox claim.
 
 Primary risks: weakening the shared receipt validator, exposing a copied-receipt
@@ -1641,3 +1644,413 @@ but are not counted as those isolated proofs. No timeout/setup failure is counte
 Evidence alias: `lead-joined-lifecycle`. Lint, format and cold diff pass. Native
 CI and both exact-head reviews remain pending; this is no adoption or effect
 qualification. Workflow-writer lock proof is tracked separately in issue #41.
+
+
+## Proposed application handoff and adoption decision contract
+
+Status: PROPOSED; docs only. Operator instruction: "Let’s start", after the
+proposal to inspect Watcher and prepare the production handoff decisions. This
+is not acceptance of these product choices, implementation permission, or adoption.
+The merged library qualification remains authoritative; it does not qualify a
+running mail-to-lead product. Both independent review and oversight are required.
+
+### Revision basis and acceptance boundary
+
+The initial proposals originated in `8549be0900d05300428be144dec98eadd300a131`.
+Juan rejected their raw-retention window, Watcher-held retry copy and single-operator
+scope. His [specific direction](https://github.com/canfieldjuan/connect-automate/pull/43#issuecomment-6327820668)
+and [admin/user requirement](https://github.com/canfieldjuan/connect-automate/pull/43#issuecomment-6327736297)
+are relayed in the PR. The revisions below replace those proposals at their owner;
+PR summaries link here rather than define a second policy. The longer duration,
+pre-custody loss tradeoff and role permissions still require Juan's acceptance.
+Earlier review of the original draft does not approve this revision. No change to
+an already qualified library invariant or implementation is authorized here.
+
+### Contract, inventory and evidence pins
+
+Root cause: production adoption needs a durable receiver-side source, a recoverable
+handoff and employee access policy. The completed library work deliberately
+excluded them. Required change surface here is this canonical document only.
+No code, dependencies, configuration, databases, existing tests or application
+pins change. No services, migrations, installations or live mail access are run.
+Rollback is a documentation revert; no runtime state is created.
+
+Code evidence is pinned to:
+- **CA:** `canfieldjuan/connect-automate`, `main` at
+  `a1d1a07d31a2f0a7a9e59b10cc3a3a2b685e225c`. Paths below starting
+  `automate/`, `lead_intake/` or `connect.py` are under `src/connect_automate/`.
+- **EW:** `canfieldjuan/eom-email-watcher`, remote `main` at
+  `1ca6307fc9f47b9db88c18f260301fc08e34a9c3`. Python paths below are under
+  `src/eom_email_watcher/`; desktop paths are repository-relative.
+  The local checkout is on another branch with unrelated uncommitted model work.
+  Only `git show` of the pinned remote revision was used for this audit. Nothing
+  in that checkout was changed; installed behavior remains UNKNOWN.
+
+Repository links for reproducibility:
+[CA source](https://github.com/canfieldjuan/connect-automate/tree/a1d1a07d31a2f0a7a9e59b10cc3a3a2b685e225c/src/connect_automate),
+[EW source](https://github.com/canfieldjuan/eom-email-watcher/tree/1ca6307fc9f47b9db88c18f260301fc08e34a9c3/src/eom_email_watcher).
+Durable audit alias: `lead-adoption-decision-contract`; pinned source snapshots
+and their digests are kept outside worktrees. Documentation was not treated as
+proof of application behavior.
+
+| Classification | Source finding and consequence |
+| --- | --- |
+| CONFIRMED | EW `automation/rules.py:240-241,406-419` requires an attachment media-type condition and emits fires per attachment. `db.py:752-810` additionally requires a real attachment row. Body-only intake needs a typed source extension, not a fake attachment or empty part ID. |
+| CONFIRMED | EW `body_state.py:38-56,80-103` fetches/records bodies for followed threads. `mime.py:10-11,184-188` caps normalized bodies and returns the original length. Existing sender admission alone does not ensure body availability. |
+| CONFIRMED | EW `body_state.py:10-18,109-156` stores text/lengths and removes ineligible body state; the removal coordination remains owned by Watcher. A body reference is not durable retry custody. |
+| CONFIRMED | EW `db.py:361-388,520-554` already stores jobs, input digests, requested/provider states, retry deadlines, source availability and reconciliation bookkeeping. `engine_api.py:3703-3748,4554-4577` and `desktop/src-tauri/src/scheduler.rs:294-306` already drive retries and the Connect queue. Reuse these owners; do not add another poller or dispatch scheduler. |
+| CONFIRMED | EW `engine_api.py:3938-4020` obtains content from a callable under source locks and verifies bytes/digest before submitting; persisted artifact metadata alone is not a content snapshot. |
+| CONFIRMED | EW `engine_api.py:3145-3175` selects an exact provider instance. `db.py:5482-5511` fingerprints that instance. A replacement provider cannot silently stand in for the selected one. Restart identity requires qualification. |
+| CONFIRMED | CA `connect.py:330-344,2040-2059` carries one hashed input artifact per v2 job, separately from parameters; outputs remain opaque wire artifacts until a consumer validates their schema. |
+| CONFIRMED | CA `automate/runtime.py:159-184,282-315,356-395` exposes library submission/lookup. `automate/host.py:76-89` and `pyproject.toml:14-15` provide a license-check entry point, not a lead receiver. A production Connect provider wrapper is new work. |
+| CONFIRMED | CA `lead_intake/source.py:88-125,144-159` already separates body completeness, unavailable states, unprocessed attachments, UUID source event identity and a Watcher event digest. Preserve this wire vocabulary. |
+| CONFIRMED | EW `engine_api.py:2292-2321` binds confirmation to a digest and version but accepts no employee identity there. `desktop/src-tauri/src/engine.rs:3063-3095` constructs engine requests; `engine_api.py:6642-6656` reads stdin. These paths do not establish the proposed employee session. |
+| CONFIRMED | EW `private_storage.py:90-108` writes UTF-8 bytes with mode/ACL checks, and `config.py:572-578` configures token files. CA `lead_intake/source_store.py:387-409` opens ordinary SQLite with private-path checks. These mechanisms establish neither storage encryption nor an OS keystore. |
+| CONFIRMED | CA `automate/store.py:219-237` forbids receipt/event deletion. Source purge is not workflow metadata deletion. A bounded production metadata-retention mechanism is missing from these owners. |
+| UNKNOWN | Actual disk/backup encryption, keystore availability, employee enrollment, production retention settings and provider restart guarantees on the target installation have not been inspected or qualified. |
+
+Existing proof inventory: the merged `test_lead_joined_recovery.py`,
+`test_lead_joined_concurrency.py` and `test_lead_joined_lifecycle.py` use synthetic
+signed sources, fixed clocks, a no-action pack, real separate SQLite owners and
+spawned processes. Prior qualified runs and mutations are recorded in the preceding
+implementation records; none was rerun in this docs-only audit. The new application
+must retain those regression lanes. There is no model, prompt or extraction change.
+
+### Recommended handoff and responsibility boundary
+
+**PROPOSED: push the signed normalized-source envelope as the existing Connect v2
+input artifact.** Watcher owns mailbox admission, reference-only queue state and
+transient capture buffers; Lead Intake owns the durable signed source bytes. A thin
+local Automate Connect provider uses the existing `PackRuntime.submit_source` and
+`lookup_source_outcome` APIs. Authenticated reference-resume and custody lookup are
+new wrapper/owner interfaces specified in Decision B, not existing runtime APIs.
+Automate owns workflow receipts. No application reads another's tables.
+
+The wrapper is a necessary new receiver, not a new workflow engine. Use the existing
+loopback Connect protocol (`connect.py:98-110,2040-2059`), existing private registry
+and bearer transport, plus the signed source/organization checks. A transport token
+is not an employee identity. Do not add an authenticated body-download service to
+Watcher. No email body goes into action parameters, logs, titles or notification
+previews. The adapter returns validated, reference-sized result artifacts, never
+source content. Connect accepted/processing, source custody, workflow accepted and
+future lead delivery remain distinct statuses.
+
+Keep Watcher's existing `connect.invoke` scheduling ownership. Extend its typed
+source model, constraint checks and content callback for a real body-source
+stream while preserving attachment behavior. No signed envelope/body is stored
+in Watcher queue rows, serialized requests, spools or retry caches. Ordinary
+Watcher body-view storage keeps its separate purpose and retention; intake must
+not pin or copy it for retries. Bind stable UUID source event,
+Watcher event digest, rule/version, full physical message identity, organization,
+namespace, provider identity and pack/route before the prepare request. Before
+content submission, persist the complete [recovery metadata](#persisted-recovery-metadata)
+defined by Decision B. Do not derive source event identity from a daily summary or
+mint a fresh event on retry. Attachment presence/count is recorded as unprocessed;
+attachments are not fetched or extracted by this first body-only integration.
+
+The selected rule must explicitly authorize body capture for eligible unfollowed
+messages without silently following the thread. Reuse Watcher's reconcile/mail
+owner and source locks; add a bounded body-admission reason to that owner. Preserve
+complete/truncated/unknown/unavailable distinctions. Truncated or unavailable content
+may produce source metadata, never an invented complete lead or automatic approval.
+
+### Decision A: bounded custody, encrypted deployment and backups
+
+**PROPOSED single recommendation:** require a verified encrypted local deployment
+volume, private OS-user permissions, isolated OS-keystore secrets and encrypted
+owner-controlled metadata backups. No cloud storage or new paid service is needed.
+Fail closed for production enablement if encryption/keystore checks cannot be
+qualified on the supported OS. Existing private-file helpers remain necessary,
+but are not represented as encryption. This design protects offline storage;
+it does not protect against a compromised unlocked operator account or OS admin.
+
+Proposed product policy, requiring Juan's acceptance:
+- Raw signed source/snapshot bytes expire **7 days after capture**. Sign the
+  recovery deadline at capture plus this window, bounded further by any earlier
+  applicable authority/policy limit; retries and receiver acknowledgement never
+  extend it. This fixed ceiling applies to receiver custody and transient ingress
+  artifacts. Watcher holds no durable intake byte copy. An authorized purge may
+  remove receiver content sooner; acknowledging workflow success does not itself
+  erase the retained source. A longer window allows recovery across a weekend or
+  several days offline without indefinite raw-content retention. It increases
+  sensitive-data residence and the receiver storage budget; quota sizing must use
+  the full window, not optimistic early completion. It is a recommendation, not
+  a measured outage-recovery guarantee.
+- Correlation metadata, outcome receipts and intake audit records expire **90 days
+  after original source admission**. No raw body is included. Unresolved attempts
+  use their first capture timestamp, not a retry timestamp, for the same bound.
+  An intent that never captures uses its original creation time for that bound.
+  Existing immutable receipts cannot currently implement this policy: an explicit
+  owner-level retention design and recovery proof are prerequisites, not permission
+  to drop triggers or edit audit rows. No unrelated workflow history is affected.
+- Do not copy raw source payloads into backups, exports, telemetry or crash dumps.
+  Back up only owner-defined metadata/configuration through encrypted exports;
+  these export/restore APIs are also new work. Backup retention cannot exceed the
+  original record deadline, and restore must apply deletion/retirement tombstones
+  before enabling reads or retries. Never back up a mixed SQLite file under a
+  misleading "metadata only" label. Signing secrets use a separate keystore
+  recovery procedure, not ordinary database exports.
+
+Tradeoff/cost (**INFERRED**): avoids another database encryption format or cloud
+service, but requires native encryption/keystore preflight, secret migration,
+owner-defined export/restore and retention qualification on both platforms. Local
+raw-payload disk loss is not recoverable from backup; a mail-provider reread is
+not promised to reproduce the original bytes. Report that loss explicitly rather
+than silently recreating a submission. Strict raw retention can leave an offline
+attempt unrecoverable after its deadline. Physical secure-erasure/compliance claims
+remain out of scope; WAL, temporary files and expired backups must be tested.
+
+**Question A for Juan:** accept this bounded retention and encrypted-storage policy,
+including no raw-content backups and the stated offline/disk-loss tradeoff?
+No host configuration, storage purchase or migration is authorized by this proposal.
+
+### Decision B: receiver-owned custody and reference-only retries
+
+**PROPOSED single recommendation:** require receiver availability before acquiring
+an intake body, stream a canonical signed envelope into Lead Intake's existing
+custody transaction, and let Watcher's existing queue retry by authenticated
+reference after custody commits. There is no Watcher-side durable payload copy,
+second outbox, new poller or receiver scheduler. Watcher's queue remains the retry
+scheduler; the receiver resumes only a particular authenticated job request.
+
+**CONFIRMED:** CA `lead_intake/admission.py:165-240` authenticates in the source
+writer, stores the canonical signed envelope with its receipt, and returns after
+commit. `lead_intake/content.py:74-98` reads that envelope subject to expiry and
+purge. `lead_intake/handoff.py:55-70` reauthenticates raw requests before workflow
+admission. These support receiver custody, but do not implement the application
+protocol below. The receiver must use owner APIs, never query source tables from
+the wrapper or return bodies to Watcher for replay.
+
+#### Persisted recovery metadata
+
+This section owns the application persistence/usage rule; digest computation stays
+with the existing source helpers. **CONFIRMED:** CA
+`lead_intake/source.py:257-269` separates canonical signed envelope bytes from the
+payload digest independent of authorization. `automate/runtime.py:356-375` requires
+`expected_payload_digest` for historical workflow lookup. An envelope hash cannot
+supply that argument, and lookup must still work after source content is purged.
+
+| Persisted field | Computation and consumer |
+| --- | --- |
+| `envelope_sha256` | SHA-256 of `canonical_source(source)`, the actual canonical signed artifact sent. Used for transport integrity and exact retained-envelope custody cross-check; never passed as `expected_payload_digest`. |
+| `payload_digest` | Existing `lead_intake.source.payload_digest(source)` from that same parsed source. Supplied as `expected_payload_digest` to `PackRuntime.lookup_source_outcome`; never derived from an envelope hash or workflow-event fingerprint. |
+
+Watcher owns atomic persistence of **both** fields with the job intent's capture
+metadata and signed deadline before the first content-submission effect. A partial
+pair is not eligible for dispatch. The receiver binds the complete pair to the
+same job/organization/namespace/event and pinned route, verifies both against the
+submitted envelope through the source helpers before source admission, and retains
+the pair in reference-only job state for status/resume. Claimed digests are neither
+authorization nor proof of custody. Conflicting metadata is refused, not repaired
+by overwriting identity or inventing a new job.
+
+Both application metadata owners retain these fields under Decision A's metadata
+window independently of raw-content retention. They must not obtain a missing
+payload digest by reopening custody, hashing a receipt or rereading mail. Such a
+missing field is an incomplete recovery record, not workflow not-found. Transport
+replay keeps the same signed artifact; rotating an authorization key can change
+its envelope hash without changing the payload hash and is not permission to
+silently replace either pinned field on an existing job.
+
+#### Handoff protocol
+
+Proposed protocol and failure boundary:
+
+1. Watcher first persists reference-only intent in its existing queue: stable
+   job/event identity, physical message/rule/organization/namespace and selected
+   receiver/pack/route. The receiver authenticates and durably binds that job to
+   those references before capture. If unavailable or out of quota, leave the
+   intent visibly waiting for capture; do not fetch/sign an intake body or claim
+   durable capture. A mailbox message may disappear while waiting.
+2. With the receiver ready, Watcher captures and canonicalizes once in bounded
+   memory, signs the fixed deadline and atomically persists the complete
+   [recovery metadata](#persisted-recovery-metadata) against that intent before
+   sending the existing Connect input artifact. The receiver validates and pins
+   that metadata as specified there before calling the source owner. Transport
+   and custody use the same canonical signed bytes. No disk
+   spool, swap/crash-dump payload persistence or request-body logging may become a
+   hidden Watcher retry copy; platform memory/protection behavior needs qualification.
+3. Until source commit, the live attempt may reuse its bounded transient bytes.
+   Readiness and a durable job intent are **not** durable content acknowledgements.
+   After a lost response or restart, Watcher asks for that job's outcome. The receiver
+   first checks historical workflow outcome using the persisted `payload_digest`
+   as `expected_payload_digest` per the [metadata mapping](#persisted-recovery-metadata),
+   without reading source content. If no workflow outcome is found, it resolves exact
+   source custody through a new host-authorized source-owner lookup keyed by
+   organization, namespace and event, cross-checking `envelope_sha256` and pinned
+   route per the same mapping. This covers a crash
+   after source commit but before recording its admission reference in job state.
+4. If custody exists and workflow admission is unfinished, the authenticated resume
+   operation reads retained signed bytes through the content owner and calls the
+   complete `submit_source` operation. Current machine grant, source authentication,
+   deadline, purge/retirement and pack/route checks still apply. No copied receipt
+   or reference alone grants authority; no signing-key rotation silently re-signs
+   the retained envelope. If current authority refuses it, historical lookup may
+   still report a previously committed workflow; absence is not completion.
+5. If no durable custody exists and transient bytes are lost, the original capture
+   is **unrecoverable** once the receiver has fenced/settled every in-flight writer
+   for that job. An absent lookup alone cannot prove this: while a writer could
+   still commit, report unknown/pending. Never report delivered, persisted no-match
+   or definite refusal on a timeout. No automatic mailbox reread or fresh event ID
+   may disguise the loss. An explicitly authorized recapture is a new observation
+   with linked provenance and new identity; its bytes may differ or be unavailable.
+   Such a product flow needs its own bounded work order; it is not replay.
+
+This closes the ambiguity with a durable receiver commit/status protocol; it does
+**not** promise survival of bytes lost before the first durable commit. That gap
+cannot be eliminated while disallowing a durable producer copy and lacking a
+provider guarantee for the original bytes. The cost is mandatory receiver
+availability at capture and visible missed-capture/manual recovery after a crash
+in that interval. Raw disk loss is likewise unrecoverable under Decision A's
+no-raw-backup policy. Juan must accept this limitation before adoption.
+
+**NEW / UNQUALIFIED boundaries:** a versioned authenticated prepare/status/resume
+contract over the existing Connect provider transport; Watcher's atomic persistence
+of the complete recovery metadata and the receiver's verified durable job mapping
+as specified [above](#persisted-recovery-metadata); source-owner keyed custody
+resolution; and per-job serialization/fencing
+that prevents a supposedly settled attempt from committing later. Reuse Connect's
+existing invocation, job IDs, queue and reconciliation; do not invent a parallel
+transport or dispatcher. Specify legal states and crash recovery before coding.
+Source and workflow commits remain separate; job mapping must recover each gap
+through owner APIs. No source-store scan or completion from a cached receipt.
+Existing artifact submission does not imply any of these APIs already exists.
+
+Required regression fixtures for the application work order: crash after source
+commit but before job-to-admission mapping; crash after workflow commit before
+acknowledgement; historical lookup after raw purge with content reads forbidden;
+and restart with reference-only state. In each, use the persisted metadata mapping,
+not fixture access to the original envelope. Negative cases must remove only the
+payload digest, substitute the envelope digest, mix a valid envelope hash with a
+wrong payload hash, and present only one field. Assert no dispatch or false
+not-found/accepted result. A valid complete pair must recover the existing outcome
+without source bytes. Authorization-only changes and changed payloads must prove
+that the two digests are distinct. These are required future application tests;
+the docs-only signature probe is not proof that those application owners exist.
+
+Reserve bounded receiver storage before capture. Size its quota using the signed
+envelope limit and full retention window. A full disk/quota refuses new capture
+visibly without evicting unresolved content. Protect receiver DB, WAL, temporary
+files and ingress bytes under Decision A; incomplete ingress is never canonical
+custody and must be cleaned after failure. Capacity and platform protection are
+UNKNOWN. No storage purchase is assumed.
+
+Provider restart identity remains a gap. Recommend retaining the same instance
+identity for the same protected installation/store, with exclusive process
+ownership and qualified registry republishing; replacement installations get a new
+identity and require explicit re-enrollment. Connect registry compatibility must
+be demonstrated before implementation. No fallback discovery, alternate provider
+or fresh job ID may conceal lost custody. Reference mapping retains only metadata;
+raw bytes have one durable owner, Lead Intake.
+
+C3 deletion remains owned by Watcher's existing removal coordination
+(`removal.py:187-235`) and each receiver's content owner. Watcher records authenticated
+downstream purge work for every captured physical identity behind aliases, reusing
+source locks and its queue pump. Local deletion takes effect immediately; offline
+receiver purge stays pending until acknowledged. Freeze the operator-approved
+capture cutoff; retries send that same cutoff so later captures survive a late
+purge. Cancellation/purge must fence pre-custody jobs too, including an upload
+already in flight, rather than permit old content to arrive after deletion.
+Global deletion stays incomplete until all receiver/backup obligations are settled.
+No source may be revived by restart, namespace replacement or backup restore.
+
+Tradeoff/cost (**INFERRED**): typed body-source admission and reference-only queue
+changes, a thin provider with durable status/fencing, a bounded source-owner lookup,
+current-authority resume and purge propagation are required. These are more than a
+transport adapter; they need separate contract/proof slices. Existing custody,
+source authentication, workflow receipts and queue scheduling remain authoritative.
+No external hosting or paid service is proposed.
+
+**Question B for Juan:** accept receiver-only durable custody, reference-only
+Watcher retries, and the explicit pre-commit loss/receiver-availability tradeoff,
+including eligible unfollowed-body capture without thread-follow behavior?
+
+### Decision C: local admin and user roles with delegated background authority
+
+**PROPOSED single recommendation:** support one organization per deployment with
+individually enrolled employees and explicit **admin** and **user** roles from
+first adoption. Use local sign-in backed by verified native identity, not a cloud
+identity dependency. The authoritative local host maps that identity to an employee,
+immutable organization and current role. A shared OS account alone cannot identify
+different employees. Native verification/session behavior on Linux and Windows
+must be qualified; there is no existing employee sign-in in the inspected paths.
+
+| Actor | Allowed responsibility | Denied responsibility |
+| --- | --- | --- |
+| Admin | Enroll/disable employees; assign roles and record access; configure sender/rule/route and retention within accepted policy; publish/revoke machine authority; clock reconciliation, purge and namespace retirement; authorized records and audit access | Cross-organization access; bypass of source authentication or lifecycle; treating admin status as automatic approval of a changed payload/destination |
+| User | Sign in; view their authorized intake records and statuses; review/correct permitted records and, when the separately qualified lead-review feature exists, approve its exact payload/destination | Role changes, trust publication, clock reset, purge/retirement, policy/route changes, bulk exports or access to other users' restricted records |
+| Machine principal | Only the admin-delegated sender/rule/version/organization/route and retention policy; capture, submit, resume and reconcile | Impersonating an employee; altering roles/policy; interactive content browsing/export; approving delivery |
+
+The first body handoff still creates no canonical leads or delivery approvals.
+The permission matrix does not authorize building those later features in this
+slice. Record visibility must be assigned/enforced by the authoritative owner,
+not inferred from knowledge of a receipt ID. Default users have no unassigned
+record access; admin grants access explicitly. Frontend hiding is not authorization.
+
+A protected host service owns stores/keystore under an OS principal that ordinary
+employee processes cannot read or impersonate. Employee apps use authenticated local
+interfaces, never direct SQLite access. Bootstrap of the first admin requires
+verified deployment-owner control; it is not self-enrollment by any local user.
+This service boundary and platform installation/permissions are new work; merely
+adding a role column to today's per-user stdin handler would not provide isolation.
+It is the local receiver/security host, not another workflow engine or scheduler.
+
+Require sign-in and short-lived host-issued sessions for reads; privileged admin
+operations and future approval/export effects additionally require fresh native
+verification and audience/operation/payload-bound one-use proofs with nonce/version
+checks. The host, not webview JSON, selects actor and role. Claimed employee IDs,
+paths, bearer transport tokens and licenses cannot substitute for authentication.
+Enforce organization, current role, record access and revocation at each owning
+read/mutation boundary, including after a busy-store wait. Logout, role removal
+and session expiry revoke further use; a locked session denies interactive reads
+and effects while permitting only previously delegated background work.
+
+Keep signing and machine credentials in the service keystore; they do not grant
+human permissions. Bound audits record actor, policy/grant version and operation
+identity without confidential narratives. A material payload or destination
+change invalidates approval; no cached session authorizes a stale approval.
+Central sign-in, remote access and shared multi-organization hosting remain outside
+this proposal. Local role enforcement is required before team use is enabled.
+
+Tradeoff/cost (**INFERRED**): protected service installation, native sign-in/session
+adapters, employee/role/record-access administration, actor audit and revocation
+proof across all entry points. This supports a team in the initial product scope
+but increases the application work before adoption. Storage permissions, platform
+credentials and app roles must all agree; none can be assumed from another.
+
+**Question C for Juan:** accept this local admin/user permission model and protected
+host boundary for the initial single-business deployment?
+
+### Minimal sequence after decisions, not implementation authorization
+
+| Slice | Existing owner / smallest extension | Invariant, proof and rollback |
+| --- | --- | --- |
+| Decision acceptance / G0 | This canonical contract; resolve A/B/C and pin receiver identity/transport semantics | Accepted policies and explicit auth boundaries recorded; no executable changes. |
+| Protection and roles / G0,G6 | Existing private-storage owners plus protected host, native identity and role/record-access adapters | Wrong org, ordinary-user admin action, unassigned-record read, forged actor, locked session, role revocation during a wait and keystore failure are refused. Backup restore preserves access policy. Disable enrollment without deleting stores. |
+| Receiver custody protocol / G0,G1 | Thin provider and Lead Intake source owner; Watcher existing reference queue | Contract prepare/status/resume and exact keyed custody lookup before code. Prove no body in Watcher durable state, quota/readiness admission, source commit and lost-ack recovery, and fenced pre-commit loss; do not claim offline capture. Disable new capture while preserving status. |
+| Body admission / G1 | Watcher rule/reconcile/body owner and existing queue | Body-only capture, unavailable/truncated content, canonical byte identity, full source scope, before/after-commit crashes, late upload versus purge and deadline; old attachment tests unchanged. Disable lead rules while reconciling existing jobs. |
+| Receiver resume / G2,G3 | Thin provider over qualified PackRuntime and source-owner APIs; existing Watcher pump | Lost job mapping after source commit, both commit gaps, current authority, expired/revoked key, concurrent resume and unknown outcomes; reference alone cannot authenticate or complete work. Keep route/job identities; rollback stops admission but preserves historical lookup. |
+| Retention and purge / G6 | Each owner deletes only its own records; Watcher removal owner propagates | Enforce accepted expiry, alias-wide capture cutoff, offline purge, metadata backup/restore without revival. No live adoption until this gate passes; preserve evidence. |
+| Adoption qualification | Real packaged applications on both native platforms, synthetic sources first | Source-to-historical-outcome parity with merged library fixtures; no effects or extracted-lead claim. Separate operator work order required. |
+
+Every executable work order must inventory validated fixtures/runtime settings,
+list departures, identify the origin owner, preserve regression coverage and define
+rollback. Body capture, custody and receiver steps may use synthetic fixtures while
+privacy gates are incomplete; they must not enable production intake. Extraction,
+canonical lead review, external CRM delivery, shared hosting and EOM changes remain
+outside this handoff proposal. The existing foundation gates for those future
+features are not passed by these handoff slices.
+
+### Verification and gap audit for this document
+
+CONFIRMED: relevant pinned source was read; existing jobs, scheduler, body and
+confirmation paths were traced. No tests, services or live-mail operations were
+run. Validate cited paths/ranges against the pinned revisions and inspect the
+docs-only diff; preserve the source inventory outside worktrees. Existing test
+results are historical evidence, not new test runs or production readiness.
+
+UNKNOWN / NOT DONE: operator decisions A/B/C, deployment encryption/keystore,
+real employee roles/record access, reference-only body queue, receiver custody
+lookup/resume/fencing and restart, C3 cross-application purge, metadata retention/export/restore and application
+qualification. Both exact-head reviews are pending. This proposal resolves a
+recommended direction and its costs; it does not implement or accept that direction.
