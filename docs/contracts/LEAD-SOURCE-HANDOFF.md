@@ -1648,6 +1648,26 @@ qualification. Workflow-writer lock proof is tracked separately in issue #41.
 
 ## Proposed application handoff and adoption decision contract
 
+### Current acceptance and work-order status
+
+Juan accepted the revised A/B/C policy at
+`90f6677b69481e7ee8976f5fffac8a36a9b32794` in
+[the operator acceptance record](https://github.com/canfieldjuan/connect-automate/pull/43#issuecomment-6346545998).
+That revision merged in
+`9cc984f952a7fb06774cbc94068bcde7e3b94142`. The proposal labels, questions and
+pending-acceptance statements below preserve the reviewed proposal's history;
+they are superseded by this acceptance record. The policy itself is unchanged.
+The [operator's reviewer update](https://github.com/canfieldjuan/connect-automate/pull/43#issuecomment-6353611953)
+requires oversight and the Codex connector, without a separate independent-reviewer
+gate; CI, finding reconciliation and guarded-merge requirements still apply.
+
+The next bounded proposal is the
+[protection-and-roles work order](LEAD-HOST-AUTHORIZATION.md). Acceptance of A/B/C
+does not qualify application adoption or accept that new technical work order.
+No executable change is authorized by this status update.
+
+### Historical proposal status
+
 Status: PROPOSED; docs only. Operator instruction: "Let’s start", after the
 proposal to inspect Watcher and prepare the production handoff decisions. This
 is not acceptance of these product choices, implementation permission, or adoption.
