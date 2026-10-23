@@ -5,6 +5,7 @@ from copy import deepcopy
 import pytest
 from pydantic import ValidationError
 
+from connect_automate.lead_intake import _host_policy
 from connect_automate.lead_intake._host_policy import (
     DeploymentScope,
     HumanPolicyFacts,
@@ -28,6 +29,13 @@ EFFECTS = (
     "source.namespace.retire",
 )
 DENIED = {"status": "policy_denied", "reason": "policy_mismatch"}
+
+
+@pytest.mark.parametrize(("catalog", "expected"), (("_READS", READS), ("_ADMIN_EFFECTS", EFFECTS)))
+def test_catalog_matches_accepted_contract(catalog, expected):
+    # Keep the independent contract expectations shared with the behavior matrix.
+    # Adding an untested operation must require a deliberate contract/test change.
+    assert getattr(_host_policy, catalog) == frozenset(expected)
 
 
 def facts(operation=READS[0], role="user"):
