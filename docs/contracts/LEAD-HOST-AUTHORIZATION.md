@@ -36,7 +36,7 @@ about an installed application. Each row is CONFIRMED by reading that revision.
 | Connect transport identity | `src/connect_automate/connect.py:98-132` | Keep existing transport ownership. Process registration and bearer transport authentication are not employee sessions. |
 
 CONFIRMED adjacent inventory: `canfieldjuan/connect-contracts` at
-`a168b9a67450556d95b4939a59ca36aa7aedfda5`,
+`f00aad8aa3d53285c5b96afd34ecc5ec59030991`,
 `schemas/v2/registration.schema.json:7-35`, describes process/loopback/bearer
 registration, not an employee assertion. `canfieldjuan/local-connect-licensing`
 at `9f9d1be530653300926315294ef1721ce3d4fc98` contains only `README.md` and
