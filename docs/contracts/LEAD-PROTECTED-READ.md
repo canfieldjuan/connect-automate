@@ -140,6 +140,12 @@ PROPOSED requirements for the subsequent executable work order:
 
 INFERRED proposed serialization protocol, requiring proof before adoption:
 
+Host-wide lock-order invariant: every operation needing both the source writer
+and the host authority gate acquires the source writer first, then the gate.
+No operation may acquire a source writer while holding that gate. Future admin
+effect contracts (including purge, retirement and clock reconciliation) inherit
+this invariant; it does not authorize those effects in this slice.
+
 1. Authenticate the request and perform cheap host preflight. Do not pass a cached
    eligible result as a capability. Acquire the existing source writer through
    its owner without holding the host authorization gate during the busy wait.
@@ -151,9 +157,11 @@ INFERRED proposed serialization protocol, requiring proof before adoption:
    expiry writes. Check authority, session expiry and native state again before
    source commit. On denial, roll back this operation's pending writes. Source
    commit failure or uncertainty releases no bytes and uses existing recovery.
-4. Keep the host gate through commit and a final native/session check before
-   bounded response release. Recheck before each response chunk; stop on expiry,
-   lock, disconnect or failure. No success framing for a partial transfer. Bytes
+4. Keep the host gate through commit and the entire response stream, releasing
+   it only after completion or bounded cancellation cleanup. Perform a final
+   native/session check before release of bytes and recheck before each response
+   chunk; stop on expiry, lock, disconnect or failure. No success framing for a
+   partial transfer. Bytes
    already released cannot be retracted; do not promise this or universal atomic
    read/delivery. Source lifecycle checks retain their current serialization.
 5. Host revocation acquires that same authority gate, commits its version change
@@ -172,8 +180,11 @@ a callback invoked only before `read_content` cannot meet this contract.
 
 UNKNOWN/blocking: trustworthy native lock observation at these checkpoints,
 bounded send/cancellation limits, crash-safe host authority persistence and the
-precise guard interface. These require a focused executable work order after
-native feasibility. No cross-store atomic transaction is claimed. A valid expiry
+precise guard interface. Holding the gate during streaming delays acknowledged
+revocation: its streaming contribution cannot be bounded until the whole-response
+deadline and cancellation cleanup bound are specified and proved. A per-chunk
+timeout that restarts indefinitely is insufficient. These require a focused
+executable work order after native feasibility. No cross-store atomic transaction is claimed. A valid expiry
 commit followed by a channel failure may remain committed; denial before commit
 must roll back. Retrying a read never revives purged content.
 
