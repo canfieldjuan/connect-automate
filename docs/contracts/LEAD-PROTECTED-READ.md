@@ -153,17 +153,21 @@ gate; future effect contracts link here rather than restating a separate rule.
   host operations. A read holds it through source commit, the entire response
   stream and bounded cancellation cleanup. This deliberately serializes protected
   reads host-wide; an active slow stream delays unrelated reads and revocation.
-  Shared-reader concurrency is not silently implied by the word gate.
+  A read waiting for the gate already owns its source writer, so ingestion and
+  valid expiry cleanup on that source also wait. The streaming read has released
+  its own source writer at commit; the queued read is the holder causing this
+  indirect write delay. Latency accounting and contention proofs must include
+  those source writes as well as reads and revocation. Shared-reader concurrency
+  is not silently implied by the word gate.
 - **Fairness:** once authenticated revocation is queued, no read waiting for the
   gate or arriving later may acquire it ahead of that revocation. Revocations
   retain FIFO order among themselves. A primitive lock with unspecified wake-up
   order is insufficient; the host must enforce and test this admission rule
   across processes, including cancellation, owner death and queue recovery.
-- **Bounds:** stop admitting reads to the gate when revocation queues. If `N`
-  reads already hold it, their streaming-drain contribution is at most
-  `N * (whole-response deadline + cancellation cleanup bound)`. The exclusive
-  mode permits only its current holder. New read arrivals cannot extend this
-  drain. This is not a complete acknowledged-revocation bound: remaining source
+- **Bounds:** stop admitting reads to the gate when revocation queues. Only the
+  exclusive gate's current holder can remain; its streaming-drain contribution
+  is at most the whole-response deadline plus cancellation cleanup bound. New
+  read arrivals cannot extend this drain. This is not a complete acknowledged-revocation bound: remaining source
   transaction/commit work, earlier queued revocations, scheduling and revocation
   persistence also require explicit bounds or classified failure. Pin the finite
   queue/capacity and deadline behavior before executable acceptance. Restarting
@@ -219,7 +223,7 @@ Every stage is required; later stages cannot substitute for an earlier failure.
 | Native feasibility | Actual separate service/employee identities on Linux and Windows; successful native sign-in, failed/forged/disabled identity, locked/unknown session denial, ordinary-user direct-file denial; protected bootstrap and keystore failure | Prerequisite to executable integration acceptance / G0,G6 |
 | Authority and policy binding | Real sign-in issues a scoped session; host reloads role and assignment; wrong host/org, unassigned admin/user, copied results/handles and machine identities deny; authorized assigned read succeeds | G2,G6 |
 | Source enforcement | Existing source tests unchanged; no unauthorized clock/expiry mutation; valid expiry still purges; signing-key revocation remains distinct from employee revocation | G2,G6 |
-| Concurrency and recovery | Separate processes exercise both revocation orders, busy writer, continuous arriving reads with queued revocation, gate owner death and queue recovery, session expiry during wait/send, lock/unlock, disconnect, process death, restart and commit uncertainty; assert bytes and stored state independently | G3,G6 |
+| Concurrency and recovery | Separate processes exercise both revocation orders, busy writer and ingestion/expiry writes blocked by a gate-waiting read, continuous arriving reads with queued revocation, gate owner death and queue recovery, session expiry during wait/send, lock/unlock, disconnect, process death, restart and commit uncertainty; assert bytes and stored state independently | G3,G6 |
 | Release qualification | Required native Windows/Linux lanes from first executable push; exact revision, real fixtures, recorded failures and results, secure installation/retention evidence | G6; no automatic adoption |
 
 Negative cases isolate one guard at a time. Include missing/mixed fields,
