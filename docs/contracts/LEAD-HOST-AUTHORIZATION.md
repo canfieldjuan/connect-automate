@@ -237,3 +237,10 @@ document traces to that scope and that accepted policy has not been silently rev
 NOT DONE: technical work-order review, executable policy implementation, native
 identity, protected-host installation, real authorization enforcement and adoption
 qualification remain outstanding. This document is not an employee-access feature.
+
+## Protected-read continuation
+
+The private evaluator is present in the pinned source inventory of the
+[protected-host read proposal](LEAD-PROTECTED-READ.md). That proposal owns the
+next native-identity and single-read feasibility boundary. It does not broaden
+this work order or qualify native authentication, employee access or adoption.
