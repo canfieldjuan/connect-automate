@@ -140,11 +140,36 @@ PROPOSED requirements for the subsequent executable work order:
 
 INFERRED proposed serialization protocol, requiring proof before adoption:
 
-Host-wide lock-order invariant: every operation needing both the source writer
-and the host authority gate acquires the source writer first, then the gate.
-No operation may acquire a source writer while holding that gate. Future admin
-effect contracts (including purge, retirement and clock reconciliation) inherit
-this invariant; it does not authorize those effects in this slice.
+#### Canonical host gate requirements
+
+This section owns ordering, mode, lifetime and fairness for the proposed host
+gate; future effect contracts link here rather than restating a separate rule.
+
+- **Order:** every operation needing both the source writer and the host authority
+  gate acquires the source writer first, then the gate. Never acquire a source
+  writer while holding the gate. Future purge, retirement and clock-reconciliation
+  contracts inherit this order; no such effects are authorized here.
+- **Mode and lifetime:** the proposed initial gate is exclusive across protected
+  host operations. A read holds it through source commit, the entire response
+  stream and bounded cancellation cleanup. This deliberately serializes protected
+  reads host-wide; an active slow stream delays unrelated reads and revocation.
+  Shared-reader concurrency is not silently implied by the word gate.
+- **Fairness:** once authenticated revocation is queued, no read waiting for the
+  gate or arriving later may acquire it ahead of that revocation. Revocations
+  retain FIFO order among themselves. A primitive lock with unspecified wake-up
+  order is insufficient; the host must enforce and test this admission rule
+  across processes, including cancellation, owner death and queue recovery.
+- **Bounds:** stop admitting reads to the gate when revocation queues. If `N`
+  reads already hold it, their streaming-drain contribution is at most
+  `N * (whole-response deadline + cancellation cleanup bound)`. The exclusive
+  mode permits only its current holder. New read arrivals cannot extend this
+  drain. This is not a complete acknowledged-revocation bound: remaining source
+  transaction/commit work, earlier queued revocations, scheduling and revocation
+  persistence also require explicit bounds or classified failure. Pin the finite
+  queue/capacity and deadline behavior before executable acceptance. Restarting
+  a per-chunk timeout indefinitely does not bound a whole response.
+
+#### Read and revocation sequence
 
 1. Authenticate the request and perform cheap host preflight. Do not pass a cached
    eligible result as a capability. Acquire the existing source writer through
@@ -157,20 +182,18 @@ this invariant; it does not authorize those effects in this slice.
    expiry writes. Check authority, session expiry and native state again before
    source commit. On denial, roll back this operation's pending writes. Source
    commit failure or uncertainty releases no bytes and uses existing recovery.
-4. Keep the host gate through commit and the entire response stream, releasing
-   it only after completion or bounded cancellation cleanup. Perform a final
-   native/session check before release of bytes and recheck before each response
+4. Apply the [canonical gate lifetime](#canonical-host-gate-requirements).
+   Perform a final native/session check before release of bytes and recheck before each response
    chunk; stop on expiry, lock, disconnect or failure. No success framing for a
-   partial transfer. Bytes
-   already released cannot be retracted; do not promise this or universal atomic
-   read/delivery. Source lifecycle checks retain their current serialization.
+   partial transfer. Bytes already released cannot be retracted; do not promise
+   this or universal atomic read/delivery. Source lifecycle checks retain their current serialization.
 5. Host revocation acquires that same authority gate, commits its version change
    and invalidates sessions before acknowledging completion. It never acquires a
    source writer while holding the gate. If revocation wins, the waiting read
    denies before source effects. If the read wins, its bounded authorized work
    precedes acknowledged revocation. Native OS state can change independently:
    prove the adapter's observation/linearization contract rather than equating a
-   host mutex with control of OS locking.
+   host gate with control of OS locking.
 
 The guarded operation must be source-owned; do not reach into source SQL from a
 transport wrapper or create an alternate reader. Preserve the trusted-host library
@@ -179,14 +202,13 @@ The source guard must encompass commit and be held by the host until release;
 a callback invoked only before `read_content` cannot meet this contract.
 
 UNKNOWN/blocking: trustworthy native lock observation at these checkpoints,
-bounded send/cancellation limits, crash-safe host authority persistence and the
-precise guard interface. Holding the gate during streaming delays acknowledged
-revocation: its streaming contribution cannot be bounded until the whole-response
-deadline and cancellation cleanup bound are specified and proved. A per-chunk
-timeout that restarts indefinitely is insufficient. These require a focused
-executable work order after native feasibility. No cross-store atomic transaction is claimed. A valid expiry
-commit followed by a channel failure may remain committed; denial before commit
-must roll back. Retrying a read never revives purged content.
+crash-safe host authority persistence and a guard implementation satisfying the
+[canonical gate requirements](#canonical-host-gate-requirements), including its
+mode, priority, queue recovery and full latency accounting. The deadline and
+cleanup values remain unqualified. These require a focused executable work order
+after native feasibility. No cross-store atomic transaction is claimed. A valid
+expiry commit followed by a channel failure may remain committed; denial before
+commit must roll back. Retrying a read never revives purged content.
 
 ### Proof sequence and acceptance gates
 
@@ -197,7 +219,7 @@ Every stage is required; later stages cannot substitute for an earlier failure.
 | Native feasibility | Actual separate service/employee identities on Linux and Windows; successful native sign-in, failed/forged/disabled identity, locked/unknown session denial, ordinary-user direct-file denial; protected bootstrap and keystore failure | Prerequisite to executable integration acceptance / G0,G6 |
 | Authority and policy binding | Real sign-in issues a scoped session; host reloads role and assignment; wrong host/org, unassigned admin/user, copied results/handles and machine identities deny; authorized assigned read succeeds | G2,G6 |
 | Source enforcement | Existing source tests unchanged; no unauthorized clock/expiry mutation; valid expiry still purges; signing-key revocation remains distinct from employee revocation | G2,G6 |
-| Concurrency and recovery | Separate processes exercise both revocation orders, busy writer, session expiry during wait/send, lock/unlock, disconnect, process death, restart and commit uncertainty; assert bytes and stored state independently | G3,G6 |
+| Concurrency and recovery | Separate processes exercise both revocation orders, busy writer, continuous arriving reads with queued revocation, gate owner death and queue recovery, session expiry during wait/send, lock/unlock, disconnect, process death, restart and commit uncertainty; assert bytes and stored state independently | G3,G6 |
 | Release qualification | Required native Windows/Linux lanes from first executable push; exact revision, real fixtures, recorded failures and results, secure installation/retention evidence | G6; no automatic adoption |
 
 Negative cases isolate one guard at a time. Include missing/mixed fields,
