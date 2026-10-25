@@ -6,6 +6,8 @@ said, “i accept, lets begin”, accepting the R1 work order reviewed at
 `533f04d0d23c2070f3d1532b82272e609d3b4547`. This authorizes R1's private pure
 value models and synthetic proof only. It does not authorize the later slices,
 a protected service, live mailbox, migration or production activation.
+The workflow-lookup re-pin amendment below is pending exact-head contract review
+and its conditional acceptance record; no fixture adaptation is authorized yet.
 
 The accepted [application policy](LEAD-SOURCE-HANDOFF.md#current-acceptance-and-work-order-status)
 remains authoritative: one business per deployment, receiver-owned raw custody,
@@ -209,8 +211,10 @@ never erase a previously recorded custody/workflow fact.
 - `capture_phase`: `prepared`, `upload_possible`, `custodied`, `fenced_empty`.
 - `content_state`: `not_received`, `retained`, `unavailable`, `unknown`.
   `unavailable` has a bounded reason: `expired`, `purged`, `retired`, `lost`.
-- `workflow`: null when not resolved, otherwise the existing validated historical
-  lookup projection. Preserve `not_found`, `no_match` and `accepted` meanings.
+- `workflow`: null when not resolved, otherwise the validated historical lookup
+  projection. The amendment below pins its proposed consumption to schema `2.0`
+  at the merged action-result owner. Preserve `not_found`, `no_match` and `accepted`
+  meanings. Nested action status never determines custody phase or reason.
 - `source_receipt`: the existing validated `ReceiptReference`, required exactly
   when capture phase is `custodied`; null otherwise. It is independent of an absent
   workflow receipt and never authorizes resume by itself.
@@ -242,9 +246,11 @@ unknown, not `fenced_empty` inferred from an empty replacement database.
 
 Transport completion says the requested operation completed, not that a lead or
 external delivery exists. Source custody and workflow outcome are independent.
-Known action failure/pending/uncertainty must follow the pack-kit-owned result
-contract when merged and re-pinned. Until then, qualify only a no-action pack;
-do not claim general workflow-effect completeness or close issue 76 here.
+Known action failure/pending/uncertainty follows the pack-kit-owned result
+contract only through an explicitly accepted re-pin. That lane is now merged;
+the bounded amendment below proposes consuming its lookup values in R1. The
+first receiver integration remains a no-action-pack proof; consuming value models
+does not qualify general workflow effects or close issue 76 here.
 Every result is a snapshot at its observation time. Replaying an immutable status
 operation may return its original snapshot; a new authorized status operation is
 needed for a new observation. Even delivery of a cached transport result must
@@ -377,7 +383,8 @@ proof reference until the separately accepted machine-boundary contract pins
 their wire format; R1 is not the final wire conformance or full G0 acceptance.
 No edit to pack-kit's `results.py`, submit/lookup projection hunks, event-action
 snapshot seam or its result tests is included. General action-status work is
-consumed only after that lane lands and is explicitly re-pinned.
+consumed only after that lane lands and is explicitly re-pinned. The amendment
+below is that bounded re-pin proposal, not authorization for any new action owner.
 
 Verification plan for R1: baseline source/schema and result tests unchanged;
 fail-first absent model/invalid-combination cases; valid empty-body/unavailable
@@ -453,8 +460,9 @@ intervening changes. No inference runtime or model is used.
   encoding and action serialization bound without adding a provider or store.
 - **Explicit non-scope:** source/auth/storage semantics, runtime projections,
   public exports, dependencies, handlers, enrollment, persistence, native host,
-  Watcher and EOM. Pack-kit owners remain untouched. No new historical action
-  outcome fields are assumed.
+  Watcher and EOM. Pack-kit owners remain untouched. The original R1 execution
+  assumed the action-free lookup; the amendment below supersedes only that
+  dependency assumption after its review and acceptance gates.
 - **Assumptions/blockers:** values remain untrusted, including copied model
   objects. A parsed reference proves neither custody nor authority. Machine wire
   proof and later fencing are still blocked on their own contracts and proofs;
@@ -489,3 +497,119 @@ Contract review and operator acceptance are complete for R1. Its code is unused
 by any application entry point. Implementation review/merge and all later
 qualification gates remain distinct; the receiver operations above are still
 unimplemented.
+
+
+## R1 amendment: pin the embedded workflow lookup to schema 2.0
+
+**Status: PROPOSED; contract-only amendment pending exact-head review.** Oversight
+relayed Juan's words, “i accept the re-pin amendment when it's ready”, in mailbox
+`ec65dc3e`, in response to the integration blocker `129ad7f5`. This is conditional
+acceptance of this bounded re-pin, not acceptance of unreviewed details. After
+exact-head oversight contract PASS, record those words, the reviewed commit and
+this document's SHA-256 in a separate acceptance-only commit before adapting any
+R1 code or fixture. Until then, the integration failure remains open.
+
+### Source inventory, root cause and ownership
+
+- Merged dependency: `canfieldjuan/connect-automate`
+  `0a354dbab4b4d86f2a4c10a53f9a3b1dde9b8ee8` (PR #47), with reviewed dependency
+  parent `aef5c7c966d4a2c3d6109e6ac19b42916339cdad`.
+- At that pin, `src/connect_automate/lead_intake/results.py:22-55,66-73`
+  owns `_ActionResult` and schema-`2.0` `SourceHandoffLookup`. The required
+  `actions` array has at most eight unique action IDs; each item contains only
+  `action_id`, `kind="notify.local"`, and `status` equal to `pending`, `settled`
+  or `failed`. Non-accepted workflow outcomes require an empty array. Lookup
+  cannot set `workflow_applied=true`.
+- At that pin, `src/connect_automate/automate/runtime.py:377-418` constructs the
+  schema-`2.0` lookup from its existing read-only receipt/action snapshot owner.
+  R1 does not reproduce that query or call it from these value models.
+- The dependency change originates in
+  `5d108badc1d4b5bba05b98016b8c807d39b99ec2`. My R1 fixture constructor at
+  `tests/test_lead_custody_protocol.py:108-116`, introduced in
+  `f540b41a8f466b22336f1370b11e1c16fcb27c08`, still emits schema `1.0` without
+  actions. `ResolvedResult.workflow` embeds the shared owner directly, so this
+  fixture became incompatible after the dependency merged. The source owner is
+  not defective; the consumer's pin and fixture must advance together.
+- The ordinary local integration merge is
+  `ca1878d7da4abd361dde7a4f6507a0c3ef2459fc`. Its unmodified R1 isolated test
+  fails before its intended receipt guard, with `workflow.schema_version`
+  requiring `2.0` and `workflow.actions` missing. Durable evidence alias
+  `lead-custody-workflow-repin` contains the exact reproduction and synthetic
+  size probes. No live provider, database, action or mailbox was exercised.
+
+### The only contract departure
+
+After acceptance, `ResolvedResult.workflow` continues to use the shared
+`SourceHandoffLookup` directly, now explicitly pinned to the merged **schema
+`2.0`** above. Its nullable shape and existing workflow meanings are unchanged.
+The outer custody request/result `schema_version="1.0"` remains unchanged, as
+does the signed source envelope. There is no schema-`1.0` compatibility wrapper,
+action stripping, action-free mirror model or automatic downgrade.
+
+The nested `actions` projection is a bounded snapshot owned and validated by
+Automate. Preserve item identity, order and every mixed status exactly. These
+values remain untrusted when parsed by R1, and parsing grants no permission to
+execute, retry, query or change an action.
+
+- `accepted` means the workflow event is known. With zero, pending, settled,
+  failed or mixed actions, the custody reason remains `workflow_known` wherever
+  the existing table permits that outcome. `workflow_known` never asserts that
+  an action succeeded or that the workflow, lead or delivery is complete.
+- `pending` remains unresolved action execution; it does not prove that no effect
+  occurred. `failed` remains that action's terminal failure. `settled` refers to
+  the existing action owner's meaning and does not imply CRM delivery or workflow
+  completion. R1 neither retries nor aggregates any of them into a success flag.
+- `no_match` and `not_found` retain their meanings and require `actions=[]` through
+  the shared owner. Neither creates an action, receipt or custody fact.
+- `capture_phase`, `content_state`, unavailable reason, receipt requirements,
+  capture metadata, fencing claims and the entire legal state table are unchanged.
+  No action status changes or erases custody, raw availability or source provenance.
+  A workflow-known result may coexist with purged/expired content and failed or
+  pending actions. An unresolved result still contains no workflow or action data.
+- Replaying a value preserves that observation; it does not make an action status
+  current. R1 reads no clock/store and invents no new observation or authority.
+
+### Required surface, non-scope and verification
+
+The present amendment changes only this document after the ordinary main merge.
+After review and acceptance, adapt only the new R1 fixture constructor and its
+focused assertions in `tests/test_lead_custody_protocol.py`; retain direct shared
+model validation in `custody_protocol.py`. A clarifying dependency comment is
+permitted there, but no new validation owner or behavior is required. No edits to
+`results.py`, runtime/store projection seams, pack-kit tests, public exports,
+dependencies or existing workflow contracts. No new outer field, custody state,
+reason or state-table row. No R2-R5 work, machine-boundary change, action execution
+or production adoption. Broader changes require Juan's separate acceptance.
+
+Before adapting the fixtures, run the merged owner's source/receipt/runtime-result
+parity lane unchanged. Preserve the failing R1 integration probe. Then:
+
+1. Update the single fixture owner to schema `2.0` and explicit `actions=[]` for
+   the existing no-action cases; no parser fallback or caller-specific shim.
+2. Prove empty, single and eight valid actions, each status and mixed statuses
+   round-trip without altering any custody field or reason. Include retained,
+   unavailable and unknown content for accepted workflows; keep no-match and
+   not-found empty. Reject nine actions, duplicate IDs, missing/null/unknown
+   entries, wrong types, kind/status/version and extra fields through the shared
+   owner. Isolate each corrupt input so an earlier guard cannot mask the target.
+3. Revalidate nested copied/mutated action values at canonical encoding. Keep the
+   untrusted-value, input-free-error and no-application-I/O probes intact.
+4. Retain a size fixture with eight **failed** actions, an 80-emoji stage and
+   maximum custody revisions/workflow state version. At the integration pin this
+   probe encodes to **3244 raw bytes**, not an assumed value from another fixture.
+   Also cover eight longest-label **settled** actions, an 80-character maximally
+   JSON-escaped stage, unavailable/expired content and maximum artifact size:
+   **3423 raw bytes**, **6363 wrapped bytes** with a maximally escaped display name.
+   Keep the **4096-byte** custody cap and the real **16384-byte** action bound.
+   Test maximum raw result padding through the actual Connect/action encoders too;
+   these are value/encoding proofs, not a delivery guarantee.
+5. Run the focused R1 file, unchanged adjacent parity, semantic guard mutants,
+   lint/format and both existing native CI jobs. The original failing integration
+   case must pass before sign-off. Record the integrated head; old branch CI
+   cannot qualify the new dependency.
+
+Rollback before adoption is to leave the unused R1 vocabulary unmerged/disabled;
+do not revert the shared action-result owner or strip its fields. The integration
+finding closes only after the re-pin is accepted, consumer fixtures are corrected,
+regression proofs pass and exact-head reviews reconcile. This contract commit
+alone does not repair the failing tests or make PR #50 merge-ready.
