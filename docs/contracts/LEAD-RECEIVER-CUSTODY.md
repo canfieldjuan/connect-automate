@@ -619,3 +619,36 @@ do not revert the shared action-result owner or strip its fields. The integratio
 finding closes only after the re-pin is accepted, consumer fixtures are corrected,
 regression proofs pass and exact-head reviews reconcile. This contract commit
 alone does not repair the failing tests or make PR #50 merge-ready.
+
+
+### R1 re-pin implementation evidence
+
+The accepted fixture repair updates only the R1 test owner and this execution
+record after the acceptance-only commit. The shared lookup validator and all
+production code remain unchanged. The outer custody schema/state table, source
+and receipt owners, workflows and dependencies also remain unchanged.
+
+The integration failure originated in the old lookup fixture introduced in
+`f540b41a8f466b22336f1370b11e1c16fcb27c08`; it assumed the prior shared schema.
+Updating that single fixture to the accepted dependency restores all 632 existing
+custody tests, with no compatibility shim. The original isolated failing receipt
+probe now passes. The application-I/O probe also passes with coverage enabled.
+
+The prepare-fence coverage omission originated in the same R1 implementation:
+control requests had negative revision tests, but prepare had no non-null negative.
+The existing suite accepted an in-memory mutation widening prepare's fence to an
+optional revision. The new isolated negative catches that mutation with an
+expected missing-rejection assertion. No production guard was missing and no
+production change or earlier workaround needed removal.
+
+The final local combined custody/source/auth/receipt/lookup lane passes 1417 tests.
+Focused custody tests pass 710 cases; lint and format checks pass. The preserved
+counterfactual harness plus prepare and shared-lookup probes catch 36 intended
+guard mutations. New cases cover valid/mixed action snapshots, isolated invalid
+arrays/items, copied or mutated nested values, the pinned byte fixtures, and the
+unchanged custody meanings. Durable evidence alias:
+`lead-custody-workflow-repin/implementation`.
+
+This closes the local reproduction and regression work only. Integrated Linux
+and Windows CI and final exact-head oversight/connector review remain pending;
+there is no receiver activation, native qualification or later-slice work here.

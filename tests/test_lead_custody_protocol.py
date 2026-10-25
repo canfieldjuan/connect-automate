@@ -105,7 +105,8 @@ def result(phase="prepared", content="not_received", outcome=None, reason="ready
         if outcome is None
         else dict(
             schema="lead.source.handoff.lookup",
-            schema_version="1.0",
+            schema_version="2.0",
+            actions=[],
             source_receipt=deepcopy(receipt) if outcome != "not_found" else None,
             workflow_outcome=outcome,
             workflow_applied=False,
@@ -163,6 +164,19 @@ def custodied():
 
 def known():
     return result("custodied", "retained", "accepted", "workflow_known")
+
+
+def action_projection(*statuses):
+    return [
+        dict(action_id=f"00000000-0000-4000-8000-{index:012d}", kind="notify.local", status=status)
+        for index, status in enumerate(statuses, start=1)
+    ]
+
+
+def known_with_actions(*statuses, content="retained"):
+    data = result("custodied", content, "accepted", "workflow_known")
+    data["workflow"]["actions"] = action_projection(*statuses)
+    return data
 
 
 def pending():
@@ -742,7 +756,9 @@ def test_encoded_result_fits_actual_connect_and_action_owners():
     from connect_automate.connect import CapabilityOutput, CapabilityResult
     from connect_automate.lead_intake import custody_protocol as cp
 
-    data = known()
+    data = known_with_actions(*(["settled"] * 8), content="unavailable")
+    data["unavailable_reason"] = "expired"
+    data["capture"]["artifact_size"] = 2097152
     data["workflow"]["stage"] = "\x00" * 80
     data["workflow"]["state_version"] = 9223372036854775807
     data.update(state_revision=2147483647, fence_generation=2147483647)
@@ -925,7 +941,7 @@ def test_no_operational_imports_io_or_public_exports(tmp_path):
     fixture = dict(
         prepare=request(),
         upload=request("upload"),
-        result=known(),
+        result=known_with_actions("pending", "settled", "failed"),
         source=canonical_source(parse_untrusted_source(encode(envelope()))).decode(),
     )
     script = """
@@ -977,3 +993,259 @@ print("pure protocol probe passed")
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert completed.stdout.strip() == "pure protocol probe passed"
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "value",
+    [0, False, "", 1, 2147483647, 2147483648, "1", 1.0],
+    ids=["zero", "false", "empty", "one", "max", "over-max", "string", "float"],
+)
+def test_prepare_requires_null_fence(value):
+    from pydantic import ValidationError
+
+    from connect_automate.lead_intake import custody_protocol as cp
+
+    data = request()
+    good = cp.parse_untrusted_request(wire(data))
+    assert cp.canonical_request(good) == wire(data)
+    data["expected_fence_generation"] = value
+    with pytest.raises(ValidationError) as exc:
+        cp.PrepareRequest.model_validate(data)
+    assert [(e["loc"], e["type"]) for e in exc.value.errors()] == [
+        (("expected_fence_generation",), "none_required")
+    ]
+    for operation in (
+        lambda: cp.parse_untrusted_request(wire(data)),
+        lambda: cp.canonical_request(good.model_copy(update={"expected_fence_generation": value})),
+    ):
+        with pytest.raises(cp.CustodyInputError) as error:
+            operation()
+        assert error.value.__context__ is None
+
+
+@pytest.mark.parametrize("content", ["retained", "unavailable", "unknown"])
+@pytest.mark.parametrize(
+    "statuses",
+    [
+        (),
+        ("pending",),
+        ("settled",),
+        ("failed",),
+        ("pending", "settled", "failed"),
+        ("failed",) * 8,
+        ("settled",) * 8,
+        ("pending",) * 8,
+    ],
+    ids=[
+        "empty",
+        "pending",
+        "settled",
+        "failed",
+        "mixed",
+        "eight-failed",
+        "eight-settled",
+        "eight-pending",
+    ],
+)
+def test_actions_preserve_custody_and_order(content, statuses):
+    from connect_automate.lead_intake import custody_protocol as cp
+
+    data = known_with_actions(*statuses, content=content)
+    data["workflow"]["actions"].reverse()
+    before = deepcopy(data)
+    raw = wire(data)
+    parsed = cp.parse_untrusted_result(raw)
+    assert parsed.model_dump(by_alias=True) == before
+    assert cp.canonical_result(parsed) == raw
+    assert parsed.reason == "workflow_known"
+    assert parsed.capture_phase == "custodied"
+    assert data == before
+
+
+@pytest.mark.parametrize(
+    "actions,error_type,error_loc,message",
+    [
+        (None, "list_type", (), None),
+        (False, "list_type", (), None),
+        (0, "list_type", (), None),
+        ("", "list_type", (), None),
+        ({}, "list_type", (), None),
+        (action_projection(*(["pending"] * 9)), "too_long", (), None),
+        (action_projection("pending") * 2, "value_error", None, "duplicate action projection"),
+        ([None], "model_type", (0,), None),
+        ([False], "model_type", (0,), None),
+        (action_projection("pending") + [None], "model_type", (1,), None),
+    ],
+    ids=[
+        "null",
+        "false",
+        "zero",
+        "empty-string",
+        "object",
+        "nine",
+        "duplicate",
+        "null-item",
+        "false-item",
+        "mixed-invalid",
+    ],
+)
+def test_action_array_guard_isolated(actions, error_type, error_loc, message):
+    from pydantic import ValidationError
+
+    from connect_automate.lead_intake import custody_protocol as cp
+
+    data = known_with_actions("pending")
+    cp.ResolvedResult.model_validate(data)
+    data["workflow"]["actions"] = actions
+    with pytest.raises(ValidationError) as exc:
+        cp.ResolvedResult.model_validate(data)
+    errors = exc.value.errors()
+    loc = ("workflow",) if error_loc is None else ("workflow", "actions", *error_loc)
+    assert [(e["loc"], e["type"]) for e in errors] == [(loc, error_type)]
+    if message:
+        assert errors[0]["msg"] == "Value error, " + message
+    with pytest.raises(cp.CustodyInputError) as error:
+        cp.parse_untrusted_result(wire(data))
+    assert error.value.__context__ is None
+
+
+@pytest.mark.parametrize("field", ["action_id", "kind", "status"])
+@pytest.mark.parametrize(
+    "mutation", ["missing", "null", "false", "zero", "empty", "unknown", "extra"]
+)
+def test_action_entry_guard_isolated(field, mutation):
+    from pydantic import ValidationError
+
+    from connect_automate.lead_intake import custody_protocol as cp
+
+    data = known_with_actions("pending", "settled")
+    cp.ResolvedResult.model_validate(data)
+    entry = data["workflow"]["actions"][1]
+    expected_field = field
+    if mutation == "missing":
+        del entry[field]
+        expected_type = "missing"
+    elif mutation == "extra":
+        expected_field = "extra_" + field
+        entry[expected_field] = "untrusted-secret"
+        expected_type = "extra_forbidden"
+    else:
+        value = {"null": None, "false": False, "zero": 0, "empty": "", "unknown": "unknown"}[
+            mutation
+        ]
+        entry[field] = value
+        expected_type = (
+            "string_type"
+            if field == "action_id" and type(value) is not str
+            else "string_pattern_mismatch"
+            if field == "action_id"
+            else "literal_error"
+        )
+    with pytest.raises(ValidationError) as exc:
+        cp.ResolvedResult.model_validate(data)
+    assert [(e["loc"], e["type"]) for e in exc.value.errors()] == [
+        (("workflow", "actions", 1, expected_field), expected_type)
+    ]
+    with pytest.raises(cp.CustodyInputError) as error:
+        cp.parse_untrusted_result(wire(data))
+    assert str(error.value) == "invalid custody protocol input"
+    assert error.value.__context__ is None
+
+
+@pytest.mark.parametrize("outcome", ["no_match", "not_found"])
+def test_nonaccepted_lookup_requires_empty_actions(outcome):
+    from pydantic import ValidationError
+
+    from connect_automate.lead_intake import custody_protocol as cp
+
+    reason = "workflow_known" if outcome == "no_match" else "custody_confirmed"
+    data = result("custodied", "retained", outcome, reason)
+    assert cp.canonical_result(cp.parse_untrusted_result(wire(data))) == wire(data)
+    data["workflow"]["actions"] = action_projection("failed")
+    with pytest.raises(ValidationError) as exc:
+        cp.ResolvedResult.model_validate(data)
+    assert [(e["loc"], e["msg"]) for e in exc.value.errors()] == [
+        (("workflow",), "Value error, unexpected action projection")
+    ]
+
+
+@pytest.mark.parametrize("version", ["1.0", None, False, 0, ""])
+def test_nested_lookup_version_has_no_fallback(version):
+    from pydantic import ValidationError
+
+    from connect_automate.lead_intake import custody_protocol as cp
+
+    data = known_with_actions("pending")
+    cp.ResolvedResult.model_validate(data)
+    data["workflow"]["schema_version"] = version
+    with pytest.raises(ValidationError) as exc:
+        cp.ResolvedResult.model_validate(data)
+    assert [(e["loc"], e["type"]) for e in exc.value.errors()] == [
+        (("workflow", "schema_version"), "literal_error")
+    ]
+
+
+@pytest.mark.parametrize("mutation", ["copied-status", "mutated-kind", "duplicate", "nine"])
+def test_encoder_revalidates_nested_actions(mutation):
+    from connect_automate.lead_intake import custody_protocol as cp
+
+    parsed = cp.parse_untrusted_result(wire(known_with_actions("pending")))
+    if mutation == "copied-status":
+        action = parsed.workflow.actions[0].model_copy(update={"status": "unknown"})
+        workflow = parsed.workflow.model_copy(update={"actions": [action]})
+        parsed = parsed.model_copy(update={"workflow": workflow})
+    elif mutation == "mutated-kind":
+        object.__setattr__(parsed.workflow.actions[0], "kind", "untrusted-kind")
+    elif mutation == "duplicate":
+        parsed.workflow.actions.append(parsed.workflow.actions[0])
+    else:
+        action = parsed.workflow.actions[0]
+        parsed.workflow.actions[:] = [
+            action.model_copy(update={"action_id": item["action_id"]})
+            for item in action_projection(*(["pending"] * 9))
+        ]
+    with pytest.raises(cp.CustodyInputError) as error:
+        cp.canonical_result(parsed)
+    assert error.value.__context__ is None
+
+
+@pytest.mark.parametrize("field", ["workflow", "actions"])
+def test_unresolved_cannot_carry_action_observations(field):
+    from pydantic import ValidationError
+
+    from connect_automate.lead_intake import custody_protocol as cp
+
+    data = dict(schema_version="1.0", status="unresolved", handoff_id=ID, code="unknown")
+    assert cp.canonical_result(cp.parse_untrusted_result(wire(data))) == wire(data)
+    data[field] = (
+        known_with_actions("failed")["workflow"]
+        if field == "workflow"
+        else action_projection("failed")
+    )
+    with pytest.raises(ValidationError) as exc:
+        cp.UnresolvedResult.model_validate(data)
+    assert [(e["loc"], e["type"]) for e in exc.value.errors()] == [((field,), "extra_forbidden")]
+
+
+@pytest.mark.parametrize("maximal", [False, True], ids=["failed-emoji", "settled-escaped"])
+def test_eight_action_size_fixtures(maximal):
+    from connect_automate.automate.store import MAX_ACTION_BYTES, _canonical_payload
+    from connect_automate.connect import CapabilityOutput, CapabilityResult
+    from connect_automate.lead_intake import custody_protocol as cp
+
+    data = known_with_actions(*(["settled" if maximal else "failed"] * 8))
+    data["workflow"]["stage"] = ("\x00" if maximal else "😀") * 80
+    data["workflow"]["state_version"] = 9223372036854775807
+    data.update(state_revision=2147483647, fence_generation=2147483647)
+    if maximal:
+        data.update(content_state="unavailable", unavailable_reason="expired")
+        data["capture"]["artifact_size"] = 2097152
+    raw = cp.canonical_result(cp.parse_untrusted_result(wire(data)))
+    assert len(raw) == (3423 if maximal else 3244)
+    assert len(raw) < cp.MAX_RESULT_BYTES
+    output = CapabilityOutput(
+        ID, cp.RESULT_MEDIA_TYPE, "\x00" * 255, len(raw), hashlib.sha256(raw).hexdigest(), raw
+    )
+    wrapped = _canonical_payload(CapabilityResult((output,)).store_dict(), label="result")
+    assert len(wrapped.encode()) == (6363 if maximal else 6127)
+    assert len(wrapped.encode()) < MAX_ACTION_BYTES
