@@ -19,8 +19,14 @@ class SourceHandoffUnknown(RuntimeError):
         super().__init__("lead source handoff outcome unknown")
 
 
+class _ActionResult(_Closed):
+    action_id: UuidV4
+    kind: Literal["notify.local"]
+    status: Literal["pending", "settled", "failed"]
+
+
 class _WorkflowResult(_Closed):
-    schema_version: Literal["1.0"]
+    schema_version: Literal["2.0"]
     source_receipt: ReceiptReference | None
     workflow_outcome: Literal["accepted", "no_match", "not_found"]
     workflow_applied: bool
@@ -29,6 +35,7 @@ class _WorkflowResult(_Closed):
     # The public wire projection retains the workflow vocabulary's stage bound.
     stage: Annotated[str, Field(min_length=1, max_length=80)] | None
     state_version: Annotated[int, Field(ge=1, le=9223372036854775807)] | None
+    actions: list[_ActionResult] = Field(max_length=8)
 
     @model_validator(mode="after")
     def _projection(self):
@@ -40,6 +47,10 @@ class _WorkflowResult(_Closed):
             raise ValueError("unexpected workflow projection")
         if (self.source_receipt is None) != (self.workflow_outcome == "not_found"):
             raise ValueError("invalid source projection")
+        if self.workflow_outcome != "accepted" and self.actions:
+            raise ValueError("unexpected action projection")
+        if len({action.action_id for action in self.actions}) != len(self.actions):
+            raise ValueError("duplicate action projection")
         if len(self.model_dump_json(by_alias=True).encode("utf-8")) > MAX_EVENT_BYTES:
             raise ValueError("result exceeds event byte limit")
         return self
@@ -62,7 +73,7 @@ class SourceHandoffLookup(_WorkflowResult):
         return self
 
 
-def _workflow_projection(outcome):
+def _workflow_projection(outcome, actions):
     """Map the existing store result once; final model validation checks every variant."""
     if outcome is None:
         return dict(
@@ -72,6 +83,7 @@ def _workflow_projection(outcome):
             workflow_event_id=None,
             stage=None,
             state_version=None,
+            actions=list(actions),
         )
     if type(outcome.matched) is not bool or type(outcome.applied) is not bool:
         raise ValueError("invalid store flags")
@@ -83,4 +95,5 @@ def _workflow_projection(outcome):
         workflow_event_id=outcome.event_id,
         stage=record.stage if record is not None else None,
         state_version=record.state_version if record is not None else None,
+        actions=list(actions),
     )
