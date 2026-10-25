@@ -1,9 +1,11 @@
 # Body-only receiver custody: work order and protocol proposal
 
-Status: **PROPOSED; contract only.** Juan's instruction, “Let’s start the next product lane.”,
-starts this work order. It does not accept its new technical
-interfaces or authorize executable integration. No implementation, live mailbox,
-protected service, migration or production activation is delivered by this change.
+Status: **R1 ACCEPTED; later integration remains proposed.** On 2026-10-25 Juan
+said, “i accept, lets begin”, accepting the R1 work order reviewed at
+`66d16a65a807d5dc19b0ef8691be767f50933a83` and merged in
+`533f04d0d23c2070f3d1532b82272e609d3b4547`. This authorizes R1's private pure
+value models and synthetic proof only. It does not authorize the later slices,
+a protected service, live mailbox, migration or production activation.
 
 The accepted [application policy](LEAD-SOURCE-HANDOFF.md#current-acceptance-and-work-order-status)
 remains authoritative: one business per deployment, receiver-owned raw custody,
@@ -418,9 +420,54 @@ relative links and whitespace, and inspect the complete final diff. Historical
 result inventory is provenance, not a fresh test result. Publish durable evidence
 by alias and SHA-256, never private workstation names or session-ledger links.
 
-**NOT DONE:** exact-head contract reviews and Juan's technical work-order acceptance;
-R1 implementation/proof; machine control authentication and transport mapping;
+**NOT DONE:** R1 implementation/proof; machine control authentication and transport mapping;
 source-owned fencing/migration; receiver and Watcher integration; retention,
 installed native/privacy qualification and product adoption. Extraction, canonical
 lead records, Lead Inbox, employee approval, CRM/export delivery and EOM changes
 are separate later product lanes. This proposal does not close their gates.
+
+## R1 execution record
+
+The acceptance above is recorded before executable edits. The implementation
+base is `533f04d0d23c2070f3d1532b82272e609d3b4547`; its source, tests and workflow
+inputs equal the inventory pin. The contract proposal and acceptance are the only
+intervening changes. No inference runtime or model is used.
+
+- **Root cause:** there is no closed custody request/result vocabulary at the
+  receiver boundary. Existing signed-source and lookup values cannot express
+  capture intent, an upload generation or the independent custody states.
+- **Required surface:** new private `lead_intake/custody_protocol.py`,
+  `tests/test_lead_custody_protocol.py`, this execution record, and the existing
+  Windows CI test list. No existing test changes. Source identity/time/digest,
+  canonical JSON and receipt/lookup validation stay with their existing owners.
+- **Private representation:** common scope, handoff/control/job IDs and opaque
+  machine/proof UUID references; operation-discriminated metadata payloads;
+  upload bytes remain the unchanged signed-source envelope. Metadata parsing is
+  not the future transport mapping or authentication proof. Pure upload comparison
+  can check the capture pair against supplied bytes without authenticating them.
+- **Bounds:** reuse source revision and byte ceilings for private input parsing;
+  the result ceiling remains 4096 UTF-8 bytes. Those parser limits do not settle
+  deployment quotas or metadata retention. Exercise the actual Connect output
+  encoding and action serialization bound without adding a provider or store.
+- **Explicit non-scope:** source/auth/storage semantics, runtime projections,
+  public exports, dependencies, handlers, enrollment, persistence, native host,
+  Watcher and EOM. Pack-kit owners remain untouched. No new historical action
+  outcome fields are assumed.
+- **Assumptions/blockers:** values remain untrusted, including copied model
+  objects. A parsed reference proves neither custody nor authority. Machine wire
+  proof and later fencing are still blocked on their own contracts and proofs;
+  they do not block pure models.
+- **Verification:** unchanged source/schema/receipt/lookup tests before edits;
+  missing-module fail-first; positive operation and state fixtures; one isolated
+  negative per semantic guard with matching counterfactual mutation; falsy,
+  missing, extra, mixed, size and UTF-8 boundaries; redacted parser/encoder errors;
+  forged/copy revalidation; import/pure-operation side-effect probes; actual
+  encoded output bound; focused lint/format plus unchanged adjacent parity.
+  Both existing CI platforms run the new file from the first executable push.
+- **Rollback:** stop importing/remove unused private vocabulary; no database or
+  public interface has changed. No runtime durability or production claim follows
+  from R1's tests.
+
+Implementation summary, cold diff audit and recorded results will accompany the
+implementation PR. Contract review and operator acceptance are complete for R1;
+implementation, review and later qualification gates remain distinct.
