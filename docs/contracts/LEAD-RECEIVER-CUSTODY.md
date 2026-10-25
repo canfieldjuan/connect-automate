@@ -26,7 +26,7 @@ existing automation admission and Connect job source are attachment-shaped.
 Replaying that path with a fake attachment would bypass the true source owner;
 adding another queue would duplicate the existing dispatch owner.
 
-This PR changes only this document and the continuation pointer in
+The original contract PR changed only this document and the continuation pointer in
 `LEAD-SOURCE-HANDOFF.md`. It specifies the product lane and the first bounded
 executable work order below. Future owner changes are proposals, not capabilities
 already present. No source pin, package, test input, runtime or schema changes here.
@@ -138,7 +138,9 @@ source bytes or change the upload fingerprint.
 
 ## Proposed application contract
 
-All names and schemas in this section are **PROPOSED / NOT IMPLEMENTED**.
+Application wire names and integration in this section remain **PROPOSED**.
+R1 implements private untrusted value models only; it does not establish the
+machine-proof wire format or implement these operations.
 Use one v2 capability, `lead.source.custody`, capability version `1.0`, over the
 existing loopback POST/GET job transport. Do not add custom transport endpoints.
 Each operation has one input artifact; no missing-input exception is needed.
@@ -408,11 +410,11 @@ receiver/queue boundary fixtures rather than a competing recovery simulator:
 - Message-wide purge over every alias/event, both late-upload orders and later
   captures. An event-scoped purge mutant must fail the intended assertion.
 
-## Implementation summary, cold audit and gap audit
+## Original proposal summary, cold audit and remaining gates
 
-Implementation summary: this proposal plus one parent continuation link only.
+Original contract PR summary: this proposal plus one parent continuation link only.
 No executable change, new dependency, fixture mutation, service, mailbox read,
-database operation, runtime test or production activation in this PR.
+database operation, runtime test or production activation was included in that proposal.
 
 Cold audit requirements: check every source citation against the pins, preserve
 the accepted policies, compare changed paths with the declared surface, validate
@@ -420,7 +422,7 @@ relative links and whitespace, and inspect the complete final diff. Historical
 result inventory is provenance, not a fresh test result. Publish durable evidence
 by alias and SHA-256, never private workstation names or session-ledger links.
 
-**NOT DONE:** R1 implementation/proof; machine control authentication and transport mapping;
+**NOT DONE:** R1 implementation review/merge; machine control authentication and transport mapping;
 source-owned fencing/migration; receiver and Watcher integration; retention,
 installed native/privacy qualification and product adoption. Extraction, canonical
 lead records, Lead Inbox, employee approval, CRM/export delivery and EOM changes
@@ -468,6 +470,22 @@ intervening changes. No inference runtime or model is used.
   public interface has changed. No runtime durability or production claim follows
   from R1's tests.
 
-Implementation summary, cold diff audit and recorded results will accompany the
-implementation PR. Contract review and operator acceptance are complete for R1;
-implementation, review and later qualification gates remain distinct.
+R1 implementation summary: the private models now represent the five operation
+variants and the closed resolved/unresolved result union. Canonical parsers and
+encoders revalidate copied values and redact errors. A pure upload comparison
+checks canonical bytes and the two digests against the original intent without
+verifying signatures or granting authority. Existing source/receipt/lookup owners
+and public exports remain unchanged. The new test file is included in the existing
+Windows job; hosted results and exact-head review remain pending.
+
+Cold audit and verification evidence accompany the implementation PR. Local proof
+covers the complete state table, isolated semantic guards, copied-model refusal,
+source comparison, byte/encoded boundaries and application-I/O rejection. The
+counterfactual runner replaces one rejecting guard at a time in an isolated
+in-memory module; it never edits the checkout. Its selected tests must fail with
+an expected missing rejection, not a setup or unrelated error.
+
+Contract review and operator acceptance are complete for R1. Its code is unused
+by any application entry point. Implementation review/merge and all later
+qualification gates remain distinct; the receiver operations above are still
+unimplemented.
