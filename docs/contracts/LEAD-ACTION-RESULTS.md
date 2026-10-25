@@ -278,20 +278,59 @@ durable evidence by alias/hash; have the reviewer verify and close the issue.
 
 ## Implementation summary and cold diff audit
 
-This increment adds only `docs/contracts/LEAD-ACTION-RESULTS.md`. The executable
-baseline probe and its output are retained outside the checkout. Source, tests,
-dependencies, workflows and existing contracts remain unchanged. No proposed
-schema or runtime behavior is implemented by this document.
+The contract-only commits and acceptance precede executable changes. Implementation
+now adds the closed action item and required versioned array in `results.py:22`.
+The same model validates minimal store-owned rows and both public results.
+`store.py:1118` reads only action identity/kind/status, bounded to an overflow
+witness, within the existing receipt snapshot. It uses both selector clauses and
+durable order. It never reads action request/result/error columns for projection.
 
-Cold audit must check this file against the pinned owners, its proposed observable
-behavior and the recorded witness. Any implementation delta beyond the named
-surface needs an explicit contract revision and acceptance before proceeding.
+`runtime.py:281` validates a real persisted snapshot before dispatch, preserving
+the invalid-projection no-effects guard. After the existing dispatch attempt it
+reads the current snapshot, including after an unclassified dispatch exception.
+The read transaction closes before adapter execution. A single local refusal
+classification is used by admission/read and dispatch handling; known refusals
+are not hidden by the recovery read. Original applied flags and historical
+workflow metadata are retained and checked against the receipt. Generic runtime
+methods and the action runner are unchanged.
+
+The directly affected test file updates the obsolete unknown-result cases and
+closed result fixtures. It adds real submit/lookup, mixed statuses, caller replay,
+terminal no-retry, restart, native process crash/recovery, concurrent settlement,
+scope/order/size boundaries and no-source/no-writer regressions. Existing unrelated
+source, host, workflow, action and pack fixtures remain unchanged; the current
+Windows CI already runs this test file. No dependency, workflow or schema migration.
+
+Local evidence: unchanged baseline `163 passed in 8.50s`; isolated fail-first
+`8 failed, 159 deselected in 1.47s` (Unknown on submit; missing action projection
+on lookup); initial origin fix `8 passed, 159 deselected in 1.30s`. The adjacent
+gate passed `608 passed in 79.57s`; after consolidating refusal handling, the
+focused file passed `279 passed in 12.97s`. Strengthened record/snapshot probes
+then passed `2 passed, 277 deselected in 0.74s`. Ruff and diff checks passed.
+Eight isolated causal mutants were behaviorally killed, including each ownership
+clause, ordering, snapshot separation, overflow truncation, omitted actions,
+known-as-unknown and swallowed refusal. A test assertion initially reached the
+version mismatch before missing actions; its order was corrected and fail-first
+was rerun. A lint-only setup syntax repair preserved the same assertions.
+
+Raw receipts are retained outside worktrees under `action-result-implementation`.
+Mutation manifest alias `causal-mutants/manifest.json`, SHA-256:
+`d3729c612715d71f0355e56d831b7516cac1a94c7262912b673459d3048c1ccf`.
+An AST scope audit confirms only the two runtime methods and the source-receipt
+query method changed in their respective operational owners; result models and
+their regression file are the remaining executable surface. Native CI, exact-head
+reviews and installed-artifact proof are separate gates, not inferred here.
+
+Cold audit: each executable change traces to the accepted result/projection
+contract, with one public validation owner and one store query owner. No caller
+filter, retry patch, action-runner change or other active lane implementation was
+added. This contract records the acceptance and proof inventory. Any behavior or
+surface beyond the reservation still requires an explicit contract revision.
 
 ## Gap audit
 
-**NOT DONE.** Current-state reproduction and the proposed behavioral contract are
-recorded; operator acceptance and the named shared-file reservation are confirmed.
-Source repair, regression proof, native qualification, exact-head reviews, merge,
-adoption and installed
-caller verification remain. Report each delivery stage separately as
-`native-proved / merged / adopted / installed-verified`; none is claimed here.
+**NOT DONE.** Operator acceptance, shared-file reservation, origin repair and local
+regression proof are recorded. Exact-head native qualification/reviews, guarded
+merge, adoption and installed caller verification remain. Report each stage
+separately as `native-proved / merged / adopted / installed-verified`; none of
+these delivery stages is claimed by the local source proof alone.

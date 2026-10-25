@@ -43,6 +43,7 @@ from pydantic import TypeAdapter
 
 from ..entitlement import UuidV4
 from ..lead_intake.receipts import ReceiptReference
+from ..lead_intake.results import _ActionResult
 from .events import (
     Event,
     EventBindingError,
@@ -421,6 +422,7 @@ class SourceEventReceipt:
 
     source_receipt: ReceiptReference
     outcome: EventAdmission
+    actions: tuple[_ActionResult, ...]
 
 
 @dataclass(frozen=True)
@@ -1156,7 +1158,24 @@ class WorkflowStore:
             )
             if receipt is None:
                 return None
-            return SourceEventReceipt(receipt.event.source_receipt, receipt.outcome)
+            actions = ()
+            if receipt.outcome.event_id is not None:
+                prefix = f"{ACTION_DEDUPE_PREFIX}{receipt.outcome.event_id}:"
+                rows = db.execute(
+                    "SELECT action_id, kind, status FROM workflow_actions "
+                    "WHERE record_id = ? AND substr(dedupe_key, 1, ?) = ? "
+                    "ORDER BY rowid LIMIT ?",
+                    (
+                        receipt.outcome.record.record_id,
+                        len(prefix),
+                        prefix,
+                        MAX_ACTIONS_PER_DECISION + 1,
+                    ),
+                ).fetchall()
+                if len(rows) > MAX_ACTIONS_PER_DECISION:
+                    raise WorkflowStoreError("invalid event action count")
+                actions = tuple(_ActionResult.model_validate(dict(row)) for row in rows)
+            return SourceEventReceipt(receipt.event.source_receipt, receipt.outcome, actions)
 
     def admit_event(
         self,
