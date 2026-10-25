@@ -17,7 +17,7 @@ at load) is deferred hardening.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from types import MappingProxyType
 from typing import TYPE_CHECKING
@@ -39,7 +39,6 @@ from .host import AutomateHost, AutomateLicenseError
 from .pack import LoadedPack, load_pack, verify_grant
 from .store import (
     ACTION_DEDUPE_PREFIX,
-    ACTION_SETTLED,
     RecordView,
     WorkflowStore,
     _EventVersionConflict,
@@ -299,6 +298,13 @@ class PackRuntime:
             SourceStoreUncertain,
         )
 
+        workflow_refusals = (
+            EventBindingError,
+            EventConflict,
+            AmbiguousEvent,
+            PackVersionError,
+            AutomateLicenseError,
+        )
         try:
             prepared = self._prepare_source(binding=binding, raw_source_bytes=raw_source_bytes)
         except (SourceStoreUnavailable, SourceStoreUncertain):
@@ -326,27 +332,42 @@ class PackRuntime:
                     event=prepared.event,
                     now=prepared.now,
                 )
-                result = SourceHandoffResult.model_validate(
-                    dict(
-                        schema="lead.source.handoff.result",
-                        schema_version="1.0",
-                        source_receipt=prepared.event.source_receipt,
-                        source_applied=prepared.source_applied,
-                        **_workflow_projection(outcome),
+
+                def result_from_snapshot():
+                    receipt = self._lookup_source_receipt(
+                        binding=binding,
+                        event_id=prepared.event.source_receipt.event_id,
+                        expected_payload_digest=prepared.event.source_receipt.payload_digest,
                     )
-                )
-                actions = self._dispatch_event_actions(
-                    outcome.record, outcome.event_id, outcome.applied, prepared.now
-                )
-                if all(action.status == ACTION_SETTLED for action in actions):
-                    return result
-            except (
-                EventBindingError,
-                EventConflict,
-                AmbiguousEvent,
-                PackVersionError,
-                AutomateLicenseError,
-            ):
+                    if (
+                        receipt is None
+                        or receipt.source_receipt != prepared.event.source_receipt
+                        or receipt.outcome != replace(outcome, applied=False)
+                    ):
+                        raise ValueError("inconsistent source outcome")
+                    return SourceHandoffResult.model_validate(
+                        dict(
+                            schema="lead.source.handoff.result",
+                            schema_version="2.0",
+                            source_receipt=prepared.event.source_receipt,
+                            source_applied=prepared.source_applied,
+                            **_workflow_projection(outcome, receipt.actions),
+                        )
+                    )
+
+                # Validate a real persisted projection before allowing any delivery.
+                result_from_snapshot()
+                try:
+                    self._dispatch_event_actions(
+                        outcome.record, outcome.event_id, outcome.applied, prepared.now
+                    )
+                except workflow_refusals:
+                    raise
+                except Exception:
+                    # An error is not a status. Read durable state once; never redispatch.
+                    pass
+                return result_from_snapshot()
+            except workflow_refusals:
                 raise
             except Exception:
                 pass
@@ -376,9 +397,12 @@ class PackRuntime:
             return SourceHandoffLookup.model_validate(
                 dict(
                     schema="lead.source.handoff.lookup",
-                    schema_version="1.0",
+                    schema_version="2.0",
                     source_receipt=receipt.source_receipt if receipt is not None else None,
-                    **_workflow_projection(receipt.outcome if receipt is not None else None),
+                    **_workflow_projection(
+                        receipt.outcome if receipt is not None else None,
+                        receipt.actions if receipt is not None else (),
+                    ),
                 )
             )
         except (

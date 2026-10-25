@@ -1,5 +1,7 @@
 """Library-only authenticated workflow boundary; synthetic sources and real stores."""
 
+from contextlib import suppress
+
 import pytest
 from test_lead_host_composition import setup as setup
 from test_lead_source_auth import encode, envelope
@@ -417,7 +419,7 @@ def test_public_lookup_never_reads_source_or_dispatches(setup, monkeypatch, outc
 
 
 @pytest.mark.parametrize(
-    "fault", ["clock", "receipt", "source_ack", "workflow_before", "workflow_after", "dispatch"]
+    "fault", ["clock", "receipt", "source_ack", "workflow_before", "workflow_after"]
 )
 def test_operational_uncertainty_never_means_not_created(setup, monkeypatch, fault):
     from datetime import timedelta
@@ -453,19 +455,13 @@ def test_operational_uncertainty_never_means_not_created(setup, monkeypatch, fau
                 raise OSError("private-body-path-sql")
 
             patch.setattr(args["store"], "admit_event", admit)
-        elif fault == "dispatch":
-
-            def dispatch(*a):
-                raise RuntimeError("private-body-path-sql")
-
-            patch.setattr(runtime, "_dispatch_event_actions", dispatch)
         with pytest.raises(
             SourceHandoffUnknown, match="^lead source handoff outcome unknown$"
         ) as caught:
             submit(runtime)
         assert caught.value.__context__ is None and caught.value.__cause__ is None
     assert counts(owner) == (1, 1, 1)
-    expected = "accepted" if fault in ("workflow_after", "dispatch") else "not_found"
+    expected = "accepted" if fault == "workflow_after" else "not_found"
     assert lookup(runtime).workflow_outcome == expected
     args["source_clock"] = lambda: NOW
     retried = submit(PackRuntime.load(**args))
@@ -529,7 +525,7 @@ def model_payload():
 
     return dict(
         schema="lead.source.handoff.result",
-        schema_version="1.0",
+        schema_version="2.0",
         source_receipt=receipt(),
         workflow_outcome="accepted",
         source_applied=True,
@@ -538,6 +534,7 @@ def model_payload():
         workflow_event_id=OTHER,
         stage="ready",
         state_version=2,
+        actions=[],
     )
 
 
@@ -554,6 +551,7 @@ def model_payload():
         "workflow_event_id",
         "stage",
         "state_version",
+        "actions",
     ],
 )
 @pytest.mark.parametrize("bad", [None, False, 0, "", "wrong", [], {}])
@@ -564,8 +562,10 @@ def test_result_fields_are_required_closed_and_strict(field, bad):
 
     value = model_payload()
     value[field] = bad
-    valid = (field in ("source_applied", "workflow_applied") and bad is False) or (
-        field == "stage" and bad == "wrong"
+    valid = (
+        (field in ("source_applied", "workflow_applied") and bad is False)
+        or (field == "stage" and bad == "wrong")
+        or (field == "actions" and bad == [])
     )
     if valid:
         assert SourceHandoffResult.model_validate(value).model_dump(by_alias=True) == value
@@ -670,6 +670,7 @@ def test_result_byte_cap_and_immutability(monkeypatch):
 
     value = model_payload()
     value["stage"] = "界" * 80
+    value["actions"] = [_action_item(index) for index in range(8)]
     result = SourceHandoffResult.model_validate(value)
     size = len(result.model_dump_json(by_alias=True).encode("utf-8"))
     assert size < results.MAX_EVENT_BYTES
@@ -794,9 +795,9 @@ from connect_automate.lead_intake import (
 for suffix in ("admission", "auth", "source_store", "handoff"):
     assert "connect_automate.lead_intake." + suffix not in sys.modules
 SourceHandoffLookup.model_validate(dict(
-    schema="lead.source.handoff.lookup", schema_version="1.0", source_receipt=None,
+    schema="lead.source.handoff.lookup", schema_version="2.0", source_receipt=None,
     workflow_outcome="not_found", workflow_applied=False, workflow_record_id=None,
-    workflow_event_id=None, stage=None, state_version=None,
+    workflow_event_id=None, stage=None, state_version=None, actions=[],
 ))
 assert "connect_automate.automate.runtime" not in sys.modules
 assert "connect_automate.automate.store" not in sys.modules
@@ -804,9 +805,12 @@ assert "connect_automate.automate.store" not in sys.modules
     subprocess.run([sys.executable, "-c", code], check=True)
 
 
+@pytest.mark.parametrize("entry", ["submit", "lookup"])
 @pytest.mark.parametrize("fault", ["failed", "pending"])
 @pytest.mark.parametrize("bad_index", [0, 1])
-def test_unsettled_dispatch_is_unknown_on_submit_and_replay(setup, fault, bad_index):
+def test_known_dispatch_states_are_visible_on_submit_lookup_and_replay(
+    setup, monkeypatch, entry, fault, bad_index
+):
     from test_lead_receipt_vocabulary import workflow
 
     from connect_automate.automate import AdapterRegistry
@@ -818,8 +822,17 @@ def test_unsettled_dispatch_is_unknown_on_submit_and_replay(setup, fault, bad_in
         {"action": "notify.local", "request": {"title": "Review", "body": "synthetic"}}
         for _ in range(2)
     ]
+    calls = []
     if fault == "failed":
         actions[bad_index]["request"].pop("title")
+        adapter = args["registry"].resolve("notify.local")
+        native = adapter.deliver
+
+        def deliver(request):
+            calls.append(request)
+            return native(request)
+
+        monkeypatch.setattr(adapter, "deliver", deliver)
     else:
         args["registry"] = AdapterRegistry()
     value["definitions"][0]["actions"] = actions
@@ -827,17 +840,26 @@ def test_unsettled_dispatch_is_unknown_on_submit_and_replay(setup, fault, bad_in
     runtime = PackRuntime.load(**args)
     original_rows = None
     for _ in range(2):
-        with pytest.raises(
-            SourceHandoffUnknown, match="^lead source handoff outcome unknown$"
-        ) as caught:
-            submit(runtime)
-        assert caught.value.__context__ is None and caught.value.__cause__ is None
+        if entry == "lookup":
+            # Isolate lookup even on the old base; submit has its own strict regression.
+            with suppress(SourceHandoffUnknown):
+                submit(runtime)
+            result = lookup(runtime)
+        else:
+            result = submit(runtime)
         found = lookup(runtime)
-        assert found.workflow_outcome == "accepted" and found.workflow_applied is False
+        assert result.workflow_outcome == found.workflow_outcome == "accepted"
         rows = args["store"].list_actions(found.workflow_record_id)
         expected = ["settled", "settled"] if fault == "failed" else ["pending", "pending"]
         expected[bad_index] = fault
+        projected = [
+            dict(action_id=row.action_id, kind=row.kind, status=row.status) for row in rows
+        ]
+        assert [item.model_dump() for item in result.actions] == projected
+        assert [item.model_dump() for item in found.actions] == projected
+        assert result.schema_version == found.schema_version == "2.0"
         assert [row.status for row in rows] == expected
+        assert len(calls) == (2 if fault == "failed" else 0)
         if original_rows is not None:
             assert rows == original_rows
         original_rows = rows
@@ -953,3 +975,491 @@ def test_public_lookup_input_refusal_is_not_unknown(setup, monkeypatch, field, b
     assert lookup(runtime) == valid
     assert rows(args["store"]) == before
     assert counts(owner) == (0, 0, 0)
+
+
+def _action_item(index=0, status="settled"):
+    return dict(
+        action_id=f"{index + 1:08x}-0000-4000-8000-000000000001",
+        kind="notify.local",
+        status=status,
+    )
+
+
+def _result_payload(entry):
+    from connect_automate.lead_intake import SourceHandoffLookup, SourceHandoffResult
+
+    value = model_payload()
+    if entry == "lookup":
+        value.pop("source_applied")
+        value.update(schema="lead.source.handoff.lookup", workflow_applied=False)
+        return SourceHandoffLookup, value
+    return SourceHandoffResult, value
+
+
+def _runtime_with_actions(args, count=1, *, failed=()):
+    from test_lead_receipt_vocabulary import workflow
+
+    value = workflow()
+    value["definitions"][0]["actions"] = [
+        dict(action="notify.local", request=dict(title=f"Review {index}", body="private-body"))
+        for index in range(count)
+    ]
+    for index in failed:
+        value["definitions"][0]["actions"][index]["request"].pop("title")
+    signed_workflow(args, value)
+    return PackRuntime.load(**args)
+
+
+@pytest.mark.parametrize("entry", ["submit", "lookup"])
+@pytest.mark.parametrize("count", [0, 1, 8])
+def test_action_projection_accepts_every_supported_count(entry, count):
+    model, value = _result_payload(entry)
+    value["actions"] = [_action_item(index) for index in range(count)]
+    assert model.model_validate(value).model_dump(by_alias=True) == value
+
+
+@pytest.mark.parametrize("entry", ["submit", "lookup"])
+@pytest.mark.parametrize("field", ["action_id", "kind", "status"])
+@pytest.mark.parametrize("bad", [None, False, 0, "", "wrong", [], {}])
+def test_action_items_require_closed_strict_fields(entry, field, bad):
+    from pydantic import ValidationError
+
+    model, value = _result_payload(entry)
+    value["actions"] = [_action_item()]
+    value["actions"][0][field] = bad
+    with pytest.raises(ValidationError):
+        model.model_validate(value)
+    value["actions"] = [_action_item()]
+    value["actions"][0].pop(field)
+    with pytest.raises(ValidationError):
+        model.model_validate(value)
+
+
+@pytest.mark.parametrize("entry", ["submit", "lookup"])
+@pytest.mark.parametrize(
+    "bad",
+    [None, False, 0, "", {}, (), [None], [False], [_action_item(), None]],
+)
+def test_action_array_is_required_and_never_defaulted(entry, bad):
+    from pydantic import ValidationError
+
+    model, value = _result_payload(entry)
+    value["actions"] = bad
+    with pytest.raises(ValidationError):
+        model.model_validate(value)
+    value.pop("actions")
+    with pytest.raises(ValidationError):
+        model.model_validate(value)
+
+
+@pytest.mark.parametrize("entry", ["submit", "lookup"])
+@pytest.mark.parametrize("fault", ["duplicate", "nine", "extra", "kind", "case", "v1"])
+def test_action_projection_rejects_mixed_overflow_and_old_contract(entry, fault):
+    from pydantic import ValidationError
+
+    model, value = _result_payload(entry)
+    value["actions"] = [_action_item()]
+    if fault == "duplicate":
+        value["actions"].append(_action_item(status="failed"))
+    elif fault == "nine":
+        value["actions"] = [_action_item(index) for index in range(9)]
+    elif fault == "extra":
+        value["actions"][0]["private_error"] = "private-path-body-sql"
+    elif fault == "kind":
+        value["actions"][0]["kind"] = "mail.send"
+    elif fault == "case":
+        value["actions"][0]["action_id"] = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".upper()
+    else:
+        value["schema_version"] = "1.0"
+    with pytest.raises(ValidationError):
+        model.model_validate(value)
+
+
+@pytest.mark.parametrize("entry", ["submit", "lookup"])
+def test_no_match_cannot_carry_actions(entry):
+    from pydantic import ValidationError
+
+    model, value = _result_payload(entry)
+    value.update(
+        workflow_outcome="no_match",
+        workflow_applied=False,
+        workflow_record_id=None,
+        workflow_event_id=None,
+        stage=None,
+        state_version=None,
+        actions=[_action_item()],
+    )
+    with pytest.raises(ValidationError):
+        model.model_validate(value)
+    if entry == "lookup":
+        value.update(workflow_outcome="not_found", source_receipt=None)
+        with pytest.raises(ValidationError):
+            model.model_validate(value)
+
+
+@pytest.mark.parametrize("count", [0, 1, 8])
+def test_real_action_delivery_preserves_order_and_size_bounds(setup, count):
+    args, _, _ = setup
+    runtime = _runtime_with_actions(args, count)
+    first = submit(runtime)
+    rows = args["store"].list_actions(first.workflow_record_id)
+    assert len(first.actions) == count
+    assert [item.action_id for item in first.actions] == [row.action_id for row in rows]
+    assert [item.status for item in first.actions] == ["settled"] * count
+    assert lookup(runtime).actions == first.actions == submit(runtime).actions
+    assert len(first.model_dump_json(by_alias=True).encode()) <= 8192
+    assert "private-body" not in first.model_dump_json()
+
+
+def test_overflow_snapshot_is_unknown_instead_of_truncated_success(setup, monkeypatch):
+    from test_lead_source_auth import NOW
+
+    from connect_automate.lead_intake import SourceHandoffUnknown
+
+    args, _, _ = setup
+    runtime = _runtime_with_actions(args, 8)
+    first = submit(runtime)
+    # A malformed durable state must not turn a ninth event-owned row into success.
+    # Normal admission already enforces eight; this probes the reader's own boundary.
+    with args["store"].connection() as db:
+        db.execute(
+            "INSERT INTO workflow_actions "
+            "(action_id, record_id, dedupe_key, kind, request, status, result, "
+            "last_error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)",
+            (
+                _action_item(8)["action_id"],
+                first.workflow_record_id,
+                f"pack.action:{first.workflow_event_id}:8",
+                "notify.local",
+                "{}",
+                "pending",
+                NOW.isoformat(),
+                NOW.isoformat(),
+            ),
+        )
+    monkeypatch.setattr(
+        runtime, "_dispatch_event_actions", lambda *args: pytest.fail("invalid snapshot dispatched")
+    )
+    for operation in (lookup, submit):
+        with pytest.raises(SourceHandoffUnknown) as caught:
+            operation(runtime)
+        assert caught.value.__context__ is None and caught.value.__cause__ is None
+
+
+@pytest.mark.parametrize("fault", ["before", "after", "normal"])
+@pytest.mark.parametrize("unreadable", [False, True])
+def test_dispatch_reads_once_after_attempt_without_redispatch(
+    setup, monkeypatch, fault, unreadable
+):
+    from connect_automate.lead_intake import SourceHandoffUnknown
+
+    args, _, _ = setup
+    runtime = _runtime_with_actions(args)
+    original_dispatch = runtime._dispatch_event_actions
+    original_read = args["store"].lookup_source_event
+    dispatches, reads = [], []
+
+    def dispatch(*args):
+        dispatches.append(True)
+        if fault != "before":
+            original_dispatch(*args)
+        if fault != "normal":
+            raise RuntimeError("private-title-path-body-sql")
+
+    def read(**kwargs):
+        reads.append(bool(dispatches))
+        if unreadable and dispatches:
+            raise OSError("private-title-path-body-sql")
+        return original_read(**kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(runtime, "_dispatch_event_actions", dispatch)
+        patch.setattr(args["store"], "lookup_source_event", read)
+        if unreadable:
+            with pytest.raises(SourceHandoffUnknown) as caught:
+                submit(runtime)
+            assert caught.value.__context__ is None and caught.value.__cause__ is None
+            assert str(caught.value) == "lead source handoff outcome unknown"
+        else:
+            result = submit(runtime)
+            assert [item.status for item in result.actions] == [
+                "pending" if fault == "before" else "settled"
+            ]
+    assert dispatches == [True] and reads == [False, True]
+    assert [item.status for item in lookup(runtime).actions] == [
+        "pending" if fault == "before" else "settled"
+    ]
+
+
+@pytest.mark.parametrize("name", ["license", "binding", "conflict", "ambiguity", "revision"])
+def test_dispatch_known_refusal_never_becomes_recovery_result(setup, monkeypatch, name):
+    from connect_automate.automate.engine import PackVersionError
+    from connect_automate.automate.events import AmbiguousEvent, EventBindingError, EventConflict
+    from connect_automate.automate.host import AutomateLicenseError
+
+    refusal = {
+        "license": AutomateLicenseError,
+        "binding": EventBindingError,
+        "conflict": EventConflict,
+        "ambiguity": AmbiguousEvent,
+        "revision": PackVersionError,
+    }[name]
+    args, _, _ = setup
+    runtime = _runtime_with_actions(args)
+    original_read = args["store"].lookup_source_event
+    reads = []
+
+    def read(**kwargs):
+        reads.append(True)
+        return original_read(**kwargs)
+
+    def denied(*args):
+        raise refusal()
+
+    monkeypatch.setattr(args["store"], "lookup_source_event", read)
+    monkeypatch.setattr(runtime, "_dispatch_event_actions", denied)
+    with pytest.raises(refusal):
+        submit(runtime)
+    assert reads == [True]
+    assert [item.status for item in lookup(runtime).actions] == ["pending"]
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_pending_recovery_and_restart_never_retry_terminal_actions(setup, monkeypatch, failed):
+    from test_lead_source_auth import NOW
+
+    from connect_automate.automate import AdapterRegistry
+
+    args, _, _ = setup
+    args["registry"] = AdapterRegistry()
+    runtime = _runtime_with_actions(args, failed=(0,) if failed else ())
+    pending = submit(runtime)
+    assert [item.status for item in pending.actions] == ["pending"]
+    args["registry"] = AdapterRegistry.with_defaults()
+    adapter = args["registry"].resolve("notify.local")
+    native = adapter.deliver
+    calls = []
+
+    def deliver(request):
+        calls.append(request)
+        return native(request)
+
+    monkeypatch.setattr(adapter, "deliver", deliver)
+    restarted = PackRuntime.load(**args)
+    recovered = restarted._runner.recover_pending(now=NOW)
+    expected = "failed" if failed else "settled"
+    assert [item.status for item in recovered] == [expected]
+    assert restarted._runner.recover_pending(now=NOW) == []
+    found = lookup(PackRuntime.load(**args))
+    assert [item.status for item in found.actions] == [expected]
+    assert found.actions[0].action_id == pending.actions[0].action_id
+    replay = submit(restarted)
+    assert replay.actions == found.actions
+    assert not replay.workflow_applied and not replay.source_applied
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    "statuses",
+    [
+        ("settled", "failed", "pending"),
+        ("pending", "failed", "settled"),
+        ("failed", "pending", "settled"),
+    ],
+)
+def test_mixed_actions_keep_every_state_on_submit_and_lookup(setup, statuses):
+    from test_lead_source_auth import NOW
+
+    from connect_automate.automate import AdapterRegistry
+
+    args, _, _ = setup
+    args["registry"] = AdapterRegistry()
+    runtime = _runtime_with_actions(args, 3)
+    pending = submit(runtime)
+    for item, status in zip(pending.actions, statuses, strict=True):
+        if status == "settled":
+            args["store"].settle_action(item.action_id, result={}, now=NOW)
+        elif status == "failed":
+            args["store"].fail_action(item.action_id, error="private-error", now=NOW)
+    for result in (lookup(runtime), submit(runtime), lookup(PackRuntime.load(**args))):
+        assert [item.status for item in result.actions] == list(statuses)
+        assert [item.action_id for item in result.actions] == [a.action_id for a in pending.actions]
+        assert "private-error" not in result.model_dump_json()
+
+
+def test_event_projection_excludes_later_decision_and_other_record_actions(setup):
+    from test_automate_events import event_workflow
+    from test_lead_receipt_vocabulary import workflow
+    from test_lead_source_auth import NOW, OTHER, resign
+
+    args, _, _ = setup
+    value = workflow()
+    value["definitions"][0]["actions"] = event_workflow()["definitions"][0]["actions"]
+    later = event_workflow()["definitions"][1]
+    later["actions"] = [dict(action="notify.local", request=dict(body="later-private"))]
+    value["definitions"].append(later)
+    signed_workflow(args, value)
+    runtime = PackRuntime.load(**args)
+    first = submit(runtime)
+    decision = runtime.submit_decision(
+        first.workflow_record_id,
+        decision="approve",
+        operation_key="later",
+        request={},
+        expected_version=first.state_version,
+        now=NOW,
+    )
+    assert [item.status for item in decision.actions] == ["failed"]
+    raw = envelope()
+    raw["payload"]["event_id"] = OTHER
+    other = submit(runtime, resign(raw))
+    assert other.actions[0].action_id != first.actions[0].action_id
+    # Probe both selector clauses independently: a foreign record with a forged
+    # reserved event prefix must not join this event's public projection.
+    with args["store"].connection() as db:
+        db.execute(
+            "INSERT INTO workflow_actions "
+            "(action_id, record_id, dedupe_key, kind, request, status, result, "
+            "last_error, created_at, updated_at) "
+            "SELECT ?, record_id, ?, kind, request, status, result, last_error, "
+            "created_at, updated_at FROM workflow_actions WHERE action_id = ?",
+            (
+                _action_item(7)["action_id"],
+                f"pack.action:{first.workflow_event_id}:7",
+                other.actions[0].action_id,
+            ),
+        )
+    for result in (lookup(runtime), submit(runtime)):
+        assert result.actions == first.actions
+        assert result.stage == "ready" and result.state_version == first.state_version
+    assert len(args["store"].list_actions(first.workflow_record_id)) == 2
+
+
+@pytest.mark.parametrize("status", ["settled", "failed", "pending"])
+def test_action_lookup_uses_no_source_writer_clock_or_dispatch(setup, monkeypatch, status):
+    from test_workflow_receipt_lookup import rows
+
+    from connect_automate.automate import AdapterRegistry
+
+    args, owner, admission = setup
+    if status == "pending":
+        args["registry"] = AdapterRegistry()
+    runtime = _runtime_with_actions(args, failed=(0,) if status == "failed" else ())
+    result = submit(runtime)
+    before = rows(args["store"])
+    args.pop("source_admission")
+    args.pop("source_clock")
+    historical = PackRuntime.load(**args)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("action lookup crossed a source/writer/clock/dispatch boundary")
+
+    monkeypatch.setattr(owner, "_transaction", forbidden)
+    monkeypatch.setattr(admission, "admit_source", forbidden)
+    monkeypatch.setattr(args["store"], "connection", forbidden)
+    monkeypatch.setattr(historical, "_dispatch_event_actions", forbidden)
+    monkeypatch.setattr(runtime, "_dispatch_event_actions", forbidden)
+    assert lookup(runtime).actions == lookup(historical).actions == result.actions
+    assert rows(args["store"]) == before
+
+
+def _settle_source_actions(path, action_ids, channel):
+    from test_lead_source_auth import NOW
+
+    from connect_automate.automate.store import WorkflowStore
+
+    store = WorkflowStore(path)
+    for action_id in action_ids:
+        store.settle_action(action_id, result={}, now=NOW)
+    channel.put("settled")
+
+
+def test_action_lookup_shares_receipt_snapshot_during_process_settlement(setup, monkeypatch):
+    import multiprocessing
+    from contextlib import contextmanager
+
+    from connect_automate.automate import AdapterRegistry
+
+    args, _, _ = setup
+    args["registry"] = AdapterRegistry()
+    runtime = _runtime_with_actions(args, 2)
+    pending = submit(runtime)
+    native = args["store"].read_connection
+    ctx = multiprocessing.get_context("spawn")
+    channel = ctx.Queue()
+    writer = ctx.Process(
+        target=_settle_source_actions,
+        args=(args["store"].path, [a.action_id for a in pending.actions], channel),
+    )
+    started = []
+
+    @contextmanager
+    def paused_read():
+        with native() as db:
+            if not started:
+                started.append(True)
+                writer.start()
+                assert channel.get(timeout=30) == "settled"
+                writer.join(timeout=30)
+                assert writer.exitcode == 0
+            yield db
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(args["store"], "read_connection", paused_read)
+            assert [a.status for a in lookup(runtime).actions] == ["pending", "pending"]
+        assert [a.status for a in lookup(runtime).actions] == ["settled", "settled"]
+    finally:
+        if writer.is_alive():
+            writer.terminate()
+            writer.join(timeout=30)
+        channel.close()
+        channel.join_thread()
+
+
+def _crash_source_before_dispatch(case):
+    import os
+
+    from test_lead_joined_recovery import CRASH_EXIT, open_runtime
+
+    runtime, _, _, _ = open_runtime(case)
+
+    def crash(*args):
+        os._exit(CRASH_EXIT)
+
+    runtime._dispatch_event_actions = crash
+    submit(runtime, case["raw"])
+
+
+def test_process_crash_retains_pending_actions_for_safe_recovery(tmp_path):
+    import multiprocessing
+
+    from test_lead_joined_recovery import CRASH_EXIT, make_case, open_runtime
+    from test_lead_receipt_vocabulary import workflow
+    from test_lead_source_auth import NOW
+
+    case = make_case.__wrapped__(tmp_path)()
+    value = workflow()
+    value["definitions"][0]["actions"] = [
+        dict(action="notify.local", request=dict(title="Review", body="synthetic"))
+    ]
+    signed_workflow(case["args"], value)
+    worker = multiprocessing.get_context("spawn").Process(
+        target=_crash_source_before_dispatch, args=(case,)
+    )
+    try:
+        worker.start()
+        worker.join(timeout=30)
+        assert worker.exitcode == CRASH_EXIT
+        runtime, _, _, _ = open_runtime(case)
+        found = lookup(runtime, case["raw"])
+        assert [a.status for a in found.actions] == ["pending"]
+        assert [a.status for a in runtime._runner.recover_pending(now=NOW)] == ["settled"]
+        replay = submit(runtime, case["raw"])
+        assert replay.actions[0].action_id == found.actions[0].action_id
+        assert [a.status for a in replay.actions] == ["settled"]
+        assert not replay.workflow_applied and not replay.source_applied
+    finally:
+        if worker.is_alive():
+            worker.terminate()
+            worker.join(timeout=30)
