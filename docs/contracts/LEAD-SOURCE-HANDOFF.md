@@ -1666,6 +1666,13 @@ The next bounded proposal is the
 does not qualify application adoption or accept that new technical work order.
 No executable change is authorized by this status update.
 
+The body-only product lane now has a separate proposed
+[receiver-custody work order](LEAD-RECEIVER-CUSTODY.md): pinned source inventory,
+prepare/upload/status/resume/settlement semantics, ownership and bounded proof
+slices. It preserves this document's accepted A/B/C policy and the protected-host
+gates. Its first executable proposal is private protocol vocabulary only; new
+technical acceptance, implementation and live adoption remain separate decisions.
+
 ### Historical proposal status
 
 Status: PROPOSED; docs only. Operator instruction: "Let’s start", after the
