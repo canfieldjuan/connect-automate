@@ -78,6 +78,10 @@ distinct. Exclude actions of later operator decisions, other workflow events,
 other records and other bindings. Do not expose request/result payloads, titles,
 bodies, last errors, paths, dedupe keys, adapter exceptions or credentials.
 
+Event-owned actions are rows with the same `record_id` and a `dedupe_key` beginning
+with `ACTION_DEDUPE_PREFIX + workflow_event_id + ":"`, ordered by ascending `rowid`
+(admission order, equal to index order within the committing transaction).
+
 Missing, null, coerced, unknown or extra values fail closed. `actions: []` means
 that this event admitted no actions; it is not a fallback for a read failure.
 Both `no_match` and lookup-only `not_found` require an empty array and preserve
