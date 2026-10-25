@@ -1,11 +1,24 @@
 # Lead source action results: submit and lookup
 
-Status: **PROPOSED — CONTRACT ONLY; JUAN'S EXPLICIT ACCEPTANCE REQUIRED.**
+Status: **ACCEPTED WORK ORDER — IMPLEMENTATION AUTHORIZED; DELIVERY NOT COMPLETE.**
 
 Work item: [connect-contracts#76](https://github.com/canfieldjuan/connect-contracts/issues/76).
 This amendment covers the Automate half of Lane C. Commit this contract separately,
 send its exact revision to oversight, and stop before executable implementation.
 Oversight review does not substitute for operator acceptance.
+
+## Operator acceptance
+
+Juan directly accepted the reviewed contract at
+`634d5297bf8d0d99cd36cb331858f826237c6a8a`:
+
+> I accept the work order
+
+The exact contract received oversight PASS in
+[PR #47](https://github.com/canfieldjuan/connect-automate/pull/47#pullrequestreview-5640869912).
+This acceptance authorizes implementation within the named surface and ownership
+reservation. It does not establish native proof, merge, adoption or installed
+caller verification, or authorize the excluded application/host work.
 
 ## Root cause and pinned inventory
 
@@ -200,8 +213,8 @@ recovery policy or terminal-state exclusion. No unrelated refactor or formatting
 
 ## Assumptions and blockers
 
-- Operator acceptance of this exact behavioral/version amendment is required
-  before source/test implementation. Peer PASS alone does not authorize it.
+- Operator acceptance of this exact behavioral/version amendment is recorded
+  above. Peer PASS alone does not authorize a later behavioral amendment.
 - Shared-file ownership for the listed runtime/store/test hunks is confirmed as
   recorded above. Reconfirm if that reservation or the required surface changes;
   it is not authority to modify the other active lane.
@@ -277,8 +290,8 @@ surface needs an explicit contract revision and acceptance before proceeding.
 ## Gap audit
 
 **NOT DONE.** Current-state reproduction and the proposed behavioral contract are
-recorded; the named shared-file reservation is confirmed. Operator acceptance,
-source repair, regression proof, native qualification, exact-head reviews, merge,
+recorded; operator acceptance and the named shared-file reservation are confirmed.
+Source repair, regression proof, native qualification, exact-head reviews, merge,
 adoption and installed
 caller verification remain. Report each delivery stage separately as
 `native-proved / merged / adopted / installed-verified`; none is claimed here.
