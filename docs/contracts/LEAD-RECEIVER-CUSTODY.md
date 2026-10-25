@@ -6,8 +6,8 @@ said, “i accept, lets begin”, accepting the R1 work order reviewed at
 `533f04d0d23c2070f3d1532b82272e609d3b4547`. This authorizes R1's private pure
 value models and synthetic proof only. It does not authorize the later slices,
 a protected service, live mailbox, migration or production activation.
-The workflow-lookup re-pin amendment below is pending exact-head contract review
-and its conditional acceptance record; no fixture adaptation is authorized yet.
+The workflow-lookup re-pin amendment below is accepted for the bounded fixture
+repair. Its implementation verification and exact-head merge reviews remain open.
 
 The accepted [application policy](LEAD-SOURCE-HANDOFF.md#current-acceptance-and-work-order-status)
 remains authoritative: one business per deployment, receiver-owned raw custody,
@@ -501,13 +501,19 @@ unimplemented.
 
 ## R1 amendment: pin the embedded workflow lookup to schema 2.0
 
-**Status: PROPOSED; contract-only amendment pending exact-head review.** Oversight
-relayed Juan's words, “i accept the re-pin amendment when it's ready”, in mailbox
-`ec65dc3e`, in response to the integration blocker `129ad7f5`. This is conditional
-acceptance of this bounded re-pin, not acceptance of unreviewed details. After
-exact-head oversight contract PASS, record those words, the reviewed commit and
-this document's SHA-256 in a separate acceptance-only commit before adapting any
-R1 code or fixture. Until then, the integration failure remains open.
+**Status: ACCEPTED for the bounded fixture repair.** On 2026-10-25 Juan directly
+said, “I accept”, after the amendment was published and oversight gave exact-head
+contract PASS. This direct acceptance confirms the earlier conditional words,
+“i accept the re-pin amendment when it's ready”, relayed in mailbox `ec65dc3e`.
+
+The accepted amendment is commit
+`d430c978d0cd7c3d1bb9f0dc114180af1408a390`; its reviewed document SHA-256 is
+`0cf56ac5612b9653ee391d4fb146204ee7684b79199ccdfc1a31fb9787bbe8f5`.
+This acceptance-only record precedes any fixture adaptation. The connector review
+was still running when Juan directly accepted; this record does not claim its
+completion or waive exact-head connector review before merge. The integration
+failure remains open until the bounded repair and verification below pass. No
+contract semantics, later-slice authorization or production gate changes here.
 
 ### Source inventory, root cause and ownership
 
