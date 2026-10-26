@@ -1,13 +1,19 @@
 # Body-only receiver custody: work order and protocol proposal
 
-Status: **R1 ACCEPTED; later integration remains proposed.** On 2026-10-25 Juan
+Status: **R1 MERGED; R2 work order ACCEPTED; later integration remains proposed.**
+On 2026-10-25 Juan
 said, “i accept, lets begin”, accepting the R1 work order reviewed at
 `66d16a65a807d5dc19b0ef8691be767f50933a83` and merged in
 `533f04d0d23c2070f3d1532b82272e609d3b4547`. This authorizes R1's private pure
-value models and synthetic proof only. It does not authorize the later slices,
+value models and synthetic proof only. That R1 acceptance does not authorize later slices,
 a protected service, live mailbox, migration or production activation.
-The workflow-lookup re-pin amendment below is accepted for the bounded fixture
-repair. Its implementation verification and exact-head merge reviews remain open.
+The workflow-lookup re-pin and guard-coverage repair merged in PR #50 at
+`f6bb9ecf35d6a746ae17ea0e3862216ec4744426`, with the same tree as reviewed head
+`81f4ad0f5fdd02585eef6c96faa9a5ae34af6b4e`; Linux/Windows CI, oversight and Codex
+completed successfully. Historical pending statements below describe those stages.
+The separately accepted next work order is [R2 storage and fences](LEAD-CUSTODY-STORAGE.md).
+Its canonical acceptance record binds the reviewed revision and authorized scope;
+R2 implementation has not started.
 
 The accepted [application policy](LEAD-SOURCE-HANDOFF.md#current-acceptance-and-work-order-status)
 remains authoritative: one business per deployment, receiver-owned raw custody,
@@ -362,7 +368,7 @@ and Codex connector review remain required; docs acceptance is not adoption.
 | Slice | Smallest owner change | Required gate/evidence and rollback |
 | --- | --- | --- |
 | R1: pure protocol vocabulary | New private `lead_intake/custody_protocol.py` and focused tests; existing source scalar/schema validators reused | G0 prerequisite only. Closed metadata/result schemas, legal state combinations, digest distinctions and bounds. No I/O or public wiring. Rollback removes unused vocabulary. |
-| R2: source-owned custody resolution and fence | Source store/admission owners, explicit migration contract; adapter metadata owner specified first | G1/G3 prerequisites. Exact lookup after purge, atomic generation check, both settlement/write orders, restart, lost mapping and every partial-write boundary. Rollback disables new ingress and preserves stores; no downgrade that ignores fences. |
+| [R2: source-owned custody resolution and fence](LEAD-CUSTODY-STORAGE.md) | Source store/admission owners, explicit migration contract; adapter metadata owner specified first | G1/G3 prerequisites. Exact lookup after purge, atomic generation check, both settlement/write orders, restart, lost mapping and every partial-write boundary. Rollback disables new ingress and preserves stores; no downgrade that ignores fences. |
 | R3: receiver protocol composition | Thin adapter over qualified owners and existing Connect transport | G1/G3 prerequisites with synthetic source fixtures. Prepare/upload/status/resume/settle, exact route identity, no-action pack, loss/restart/quotas/result bounds. Real authentication/service wiring blocked on accepted and proven protected machine boundary. Disable capability; keep authenticated recovery available where qualified. |
 | R4: Watcher body source and reference retry | Existing rules, source/body/removal owners, job schema and queue pump | G1/G3. Body-only unfollowed capture without follow mutation, unavailable/truncated input, reference-only restart, stable IDs, both digests and no attachment regression. Disable new lead rules; preserve reconciliation records. |
 | R5: cross-app retention and installed proof | Each storage/removal owner; protected installation | G6 prerequisite. Offline purge, capture cutoff, metadata retention, raw-free backup/restore, current authorization, packaged native parity. No production activation until these and protected-host gates pass. |
