@@ -433,7 +433,8 @@ Preserve the source clock-floor/final-auth checks after waits, including expiry,
 revocation and backward/forward movement. Use short test parameter IDs and
 explicit UTF-8 fixture reads on both platforms from the first executable push.
 Run focused regression/adjacent files plus Ruff during iteration; do not repeatedly
-rerun unrelated broad matrices. No tests were run for this documentation-only PR.
+rerun unrelated broad matrices. No tests were run for the original contract-only
+PR; implementation evidence is recorded below.
 
 ## Implementation summary
 
@@ -471,8 +472,9 @@ authorized work, not implemented capabilities.
 
 ## Gap audit
 
-**NOT DONE:** the first implementation slice requires its combined affected-lane
-run, exact-head Linux/Windows CI, oversight and connector review before merge.
+**NOT DONE:** the local combined affected lane passed; the first implementation
+slice still requires exact-head Linux/Windows CI, oversight and connector review
+before merge.
 Managed registration/binding/admission/closure/lifecycle integration and remaining
 process qualification are later bounded R2 PRs. R3-R5 and protected-machine work
 remain separately gated. No receiver deployment or production adoption is claimed.
@@ -525,13 +527,23 @@ The scope-record commit preceded executable edits. Incremental evidence:
   `SourceStoreUnavailable`. Owner SHA-256
   `18eb7132769176fb421d26ccf93b2655c8ec1cf94fd5e32dc540a40dfd302230`.
 
-A defect in this uncommitted implementation was reproduced before publication:
+A defect introduced while developing this implementation was reproduced before publication:
 `custody_store.py:_input` used the coercing default of `TypeAdapter(Digest)`, so
 bytes and bytearray digest references were accepted. Four strict-text cases failed
 before the fix and passed after the shared input owner began using `strict=True`.
 Both digest fields use that owner; no downstream compensating check was added.
 The exact coercing variant is also killed by the regression suite.
 
-These are incremental local results, not completed native/receiver qualification.
-Durable evidence alias: `custody-r2-implementation`; final manifest and tested
-commit follow after the required combined gate. No code outside the allowlist changed.
+The combined required affected lane at implementation commit
+`49235afb67ec1c1632b571cfc24fad0bf217d0d2` completed:
+`2921 passed in 203.46s (0:03:23)`. Repository Ruff reported `All checks passed!`;
+the changed Python files passed formatting. Existing tests, reserved owners,
+dependencies and application pins are unchanged. This evidence-only follow-up
+changes no executable input; code tests are not rerun for its prose.
+
+Durable evidence alias: `custody-r2-implementation/manifest.json`, SHA-256
+`92cdb05c2ed4d9af66e17d792f0184a496a6e2b29f5cfec764ac12894e30f291`.
+The packet retains the baseline, fail-first results, strict-reference defect,
+both mutation rounds, process evidence, pinned old owner and final combined run.
+These are local results, not completed native Windows or receiver qualification.
+No code outside the allowlist changed.
