@@ -1,17 +1,19 @@
 # Body-only receiver custody: work order and protocol proposal
 
-Status: **R1 MERGED; R2 and later integration remain proposed.** On 2026-10-25 Juan
+Status: **R1 MERGED; R2 work order ACCEPTED; later integration remains proposed.**
+On 2026-10-25 Juan
 said, “i accept, lets begin”, accepting the R1 work order reviewed at
 `66d16a65a807d5dc19b0ef8691be767f50933a83` and merged in
 `533f04d0d23c2070f3d1532b82272e609d3b4547`. This authorizes R1's private pure
-value models and synthetic proof only. It does not authorize the later slices,
+value models and synthetic proof only. That R1 acceptance does not authorize later slices,
 a protected service, live mailbox, migration or production activation.
 The workflow-lookup re-pin and guard-coverage repair merged in PR #50 at
 `f6bb9ecf35d6a746ae17ea0e3862216ec4744426`, with the same tree as reviewed head
 `81f4ad0f5fdd02585eef6c96faa9a5ae34af6b4e`; Linux/Windows CI, oversight and Codex
 completed successfully. Historical pending statements below describe those stages.
-The next proposed work order is [R2 storage and fences](LEAD-CUSTODY-STORAGE.md).
-It requires its own review and explicit acceptance before executable work.
+The separately accepted next work order is [R2 storage and fences](LEAD-CUSTODY-STORAGE.md).
+Its canonical acceptance record binds the reviewed revision and authorized scope;
+R2 implementation has not started.
 
 The accepted [application policy](LEAD-SOURCE-HANDOFF.md#current-acceptance-and-work-order-status)
 remains authoritative: one business per deployment, receiver-owned raw custody,

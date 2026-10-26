@@ -1,17 +1,26 @@
 # R2: source-owned custody resolution and durable fences
 
-Status: **PROPOSED, documentation only; no implementation acceptance yet.**
-Juan's instruction, “Let’s do it”, authorizes drafting this storage and migration
-contract. He subsequently selected “This lead-intake session (recommended)” as
-its sole owner, using pack-kit's preserved draft as input. Neither instruction
-accepts the design below or authorizes executable changes. R1 merged in PR #50 at
+Status: **ACCEPTED R2 work order; implementation has not started.**
+Juan selected “This lead-intake session (recommended)” as its sole owner, using
+pack-kit's preserved draft as input. On 2026-10-26 he directly instructed this
+session, “I approve the contract lets check oversight”. This accepts PR #51's
+reviewed contract at `45818bbd9cd16660a7b862f28f2a499082f0851c`, whose
+`docs/contracts/LEAD-CUSTODY-STORAGE.md` SHA-256 is
+`981e16b01877c45ff8261ed8b600a85a06190afbf69f292f4adca5c5d2406457`.
+Oversight independently relayed his statements “i accept the contract” and
+“yes, the R2 contract on 51” in mailbox `b65b0a86`, binding the same revision and
+document hash. Oversight's [contract PASS](https://github.com/canfieldjuan/connect-automate/pull/51#pullrequestreview-5647625140)
+also covers that revision. This acceptance-only record changes no design rule.
+
+R1 merged in PR #50 at
 `f6bb9ecf35d6a746ae17ea0e3862216ec4744426`;
 its tree equals reviewed head `81f4ad0f5fdd02585eef6c96faa9a5ae34af6b4e`.
 
 This is the R2 continuation of [receiver custody](LEAD-RECEIVER-CUSTODY.md).
-Review this exact contract commit, then record Juan's explicit acceptance in a
-separate acceptance-only commit before implementation. Re-pin a changed base
-before executable edits. R3 receiver composition, R4 Watcher, R5 installed
+The acceptance is recorded separately before executable work. After the contract
+merge gates pass, the first bounded implementation PR is migration plus read-only
+metadata resolution, following the verification plan below. Re-pin a changed
+base before executable edits. R3 receiver composition, R4 Watcher, R5 installed
 retention, and the protected machine boundary retain their own acceptance gates.
 
 ## Contract
@@ -428,23 +437,26 @@ rerun unrelated broad matrices. No tests were run for this documentation-only PR
 
 ## Implementation summary
 
-This change adds the proposed R2 contract and a continuation pointer/status update
-in the parent contract. It changes no source, schema, migration, test, dependency,
-workflow or application. API/table names above describe proposed work only.
+This change adds the accepted R2 contract, its acceptance-only record and a
+continuation pointer/status update in the parent contract. It changes no source,
+schema, migration, test, dependency, workflow or application. API/table names above
+describe authorized work, not implemented capabilities.
 
 ## Cold diff audit
 
 - `docs/contracts/LEAD-CUSTODY-STORAGE.md`: inventory, source ownership, explicit
   migration, local operations, lifecycle and failure rules, parity/mutation plan
   and acceptance gates. Checked against the pinned source and historical packets.
-- `docs/contracts/LEAD-RECEIVER-CUSTODY.md`: record R1 merge and link this proposal;
-  do not change the accepted R1 vocabulary or authorize R2 implementation.
+- `docs/contracts/LEAD-RECEIVER-CUSTODY.md`: record R1 merge and link the canonical
+  R2 acceptance; do not change the accepted R1 vocabulary or duplicate R2 rules.
 - Verify only these Markdown paths differ; check links, citations, base/hash
   references and whitespace. Code tests are intentionally not rerun for prose.
 
 ## Gap audit
 
-**NOT DONE:** R2 design review, explicit acceptance, migration/owner implementation,
-fail-first and parity proofs, native CI and exact-head implementation reviews.
+R2 design review and operator acceptance are recorded above. The acceptance-only
+head still requires its own exact-head merge gates.
+**NOT DONE:** migration/owner implementation, fail-first and parity proofs,
+native implementation CI and exact-head implementation reviews.
 R1 is complete. R3-R5 and protected-machine work remain separately gated. A
 contract approval or local synthetic pass is not production receiver qualification.
