@@ -1146,6 +1146,121 @@ def test_overflow_snapshot_is_unknown_instead_of_truncated_success(setup, monkey
         assert caught.value.__context__ is None and caught.value.__cause__ is None
 
 
+@pytest.mark.parametrize("phase", ["before", "after", "after_error"])
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "receipt_admission",
+        "receipt_digest",
+        "outcome_event",
+        "outcome_stage",
+        "outcome_version",
+        "outcome_applied",
+        "matching",
+    ],
+)
+def test_submit_snapshot_identity_guard(setup, monkeypatch, phase, fault):
+    from dataclasses import replace
+
+    from test_lead_source_admission import counts
+    from test_lead_source_auth import OTHER
+    from test_workflow_receipt_lookup import rows
+
+    from connect_automate.lead_intake import SourceHandoffUnknown
+
+    args, owner, _ = setup
+    runtime = _runtime_with_actions(args)
+    original_read = args["store"].lookup_source_event
+    original_dispatch = runtime._dispatch_event_actions
+    adapter = args["registry"].resolve("notify.local")
+    original_deliver = adapter.deliver
+    snapshots, injected, reads, dispatches, deliveries = [], [], [], [], []
+
+    def read(**kwargs):
+        snapshot = original_read(**kwargs)
+        snapshots.append(snapshot)
+        reads.append("after" if dispatches else "before")
+        target = "before" if phase == "before" else "after"
+        if reads[-1] != target or fault == "matching":
+            return snapshot
+        if fault.startswith("receipt_"):
+            field = "admission_id" if fault == "receipt_admission" else "payload_digest"
+            value = OTHER if field == "admission_id" else "b" * 64
+            data = snapshot.source_receipt.model_dump()
+            data[field] = value
+            changed = replace(
+                snapshot,
+                source_receipt=type(snapshot.source_receipt).model_validate(data),
+            )
+        else:
+            outcome = snapshot.outcome
+            if fault == "outcome_event":
+                outcome = replace(outcome, event_id=OTHER)
+            elif fault == "outcome_applied":
+                outcome = replace(outcome, applied=True)
+            elif fault == "outcome_stage":
+                outcome = replace(outcome, record=replace(outcome.record, stage="different"))
+            else:
+                outcome = replace(
+                    outcome,
+                    record=replace(outcome.record, state_version=outcome.record.state_version + 1),
+                )
+            changed = replace(snapshot, outcome=outcome)
+        injected.append((snapshot, changed))
+        return changed
+
+    def dispatch(*args):
+        dispatches.append(True)
+        original_dispatch(*args)
+        if phase == "after_error":
+            raise RuntimeError("private-title-path-body-sql")
+
+    def deliver(request):
+        deliveries.append(True)
+        return original_deliver(request)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(args["store"], "lookup_source_event", read)
+        patch.setattr(runtime, "_dispatch_event_actions", dispatch)
+        patch.setattr(adapter, "deliver", deliver)
+        if fault == "matching":
+            result = submit(runtime)
+            assert result.source_receipt == snapshots[0].source_receipt
+            assert result.workflow_event_id == snapshots[0].outcome.event_id
+            assert result.workflow_applied is True and result.source_applied is True
+            assert [item.status for item in result.actions] == ["settled"]
+        else:
+            with pytest.raises(SourceHandoffUnknown) as caught:
+                submit(runtime)
+            assert type(caught.value) is SourceHandoffUnknown
+            assert str(caught.value) == "lead source handoff outcome unknown"
+            assert caught.value.__context__ is None and caught.value.__cause__ is None
+
+    # Keep fixture checks outside the runtime's exception boundary: a broken
+    # injector must fail the test, never impersonate the expected Unknown.
+    assert len(injected) == (0 if fault == "matching" else 1)
+    for original, changed in injected:
+        assert (changed.source_receipt != original.source_receipt) is fault.startswith("receipt_")
+        assert (changed.outcome != original.outcome) is fault.startswith("outcome_")
+        assert changed.actions == original.actions
+    stopped_before = phase == "before" and fault != "matching"
+    assert reads == (["before"] if stopped_before else ["before", "after"])
+    assert dispatches == deliveries == ([] if stopped_before else [True])
+    assert counts(owner) == (1, 1, 1)
+    persisted = rows(args["store"])
+    found = lookup(runtime)
+    assert found.source_receipt == snapshots[0].source_receipt
+    assert found.workflow_event_id == snapshots[0].outcome.event_id
+    assert found.stage == "ready" and found.state_version == 2
+    assert found.workflow_outcome == "accepted" and found.workflow_applied is False
+    assert [item.status for item in found.actions] == (
+        ["pending"] if stopped_before else ["settled"]
+    )
+    assert rows(args["store"]) == persisted
+    assert len(persisted["workflow_event_receipts"]) == 1
+    assert len(persisted["workflow_actions"]) == 1
+
+
 @pytest.mark.parametrize("fault", ["before", "after", "normal"])
 @pytest.mark.parametrize("unreadable", [False, True])
 def test_dispatch_reads_once_after_attempt_without_redispatch(

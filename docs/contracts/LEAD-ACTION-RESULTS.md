@@ -334,3 +334,57 @@ regression proof are recorded. Exact-head native qualification/reviews, guarded
 merge, adoption and installed caller verification remain. Report each stage
 separately as `native-proved / merged / adopted / installed-verified`; none of
 these delivery stages is claimed by the local source proof alone.
+
+## Issue 49: snapshot identity regression evidence
+
+This test-only increment follows the merged result implementation and the
+non-blocking coverage finding tracked in
+[issue #49](https://github.com/canfieldjuan/connect-automate/issues/49).
+Base: `3f1397a4a0fb08bf9e7ab2e38f25541321d2ac24`. The earlier gap audit above
+describes the original implementation stage; this increment does not reopen its
+accepted schema or authorize application adoption.
+
+Root cause: this lane's implementation commit
+`5d108badc1d4b5bba05b98016b8c807d39b99ec2` added the source-receipt and
+workflow-outcome equality checks in `PackRuntime.submit_source.result_from_snapshot`
+(`runtime.py:344-345`) without otherwise-valid mismatch cases for each check.
+Existing invalid-result tests could fail through other projection validators.
+The production checks already enforce the intended behavior; the defect is in
+the regression coverage, not a demonstrated incorrect product result.
+
+Reproduction and isolation: deleting each equality clause independently in memory
+still passes every pre-existing test in `tests/test_lead_runtime_results.py`.
+An AST comparison proves those original tests remain unchanged in this increment.
+The new matrix injects only one mismatched receipt/outcome component after real
+signed admission and real store lookup; the other component and actions stay
+identical. Receipt admission ID/digest and outcome event/stage/version/applied
+fields cover sibling inputs. Fixture-integrity assertions run outside the
+runtime's exception boundary so an injector error cannot masquerade as Unknown.
+
+Repair and proof: `test_submit_snapshot_identity_guard` adds **21** cases across
+pre-dispatch, post-dispatch and post-dispatch-error phases, including matching
+controls. It checks the exact bounded Unknown and absent exception context/cause,
+actual adapter and dispatch counts, pending versus settled durable actions, the
+original historical receipt/outcome and unchanged rows after lookup. The affected
+file passes **300 tests in 27.87s**; Ruff lint and format pass. Both counterfactual
+guards are now killed: receipt removal causes **six** intended missing-rejection
+failures, outcome removal causes **twelve**; every failure is call-phase
+`DID NOT RAISE`, while the other guard's cases and matching controls pass.
+
+An initial mutation harness incorrectly retained the package-exported original
+runtime class after replacing the module class. Its outputs are retained as
+invalid evidence. The corrected harness updates the package export, asserts
+method identity, and reruns both original-case and new-case probes. The causal
+claims above use only these corrected runs. No production source was edited to
+run a mutation. Durable alias `action-result-snapshot-regressions/manifest.json`,
+SHA-256 `e270cd38cfddc2d5a90689b57bd204917f44f7788a3c6f49d4d709cf26a36ff5`.
+
+Cold diff audit: only the existing runtime-result test file and this execution
+record change. Shared source/storage, R2 work, result schemas, action dispatch,
+dependencies, CI configuration and application pins remain unchanged. The current
+Windows lane already selects this test file. No downstream guard or workaround
+was added; no redundant production special case existed to remove.
+
+**NOT DONE:** exact-head CI, oversight and automatic Codex review, guarded merge
+and issue closure. This evidence does not establish an installed caller or
+production adoption. Those remain separate from closing this test gap.
