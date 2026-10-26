@@ -460,3 +460,40 @@ head still requires its own exact-head merge gates.
 native implementation CI and exact-head implementation reviews.
 R1 is complete. R3-R5 and protected-machine work remain separately gated. A
 contract approval or local synthetic pass is not production receiver qualification.
+
+## First bounded implementation record
+
+The contract merged in PR #51 at
+`3f1397a4a0fb08bf9e7ab2e38f25541321d2ac24`, with the same tree as the reviewed
+acceptance commit `9252ac2527d3b295061107c3465fe1dc1c0ba499`. Juan's subsequent
+“continue” starts only the first ordered implementation slice. Source, fixture,
+dependency and workflow inputs still match the inventory pin; only the accepted
+contract documents changed between that pin and this base.
+
+Required surface for this PR is limited to `source_store.py` (exact schema-5
+initialization, explicit migration, read snapshot and shared metadata validation),
+`admission.py` (metadata/content validation split preserving retained-byte checks),
+the new private read-only `custody_store.py` facade, the two new custody test files,
+the frozen version-4 schema fixture, native Windows test selection and this record.
+No registration, binding, managed admission, close or revalidation entry point is
+exposed. Their complete in-writer fence and lifecycle boundary remains the next
+bounded PR. Existing tests and fixtures stay unchanged.
+
+`SourceStore.migrate()` explicitly returns the applied/no-op result and committed
+incarnation. Explicit setup may read that identity; observation requires an
+expected incarnation supplied by its host binding and never adopts a replacement.
+The private observation facade returns source facts only, including an exact
+legacy receipt lookup and keyed handoff metadata observation. It does not produce
+an R1 wire result or authorize source access. Synthetic fixtures may seed future
+managed rows to test the schema and reader; no production writer is introduced.
+
+Verification: unchanged baseline before edits; fail-first migration/observation
+probes; exact schema and row preflight, row equality, two-process migration and
+writer ordering, per-write rollback/crash/reopen, unknown commit outcomes,
+read-only/live-WAL snapshots, isolated corruption guards and clause mutants.
+Existing receipt/body checks must still run through their original admission
+owner. Run the contract-required combined affected lane before the grouped push;
+include both new test files in Windows CI from that push. No production migration,
+mail access, service or application adoption is part of this work.
+
+Implementation and qualification are **NOT DONE** at this scope-record commit.
