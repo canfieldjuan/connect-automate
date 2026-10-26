@@ -1,9 +1,13 @@
 # Body-only receiver custody: work order and protocol proposal
 
-Status: **PROPOSED; contract only.** Juan's instruction, “Let’s start the next product lane.”,
-starts this work order. It does not accept its new technical
-interfaces or authorize executable integration. No implementation, live mailbox,
-protected service, migration or production activation is delivered by this change.
+Status: **R1 ACCEPTED; later integration remains proposed.** On 2026-10-25 Juan
+said, “i accept, lets begin”, accepting the R1 work order reviewed at
+`66d16a65a807d5dc19b0ef8691be767f50933a83` and merged in
+`533f04d0d23c2070f3d1532b82272e609d3b4547`. This authorizes R1's private pure
+value models and synthetic proof only. It does not authorize the later slices,
+a protected service, live mailbox, migration or production activation.
+The workflow-lookup re-pin amendment below is accepted for the bounded fixture
+repair. Its implementation verification and exact-head merge reviews remain open.
 
 The accepted [application policy](LEAD-SOURCE-HANDOFF.md#current-acceptance-and-work-order-status)
 remains authoritative: one business per deployment, receiver-owned raw custody,
@@ -24,7 +28,7 @@ existing automation admission and Connect job source are attachment-shaped.
 Replaying that path with a fake attachment would bypass the true source owner;
 adding another queue would duplicate the existing dispatch owner.
 
-This PR changes only this document and the continuation pointer in
+The original contract PR changed only this document and the continuation pointer in
 `LEAD-SOURCE-HANDOFF.md`. It specifies the product lane and the first bounded
 executable work order below. Future owner changes are proposals, not capabilities
 already present. No source pin, package, test input, runtime or schema changes here.
@@ -136,7 +140,9 @@ source bytes or change the upload fingerprint.
 
 ## Proposed application contract
 
-All names and schemas in this section are **PROPOSED / NOT IMPLEMENTED**.
+Application wire names and integration in this section remain **PROPOSED**.
+R1 implements private untrusted value models only; it does not establish the
+machine-proof wire format or implement these operations.
 Use one v2 capability, `lead.source.custody`, capability version `1.0`, over the
 existing loopback POST/GET job transport. Do not add custom transport endpoints.
 Each operation has one input artifact; no missing-input exception is needed.
@@ -205,8 +211,10 @@ never erase a previously recorded custody/workflow fact.
 - `capture_phase`: `prepared`, `upload_possible`, `custodied`, `fenced_empty`.
 - `content_state`: `not_received`, `retained`, `unavailable`, `unknown`.
   `unavailable` has a bounded reason: `expired`, `purged`, `retired`, `lost`.
-- `workflow`: null when not resolved, otherwise the existing validated historical
-  lookup projection. Preserve `not_found`, `no_match` and `accepted` meanings.
+- `workflow`: null when not resolved, otherwise the validated historical lookup
+  projection. The amendment below pins its proposed consumption to schema `2.0`
+  at the merged action-result owner. Preserve `not_found`, `no_match` and `accepted`
+  meanings. Nested action status never determines custody phase or reason.
 - `source_receipt`: the existing validated `ReceiptReference`, required exactly
   when capture phase is `custodied`; null otherwise. It is independent of an absent
   workflow receipt and never authorizes resume by itself.
@@ -238,9 +246,11 @@ unknown, not `fenced_empty` inferred from an empty replacement database.
 
 Transport completion says the requested operation completed, not that a lead or
 external delivery exists. Source custody and workflow outcome are independent.
-Known action failure/pending/uncertainty must follow the pack-kit-owned result
-contract when merged and re-pinned. Until then, qualify only a no-action pack;
-do not claim general workflow-effect completeness or close issue 76 here.
+Known action failure/pending/uncertainty follows the pack-kit-owned result
+contract only through an explicitly accepted re-pin. That lane is now merged;
+the bounded amendment below proposes consuming its lookup values in R1. The
+first receiver integration remains a no-action-pack proof; consuming value models
+does not qualify general workflow effects or close issue 76 here.
 Every result is a snapshot at its observation time. Replaying an immutable status
 operation may return its original snapshot; a new authorized status operation is
 needed for a new observation. Even delivery of a cached transport result must
@@ -373,7 +383,8 @@ proof reference until the separately accepted machine-boundary contract pins
 their wire format; R1 is not the final wire conformance or full G0 acceptance.
 No edit to pack-kit's `results.py`, submit/lookup projection hunks, event-action
 snapshot seam or its result tests is included. General action-status work is
-consumed only after that lane lands and is explicitly re-pinned.
+consumed only after that lane lands and is explicitly re-pinned. The amendment
+below is that bounded re-pin proposal, not authorization for any new action owner.
 
 Verification plan for R1: baseline source/schema and result tests unchanged;
 fail-first absent model/invalid-combination cases; valid empty-body/unavailable
@@ -406,11 +417,11 @@ receiver/queue boundary fixtures rather than a competing recovery simulator:
 - Message-wide purge over every alias/event, both late-upload orders and later
   captures. An event-scoped purge mutant must fail the intended assertion.
 
-## Implementation summary, cold audit and gap audit
+## Original proposal summary, cold audit and remaining gates
 
-Implementation summary: this proposal plus one parent continuation link only.
+Original contract PR summary: this proposal plus one parent continuation link only.
 No executable change, new dependency, fixture mutation, service, mailbox read,
-database operation, runtime test or production activation in this PR.
+database operation, runtime test or production activation was included in that proposal.
 
 Cold audit requirements: check every source citation against the pins, preserve
 the accepted policies, compare changed paths with the declared surface, validate
@@ -418,9 +429,261 @@ relative links and whitespace, and inspect the complete final diff. Historical
 result inventory is provenance, not a fresh test result. Publish durable evidence
 by alias and SHA-256, never private workstation names or session-ledger links.
 
-**NOT DONE:** exact-head contract reviews and Juan's technical work-order acceptance;
-R1 implementation/proof; machine control authentication and transport mapping;
+**NOT DONE:** R1 implementation review/merge; machine control authentication and transport mapping;
 source-owned fencing/migration; receiver and Watcher integration; retention,
 installed native/privacy qualification and product adoption. Extraction, canonical
 lead records, Lead Inbox, employee approval, CRM/export delivery and EOM changes
 are separate later product lanes. This proposal does not close their gates.
+
+## R1 execution record
+
+The acceptance above is recorded before executable edits. The implementation
+base is `533f04d0d23c2070f3d1532b82272e609d3b4547`; its source, tests and workflow
+inputs equal the inventory pin. The contract proposal and acceptance are the only
+intervening changes. No inference runtime or model is used.
+
+- **Root cause:** there is no closed custody request/result vocabulary at the
+  receiver boundary. Existing signed-source and lookup values cannot express
+  capture intent, an upload generation or the independent custody states.
+- **Required surface:** new private `lead_intake/custody_protocol.py`,
+  `tests/test_lead_custody_protocol.py`, this execution record, and the existing
+  Windows CI test list. No existing test changes. Source identity/time/digest,
+  canonical JSON and receipt/lookup validation stay with their existing owners.
+- **Private representation:** common scope, handoff/control/job IDs and opaque
+  machine/proof UUID references; operation-discriminated metadata payloads;
+  upload bytes remain the unchanged signed-source envelope. Metadata parsing is
+  not the future transport mapping or authentication proof. Pure upload comparison
+  can check the capture pair against supplied bytes without authenticating them.
+- **Bounds:** reuse source revision and byte ceilings for private input parsing;
+  the result ceiling remains 4096 UTF-8 bytes. Those parser limits do not settle
+  deployment quotas or metadata retention. Exercise the actual Connect output
+  encoding and action serialization bound without adding a provider or store.
+- **Explicit non-scope:** source/auth/storage semantics, runtime projections,
+  public exports, dependencies, handlers, enrollment, persistence, native host,
+  Watcher and EOM. Pack-kit owners remain untouched. The original R1 execution
+  assumed the action-free lookup; the amendment below supersedes only that
+  dependency assumption after its review and acceptance gates.
+- **Assumptions/blockers:** values remain untrusted, including copied model
+  objects. A parsed reference proves neither custody nor authority. Machine wire
+  proof and later fencing are still blocked on their own contracts and proofs;
+  they do not block pure models.
+- **Verification:** unchanged source/schema/receipt/lookup tests before edits;
+  missing-module fail-first; positive operation and state fixtures; one isolated
+  negative per semantic guard with matching counterfactual mutation; falsy,
+  missing, extra, mixed, size and UTF-8 boundaries; redacted parser/encoder errors;
+  forged/copy revalidation; import/pure-operation side-effect probes; actual
+  encoded output bound; focused lint/format plus unchanged adjacent parity.
+  Both existing CI platforms run the new file from the first executable push.
+- **Rollback:** stop importing/remove unused private vocabulary; no database or
+  public interface has changed. No runtime durability or production claim follows
+  from R1's tests.
+
+R1 implementation summary: the private models now represent the five operation
+variants and the closed resolved/unresolved result union. Canonical parsers and
+encoders revalidate copied values and redact errors. A pure upload comparison
+checks canonical bytes and the two digests against the original intent without
+verifying signatures or granting authority. Existing source/receipt/lookup owners
+and public exports remain unchanged. The new test file is included in the existing
+Windows job; hosted results and exact-head review remain pending.
+
+Cold audit and verification evidence accompany the implementation PR. Local proof
+covers the complete state table, isolated semantic guards, copied-model refusal,
+source comparison, byte/encoded boundaries and application-I/O rejection. The
+counterfactual runner replaces one rejecting guard at a time in an isolated
+in-memory module; it never edits the checkout. Its selected tests must fail with
+an expected missing rejection, not a setup or unrelated error.
+
+Contract review and operator acceptance are complete for R1. Its code is unused
+by any application entry point. Implementation review/merge and all later
+qualification gates remain distinct; the receiver operations above are still
+unimplemented.
+
+
+## R1 amendment: pin the embedded workflow lookup to schema 2.0
+
+**Status: ACCEPTED for the bounded fixture repair.** On 2026-10-25 Juan directly
+said, “I accept”, after the amendment was published and oversight gave exact-head
+contract PASS. This direct acceptance confirms the earlier conditional words,
+“i accept the re-pin amendment when it's ready”, relayed in mailbox `ec65dc3e`.
+
+The accepted amendment is commit
+`d430c978d0cd7c3d1bb9f0dc114180af1408a390`; its reviewed document SHA-256 is
+`0cf56ac5612b9653ee391d4fb146204ee7684b79199ccdfc1a31fb9787bbe8f5`.
+This acceptance-only record precedes any fixture adaptation. The connector review
+was still running when Juan directly accepted; this record does not claim its
+completion or waive exact-head connector review before merge. The integration
+failure remains open until the bounded repair and verification below pass. No
+contract semantics, later-slice authorization or production gate changes here.
+
+### Source inventory, root cause and ownership
+
+- Merged dependency: `canfieldjuan/connect-automate`
+  `0a354dbab4b4d86f2a4c10a53f9a3b1dde9b8ee8` (PR #47), with reviewed dependency
+  parent `aef5c7c966d4a2c3d6109e6ac19b42916339cdad`.
+- At that pin, `src/connect_automate/lead_intake/results.py:22-55,66-73`
+  owns `_ActionResult` and schema-`2.0` `SourceHandoffLookup`. The required
+  `actions` array has at most eight unique action IDs; each item contains only
+  `action_id`, `kind="notify.local"`, and `status` equal to `pending`, `settled`
+  or `failed`. Non-accepted workflow outcomes require an empty array. Lookup
+  cannot set `workflow_applied=true`.
+- At that pin, `src/connect_automate/automate/runtime.py:377-418` constructs the
+  schema-`2.0` lookup from its existing read-only receipt/action snapshot owner.
+  R1 does not reproduce that query or call it from these value models.
+- The dependency change originates in
+  `5d108badc1d4b5bba05b98016b8c807d39b99ec2`. My R1 fixture constructor at
+  `tests/test_lead_custody_protocol.py:108-116`, introduced in
+  `f540b41a8f466b22336f1370b11e1c16fcb27c08`, still emits schema `1.0` without
+  actions. `ResolvedResult.workflow` embeds the shared owner directly, so this
+  fixture became incompatible after the dependency merged. The source owner is
+  not defective; the consumer's pin and fixture must advance together.
+- The ordinary local integration merge is
+  `ca1878d7da4abd361dde7a4f6507a0c3ef2459fc`. Its unmodified R1 isolated test
+  fails before its intended receipt guard, with `workflow.schema_version`
+  requiring `2.0` and `workflow.actions` missing. Durable evidence alias
+  `lead-custody-workflow-repin` contains the exact reproduction and synthetic
+  size probes. No live provider, database, action or mailbox was exercised.
+
+### The only contract departure
+
+After acceptance, `ResolvedResult.workflow` continues to use the shared
+`SourceHandoffLookup` directly, now explicitly pinned to the merged **schema
+`2.0`** above. Its nullable shape and existing workflow meanings are unchanged.
+The outer custody request/result `schema_version="1.0"` remains unchanged, as
+does the signed source envelope. There is no schema-`1.0` compatibility wrapper,
+action stripping, action-free mirror model or automatic downgrade.
+
+The nested `actions` projection is a bounded snapshot owned and validated by
+Automate. Preserve item identity, order and every mixed status exactly. These
+values remain untrusted when parsed by R1, and parsing grants no permission to
+execute, retry, query or change an action.
+
+- `accepted` means the workflow event is known. With zero, pending, settled,
+  failed or mixed actions, the custody reason remains `workflow_known` wherever
+  the existing table permits that outcome. `workflow_known` never asserts that
+  an action succeeded or that the workflow, lead or delivery is complete.
+- `pending` remains unresolved action execution; it does not prove that no effect
+  occurred. `failed` remains that action's terminal failure. `settled` refers to
+  the existing action owner's meaning and does not imply CRM delivery or workflow
+  completion. R1 neither retries nor aggregates any of them into a success flag.
+- `no_match` and `not_found` retain their meanings and require `actions=[]` through
+  the shared owner. Neither creates an action, receipt or custody fact.
+- `capture_phase`, `content_state`, unavailable reason, receipt requirements,
+  capture metadata, fencing claims and the entire legal state table are unchanged.
+  No action status changes or erases custody, raw availability or source provenance.
+  A workflow-known result may coexist with purged/expired content and failed or
+  pending actions. An unresolved result still contains no workflow or action data.
+- Replaying a value preserves that observation; it does not make an action status
+  current. R1 reads no clock/store and invents no new observation or authority.
+
+### Required surface, non-scope and verification
+
+The present amendment changes only this document after the ordinary main merge.
+After review and acceptance, adapt only the new R1 fixture constructor and its
+focused assertions in `tests/test_lead_custody_protocol.py`; retain direct shared
+model validation in `custody_protocol.py`. A clarifying dependency comment is
+permitted there, but no new validation owner or behavior is required. No edits to
+`results.py`, runtime/store projection seams, pack-kit tests, public exports,
+dependencies or existing workflow contracts. No new outer field, custody state,
+reason or state-table row. No R2-R5 work, machine-boundary change, action execution
+or production adoption. Broader changes require Juan's separate acceptance.
+
+Before adapting the fixtures, run the merged owner's source/receipt/runtime-result
+parity lane unchanged. Preserve the failing R1 integration probe. Then:
+
+1. Update the single fixture owner to schema `2.0` and explicit `actions=[]` for
+   the existing no-action cases; no parser fallback or caller-specific shim.
+2. Prove empty, single and eight valid actions, each status and mixed statuses
+   round-trip without altering any custody field or reason. Include retained,
+   unavailable and unknown content for accepted workflows; keep no-match and
+   not-found empty. Reject nine actions, duplicate IDs, missing/null/unknown
+   entries, wrong types, kind/status/version and extra fields through the shared
+   owner. Isolate each corrupt input so an earlier guard cannot mask the target.
+3. Revalidate nested copied/mutated action values at canonical encoding. Keep the
+   untrusted-value, input-free-error and no-application-I/O probes intact.
+4. Retain a size fixture with eight **failed** actions, an 80-emoji stage and
+   maximum custody revisions/workflow state version. At the integration pin this
+   probe encodes to **3244 raw bytes**, not an assumed value from another fixture.
+   Also cover eight longest-label **settled** actions, an 80-character maximally
+   JSON-escaped stage, unavailable/expired content and maximum artifact size:
+   **3423 raw bytes**, **6363 wrapped bytes** with a maximally escaped display name.
+   Keep the **4096-byte** custody cap and the real **16384-byte** action bound.
+   Test maximum raw result padding through the actual Connect/action encoders too;
+   these are value/encoding proofs, not a delivery guarantee.
+5. Run the focused R1 file, unchanged adjacent parity, semantic guard mutants,
+   lint/format and both existing native CI jobs. The original failing integration
+   case must pass before sign-off. Record the integrated head; old branch CI
+   cannot qualify the new dependency.
+
+Rollback before adoption is to leave the unused R1 vocabulary unmerged/disabled;
+do not revert the shared action-result owner or strip its fields. The integration
+finding closes only after the re-pin is accepted, consumer fixtures are corrected,
+regression proofs pass and exact-head reviews reconcile. This contract commit
+alone does not repair the failing tests or make PR #50 merge-ready.
+
+
+### R1 re-pin implementation evidence
+
+The accepted fixture repair updates only the R1 test owner and this execution
+record after the acceptance-only commit. The shared lookup validator and all
+production code remain unchanged. The outer custody schema/state table, source
+and receipt owners, workflows and dependencies also remain unchanged.
+
+The integration failure originated in the old lookup fixture introduced in
+`f540b41a8f466b22336f1370b11e1c16fcb27c08`; it assumed the prior shared schema.
+Updating that single fixture to the accepted dependency restores all 632 existing
+custody tests, with no compatibility shim. The original isolated failing receipt
+probe now passes. The application-I/O probe also passes with coverage enabled.
+
+The prepare-fence coverage omission originated in the same R1 implementation:
+control requests had negative revision tests, but prepare had no non-null negative.
+The existing suite accepted an in-memory mutation widening prepare's fence to an
+optional revision. The new isolated negative catches that mutation with an
+expected missing-rejection assertion. No production guard was missing and no
+production change or earlier workaround needed removal.
+
+The final local combined custody/source/auth/receipt/lookup lane passes 1417 tests.
+Focused custody tests pass 710 cases; lint and format checks pass. The preserved
+counterfactual harness plus prepare and shared-lookup probes catch 36 intended
+guard mutations. New cases cover valid/mixed action snapshots, isolated invalid
+arrays/items, copied or mutated nested values, the pinned byte fixtures, and the
+unchanged custody meanings. Durable evidence alias:
+`lead-custody-workflow-repin/implementation`.
+
+This closes the local reproduction and regression work only. Integrated Linux
+and Windows CI and final exact-head oversight/connector review remain pending;
+there is no receiver activation, native qualification or later-slice work here.
+
+### R1 guard-coverage closure evidence
+
+The follow-up test-only repair starts from published
+`6c3174997b544eb9a931b8346560ce916c56d5d4`. The coverage defect originates in
+the test design introduced by `f540b41a8f466b22336f1370b11e1c16fcb27c08`:
+whole-guard mutations and one-caller fixtures did not independently exercise
+sibling clauses and parser/matcher entry points. Eleven clause mutations survive
+the complete 710-case published suite in a clean pinned checkout. Production
+guards already implement the accepted behavior; no production fix or downstream
+workaround is needed.
+
+The repair extends the existing semantic-guard table and operation matrix, and
+centralizes bounded, input-free parser refusals in one assertion helper. It covers
+custodied capture presence; required control fences including settle; closed
+unresolved codes; exact bytes; duplicate members in otherwise-valid top-level and
+nested documents; independent revalidation of both matcher arguments after model
+construction, copying or mutation; and valid capture/observation equality. The
+equality fixture uses the receipt owner's required six fractional timestamp
+digits. These additions change neither contract meaning nor production behavior.
+
+The final focused suite passes **775 tests with coverage enabled**; Ruff lint and
+format pass. All **11** previously surviving clause mutations now fail through
+their intended assertions, with call-phase failure checks excluding setup/import
+errors. The retained **36** guard/lookup/prepare mutations still fail as intended:
+**47** counterfactual proofs in total. The earlier combined 1417-test result above
+remains evidence for its original tested revision; it was not rerun for this
+test-only change. No production, dependency or workflow files changed.
+
+Durable evidence alias: `custody-guard-regressions`, manifest SHA-256
+`da11708629634c8b0b3f02e6a2f75db1ce552d57ad65edcf7e1143c566db3ac1`.
+The manifest maps review cases to isolated mutants and records both before and
+after runs. It explicitly excludes an abandoned baseline contaminated by edits
+in another checkout; all baseline claims above use the fresh pinned checkout.
+Fresh exact-head Linux/Windows CI and independent reviews remain merge gates.
