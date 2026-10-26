@@ -3,6 +3,7 @@
 import hashlib
 import json
 from copy import deepcopy
+from datetime import datetime
 
 import pytest
 from test_lead_source import encode, envelope
@@ -13,6 +14,20 @@ OTHER = "00000000-0000-4000-8000-000000000002"
 
 def wire(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+
+
+def assert_input_free_refusal(call):
+    from connect_automate.lead_intake import custody_protocol as cp
+
+    with pytest.raises(Exception) as exc:
+        call()
+    assert type(exc.value) is cp.CustodyInputError, "wrong input refusal class"
+    assert str(exc.value) == "invalid custody protocol input"
+    assert exc.value.__context__ is None and exc.value.__cause__ is None
+
+
+def unresolved(code="unknown"):
+    return dict(schema_version="1.0", status="unresolved", handoff_id=ID, code=code)
 
 
 def route():
@@ -211,6 +226,14 @@ GUARDS = [
     ("prepared-capture", "result", result, ("capture",), capture(), "prepared capture present"),
     ("capture-required", "result", pending, ("capture",), None, "required capture absent"),
     (
+        "custodied-capture-required",
+        "result",
+        custodied,
+        ("capture",),
+        None,
+        "required capture absent",
+    ),
+    (
         "capture-time",
         "result",
         pending,
@@ -342,10 +365,13 @@ def test_isolated_semantic_guard(name, kind, factory, path, value, message):
     data = factory()
     assert cls.model_validate(data).model_dump(by_alias=True) == data
     set_path(data, path, value)
-    with pytest.raises(ValidationError) as exc:
+    with pytest.raises(Exception) as exc:
         cls.model_validate(data)
+    assert type(exc.value) is ValidationError, "wrong validation refusal class"
     # Prove this exact validator caught it, not an earlier shape/type guard.
     assert [e["msg"] for e in exc.value.errors()] == ["Value error, " + message]
+    if kind == "result":
+        assert_input_free_refusal(lambda: cp.parse_untrusted_result(wire(data)))
 
 
 @pytest.mark.parametrize("phase", ["prepared", "upload_possible", "custodied", "fenced_empty"])
@@ -418,7 +444,7 @@ def test_fenced_empty_preserves_capture_if_pinned(captured):
 def test_unresolved_has_no_invented_state(code):
     from connect_automate.lead_intake import custody_protocol as cp
 
-    data = dict(schema_version="1.0", status="unresolved", handoff_id=ID, code=code)
+    data = unresolved(code)
     assert cp.canonical_result(cp.parse_untrusted_result(wire(data))) == wire(data)
     for field, value in result().items():
         if field in data:
@@ -648,10 +674,7 @@ def test_signature_rotation_preserves_payload_but_not_envelope_identity():
 def test_parser_errors_are_input_free(parser, raw):
     from connect_automate.lead_intake import custody_protocol as cp
 
-    with pytest.raises(cp.CustodyInputError) as exc:
-        getattr(cp, parser)(raw)
-    assert str(exc.value) == "invalid custody protocol input"
-    assert exc.value.__context__ is None and exc.value.__cause__ is None
+    assert_input_free_refusal(lambda: getattr(cp, parser)(raw))
 
 
 def test_unknown_input_does_not_leak_in_errors():
@@ -662,10 +685,7 @@ def test_unknown_input_does_not_leak_in_errors():
         (result(), cp.parse_untrusted_result),
     ]:
         data["SYNTHETIC-PRIVATE"] = "SYNTHETIC-PRIVATE"
-        with pytest.raises(cp.CustodyInputError) as exc:
-            parser(wire(data))
-        assert "SYNTHETIC-PRIVATE" not in repr(exc.value)
-        assert exc.value.__context__ is None
+        assert_input_free_refusal(lambda parser=parser, data=data: parser(wire(data)))
 
 
 @pytest.mark.parametrize("kind", ["request", "result"])
@@ -774,14 +794,40 @@ def test_encoded_result_fits_actual_connect_and_action_owners():
     assert len(encoded.encode()) <= MAX_ACTION_BYTES
 
 
+@pytest.mark.parametrize("operation", ["upload", "status", "resume", "settle"])
 @pytest.mark.parametrize("value", [0, False, "", None, -1, 2147483648, "1", 1.0])
-def test_control_generation_rejects_default_defeat(value):
+def test_control_generation_rejects_default_defeat(operation, value):
+    from pydantic import ValidationError
+
     from connect_automate.lead_intake import custody_protocol as cp
 
-    data = request("status")
+    data = request(operation)
+    cls = type(cp.parse_untrusted_request(wire(data)))
     data["expected_fence_generation"] = value
-    with pytest.raises(cp.CustodyInputError):
-        cp.parse_untrusted_request(wire(data))
+    expected_type = (
+        "greater_than_equal"
+        if type(value) is int and value < 1
+        else "less_than_equal"
+        if type(value) is int and value > 2147483647
+        else "int_type"
+    )
+    with pytest.raises(ValidationError) as exc:
+        cls.model_validate(data)
+    assert [(e["loc"], e["type"]) for e in exc.value.errors()] == [
+        (("expected_fence_generation",), expected_type)
+    ]
+    assert_input_free_refusal(lambda: cp.parse_untrusted_request(wire(data)))
+
+
+@pytest.mark.parametrize("operation", ["upload", "status", "resume", "settle"])
+@pytest.mark.parametrize("generation", [1, 2147483646, 2147483647])
+def test_control_generation_valid_boundaries(operation, generation):
+    from connect_automate.lead_intake import custody_protocol as cp
+
+    data = request(operation)
+    data["expected_fence_generation"] = generation
+    raw = wire(data)
+    assert cp.canonical_request(cp.parse_untrusted_request(raw)) == raw
 
 
 @pytest.mark.parametrize("operation", ["prepare", "upload", "status", "resume", "settle"])
@@ -1215,7 +1261,7 @@ def test_unresolved_cannot_carry_action_observations(field):
 
     from connect_automate.lead_intake import custody_protocol as cp
 
-    data = dict(schema_version="1.0", status="unresolved", handoff_id=ID, code="unknown")
+    data = unresolved()
     assert cp.canonical_result(cp.parse_untrusted_result(wire(data))) == wire(data)
     data[field] = (
         known_with_actions("failed")["workflow"]
@@ -1249,3 +1295,113 @@ def test_eight_action_size_fixtures(maximal):
     wrapped = _canonical_payload(CapabilityResult((output,)).store_dict(), label="result")
     assert len(wrapped.encode()) == (6363 if maximal else 6127)
     assert len(wrapped.encode()) < MAX_ACTION_BYTES
+
+
+@pytest.mark.parametrize("code", ["unlisted", "UNKNOWN", "", None, False, 0])
+def test_unresolved_codes_are_closed(code):
+    from pydantic import ValidationError
+
+    from connect_automate.lead_intake import custody_protocol as cp
+
+    assert cp.canonical_result(cp.parse_untrusted_result(wire(unresolved()))) == wire(unresolved())
+    data = unresolved(code)
+    with pytest.raises(ValidationError) as exc:
+        cp.UnresolvedResult.model_validate(data)
+    assert [(e["loc"], e["type"]) for e in exc.value.errors()] == [(("code",), "literal_error")]
+    assert_input_free_refusal(lambda: cp.parse_untrusted_result(wire(data)))
+
+
+@pytest.mark.parametrize("kind", ["request", "result"])
+@pytest.mark.parametrize("container", ["bytearray", "memoryview", "subclass"])
+def test_parsers_require_exact_bytes(kind, container):
+    from connect_automate.lead_intake import custody_protocol as cp
+
+    class BytesSubclass(bytes):
+        pass
+
+    raw = wire(request() if kind == "request" else unresolved())
+    parse = getattr(cp, "parse_untrusted_" + kind)
+    assert getattr(cp, "canonical_" + kind)(parse(raw)) == raw
+    changed_type = {"bytearray": bytearray, "memoryview": memoryview, "subclass": BytesSubclass}
+    assert_input_free_refusal(lambda: parse(changed_type[container](raw)))
+
+
+@pytest.mark.parametrize(
+    "surface", ["request-top", "request-nested", "result-top", "result-nested"]
+)
+@pytest.mark.parametrize("repeated_value", [False, True], ids=["different", "same"])
+def test_duplicate_members_in_otherwise_valid_input(surface, repeated_value):
+    from connect_automate.lead_intake import custody_protocol as cp
+
+    if surface.startswith("request"):
+        data, parse = request(), cp.parse_untrusted_request
+        field = "job_id" if surface == "request-top" else "message_id"
+        value = data[field] if surface == "request-top" else data["payload"]["source"][field]
+        first = OTHER if surface == "request-top" else "other-message"
+    else:
+        data, parse = (
+            (unresolved() if surface == "result-top" else known()),
+            cp.parse_untrusted_result,
+        )
+        field = "code" if surface == "result-top" else "stage"
+        value = data[field] if surface == "result-top" else data["workflow"][field]
+        first = "refused" if surface == "result-top" else "other-stage"
+    raw = wire(data)
+    assert parse(raw).model_dump(by_alias=True) == data
+    member = wire({field: value})[1:-1]
+    assert raw.count(member) == 1
+    duplicate = wire({field: value if repeated_value else first})[1:-1] + b"," + member
+    corrupted = raw.replace(member, duplicate, 1)
+    # Without the duplicate-member guard this is a fully valid last-wins document.
+    assert json.loads(corrupted) == data
+    assert_input_free_refusal(lambda: parse(corrupted))
+
+
+@pytest.mark.parametrize("target", ["upload", "prepare"])
+@pytest.mark.parametrize("mode", ["construct", "copy", "mutate"])
+def test_upload_matcher_revalidates_each_input(target, mode):
+    from connect_automate.lead_intake import custody_protocol as cp
+    from connect_automate.lead_intake.source import canonical_source, parse_untrusted_source
+
+    source = canonical_source(parse_untrusted_source(encode(envelope())))
+    inputs = {
+        name: cp.parse_untrusted_request(wire(request(name))) for name in ("upload", "prepare")
+    }
+    assert (
+        canonical_source(cp.match_untrusted_upload(inputs["upload"], inputs["prepare"], source))
+        == source
+    )
+    value = inputs[target]
+    # This field is not consulted by _match_upload: only request revalidation can
+    # reject it. All identity, source and capture comparisons still agree.
+    changes = {"proof_reference": "SYNTHETIC-PRIVATE"}
+    if mode == "construct":
+        inputs[target] = type(value).model_construct(**{**value.__dict__, **changes})
+    elif mode == "copy":
+        inputs[target] = value.model_copy(update=changes)
+    else:
+        object.__setattr__(value, "proof_reference", changes["proof_reference"])
+    assert_input_free_refusal(
+        lambda: cp.match_untrusted_upload(inputs["upload"], inputs["prepare"], source)
+    )
+
+
+@pytest.mark.parametrize("phase", ["upload_possible", "custodied"])
+def test_capture_at_observation_is_valid(phase):
+    from connect_automate.lead_intake import custody_protocol as cp
+
+    data = pending() if phase == "upload_possible" else custodied()
+    data["observed_at"] = data["capture"]["captured_at"]
+    if data["source_receipt"] is not None:
+        # Receipt decision times require microseconds; preserve the same instant.
+        data["source_receipt"]["accepted_at"] = (
+            datetime.fromisoformat(data["observed_at"])
+            .isoformat(timespec="microseconds")
+            .replace("+00:00", "Z")
+        )
+    raw = wire(data)
+    try:
+        parsed = cp.parse_untrusted_result(raw)
+    except Exception as error:
+        pytest.fail(f"valid equality boundary rejected: {type(error).__name__}")
+    assert cp.canonical_result(parsed) == raw

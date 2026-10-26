@@ -652,3 +652,38 @@ unchanged custody meanings. Durable evidence alias:
 This closes the local reproduction and regression work only. Integrated Linux
 and Windows CI and final exact-head oversight/connector review remain pending;
 there is no receiver activation, native qualification or later-slice work here.
+
+### R1 guard-coverage closure evidence
+
+The follow-up test-only repair starts from published
+`6c3174997b544eb9a931b8346560ce916c56d5d4`. The coverage defect originates in
+the test design introduced by `f540b41a8f466b22336f1370b11e1c16fcb27c08`:
+whole-guard mutations and one-caller fixtures did not independently exercise
+sibling clauses and parser/matcher entry points. Eleven clause mutations survive
+the complete 710-case published suite in a clean pinned checkout. Production
+guards already implement the accepted behavior; no production fix or downstream
+workaround is needed.
+
+The repair extends the existing semantic-guard table and operation matrix, and
+centralizes bounded, input-free parser refusals in one assertion helper. It covers
+custodied capture presence; required control fences including settle; closed
+unresolved codes; exact bytes; duplicate members in otherwise-valid top-level and
+nested documents; independent revalidation of both matcher arguments after model
+construction, copying or mutation; and valid capture/observation equality. The
+equality fixture uses the receipt owner's required six fractional timestamp
+digits. These additions change neither contract meaning nor production behavior.
+
+The final focused suite passes **775 tests with coverage enabled**; Ruff lint and
+format pass. All **11** previously surviving clause mutations now fail through
+their intended assertions, with call-phase failure checks excluding setup/import
+errors. The retained **36** guard/lookup/prepare mutations still fail as intended:
+**47** counterfactual proofs in total. The earlier combined 1417-test result above
+remains evidence for its original tested revision; it was not rerun for this
+test-only change. No production, dependency or workflow files changed.
+
+Durable evidence alias: `custody-guard-regressions`, manifest SHA-256
+`da11708629634c8b0b3f02e6a2f75db1ce552d57ad65edcf7e1143c566db3ac1`.
+The manifest maps review cases to isolated mutants and records both before and
+after runs. It explicitly excludes an abandoned baseline contaminated by edits
+in another checkout; all baseline claims above use the fresh pinned checkout.
+Fresh exact-head Linux/Windows CI and independent reviews remain merge gates.
