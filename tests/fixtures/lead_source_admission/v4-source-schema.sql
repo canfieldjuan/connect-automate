@@ -1,0 +1,25 @@
+-- Frozen source schema at f6bb9ecf35d6a746ae17ea0e3862216ec4744426.
+CREATE TABLE deployment (singleton INTEGER PRIMARY KEY CHECK(singleton=1), host_id TEXT NOT NULL, organization_id TEXT NOT NULL) STRICT;
+CREATE TABLE authority_history (generation INTEGER PRIMARY KEY CHECK(generation BETWEEN 1 AND 2147483647), snapshot TEXT NOT NULL, sha256 TEXT NOT NULL) STRICT;
+CREATE TRIGGER deployment_no_update BEFORE UPDATE ON deployment BEGIN SELECT RAISE(ABORT, 'immutable'); END;
+CREATE TRIGGER deployment_no_delete BEFORE DELETE ON deployment BEGIN SELECT RAISE(ABORT, 'immutable'); END;
+CREATE TRIGGER history_no_update BEFORE UPDATE ON authority_history BEGIN SELECT RAISE(ABORT, 'immutable'); END;
+CREATE TRIGGER history_no_delete BEFORE DELETE ON authority_history BEGIN SELECT RAISE(ABORT, 'immutable'); END;
+CREATE TABLE source_receipts (admission_id TEXT PRIMARY KEY NOT NULL, organization_id TEXT NOT NULL, namespace_id TEXT NOT NULL, event_id TEXT NOT NULL, receipt TEXT NOT NULL, envelope_sha256 TEXT NOT NULL, UNIQUE(organization_id, namespace_id, event_id)) STRICT;
+CREATE TABLE source_content (admission_id TEXT PRIMARY KEY NOT NULL REFERENCES source_receipts(admission_id) DEFERRABLE INITIALLY DEFERRED, envelope BLOB NOT NULL) STRICT;
+CREATE TABLE source_custody (admission_id TEXT PRIMARY KEY NOT NULL REFERENCES source_receipts(admission_id) DEFERRABLE INITIALLY DEFERRED, identity TEXT NOT NULL, captured_at TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('retained','purged'))) STRICT;
+CREATE TRIGGER receipt_no_update BEFORE UPDATE ON source_receipts BEGIN SELECT RAISE(ABORT, 'immutable'); END;
+CREATE TRIGGER receipt_no_delete BEFORE DELETE ON source_receipts WHEN NOT EXISTS (SELECT 1 FROM source_retired WHERE namespace_id=OLD.namespace_id) BEGIN SELECT RAISE(ABORT, 'immutable'); END;
+CREATE TRIGGER content_no_update BEFORE UPDATE ON source_content BEGIN SELECT RAISE(ABORT, 'immutable'); END;
+CREATE TRIGGER custody_identity_no_update BEFORE UPDATE ON source_custody WHEN NEW.admission_id != OLD.admission_id OR NEW.identity != OLD.identity OR NEW.captured_at != OLD.captured_at OR OLD.state = 'purged' BEGIN SELECT RAISE(ABORT, 'immutable'); END;
+CREATE TRIGGER custody_no_delete BEFORE DELETE ON source_custody WHEN NOT EXISTS (SELECT 1 FROM source_receipts r JOIN source_retired n ON r.namespace_id=n.namespace_id WHERE r.admission_id=OLD.admission_id) BEGIN SELECT RAISE(ABORT, 'immutable'); END;
+CREATE TABLE authority_clock_history (sequence INTEGER PRIMARY KEY, kind TEXT NOT NULL CHECK(kind IN ('sample','reconcile')), old_floor TEXT, new_floor TEXT NOT NULL, generation INTEGER NOT NULL REFERENCES authority_history(generation), operation_id TEXT UNIQUE) STRICT;
+CREATE TRIGGER clock_no_update BEFORE UPDATE ON authority_clock_history BEGIN SELECT RAISE(ABORT, 'immutable'); END;
+CREATE TRIGGER clock_no_delete BEFORE DELETE ON authority_clock_history BEGIN SELECT RAISE(ABORT, 'immutable'); END;
+CREATE TABLE source_retired (namespace_id TEXT PRIMARY KEY NOT NULL, retired_at TEXT NOT NULL) STRICT;
+CREATE TRIGGER retired_no_update BEFORE UPDATE ON source_retired BEGIN SELECT RAISE(ABORT, 'immutable'); END;
+CREATE TRIGGER retired_no_delete BEFORE DELETE ON source_retired BEGIN SELECT RAISE(ABORT, 'immutable'); END;
+CREATE TABLE source_purge_horizons (identity TEXT PRIMARY KEY NOT NULL, namespace_id TEXT NOT NULL, cutoff TEXT NOT NULL) STRICT;
+CREATE TRIGGER horizon_monotonic BEFORE UPDATE ON source_purge_horizons WHEN NEW.identity != OLD.identity OR NEW.namespace_id != OLD.namespace_id OR NEW.cutoff <= OLD.cutoff BEGIN SELECT RAISE(ABORT, 'immutable'); END;
+CREATE TRIGGER horizon_no_delete BEFORE DELETE ON source_purge_horizons WHEN NOT EXISTS (SELECT 1 FROM source_retired WHERE namespace_id=OLD.namespace_id) BEGIN SELECT RAISE(ABORT, 'immutable'); END;
+PRAGMA user_version=4;

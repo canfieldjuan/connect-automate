@@ -3,7 +3,8 @@
 The host provisions a private root and supplies deployment scope. Every operation
 opens and validates that scope under one SQLite transaction owner. Public keys,
 not signing secrets, are retained in immutable publication history. The OS user
-is the trust boundary; this cannot detect replacement of the entire database.
+is the trust boundary. An expected incarnation detects a newly initialized
+replacement, not restoration of an older copy with the same identity.
 """
 
 from __future__ import annotations
@@ -21,12 +22,13 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from functools import wraps
 from pathlib import Path
+from uuid import uuid4
 
 from pydantic import TypeAdapter
 
 from ..entitlement import UuidV4
 from .auth import SourceAuthenticationError, SourceTrustSnapshot
-from .source import SourceIdentity
+from .source import Digest, Instant, SourceIdentity, _canonical
 
 
 class SourceStoreError(ValueError):
@@ -58,7 +60,7 @@ class SourceStoreUncertain(SourceStoreError):
     message = "lead source store commit uncertain"
 
 
-_SCHEMA = (
+_SCHEMA_V4 = (
     "CREATE TABLE deployment (singleton INTEGER PRIMARY KEY CHECK(singleton=1), "
     "host_id TEXT NOT NULL, organization_id TEXT NOT NULL) STRICT",
     "CREATE TABLE authority_history (generation INTEGER PRIMARY KEY "
@@ -120,8 +122,107 @@ _SCHEMA = (
     "WHEN NOT EXISTS (SELECT 1 FROM source_retired WHERE namespace_id=OLD.namespace_id) "
     "BEGIN SELECT RAISE(ABORT, 'immutable'); END",
 )
-_SCHEMA_VERSION = 4
+_CUSTODY_SCHEMA = (
+    "CREATE TABLE source_store_identity (singleton INTEGER PRIMARY KEY CHECK(singleton=1), "
+    "incarnation TEXT NOT NULL UNIQUE) STRICT",
+    "CREATE TRIGGER incarnation_no_update BEFORE UPDATE ON source_store_identity "
+    "BEGIN SELECT RAISE(ABORT, 'immutable'); END",
+    "CREATE TRIGGER incarnation_no_delete BEFORE DELETE ON source_store_identity "
+    "BEGIN SELECT RAISE(ABORT, 'immutable'); END",
+    "CREATE TABLE source_handoffs (handoff_id TEXT PRIMARY KEY NOT NULL, "
+    "incarnation TEXT NOT NULL REFERENCES source_store_identity(incarnation), "
+    "host_id TEXT NOT NULL, organization_id TEXT NOT NULL, namespace_id TEXT NOT NULL, "
+    "event_id TEXT NOT NULL, route_digest TEXT NOT NULL, enrolled_machine_id TEXT NOT NULL, "
+    "intent TEXT NOT NULL, intent_sha256 TEXT NOT NULL, reservation_expires_at TEXT NOT NULL, "
+    "capture TEXT, generation INTEGER NOT NULL CHECK(generation IN (1,2)), "
+    "revision INTEGER NOT NULL CHECK(revision BETWEEN 1 AND 2147483647), "
+    "closed INTEGER NOT NULL CHECK(closed IN (0,1)), admission_id TEXT UNIQUE, "
+    "ever_custodied INTEGER NOT NULL CHECK(ever_custodied IN (0,1)), "
+    "UNIQUE(organization_id, namespace_id, event_id), "
+    "CHECK(generation=closed+1 AND revision>=generation), "
+    "CHECK(ever_custodied=(admission_id IS NOT NULL)), "
+    "CHECK(ever_custodied=0 OR capture IS NOT NULL)) STRICT",
+    "CREATE TRIGGER handoff_no_delete BEFORE DELETE ON source_handoffs "
+    "BEGIN SELECT RAISE(ABORT, 'immutable'); END",
+    "CREATE TRIGGER handoff_progress BEFORE UPDATE ON source_handoffs WHEN "
+    "NEW.handoff_id != OLD.handoff_id OR NEW.incarnation != OLD.incarnation OR "
+    "NEW.host_id != OLD.host_id OR NEW.organization_id != OLD.organization_id OR "
+    "NEW.namespace_id != OLD.namespace_id OR NEW.event_id != OLD.event_id OR "
+    "NEW.route_digest != OLD.route_digest OR NEW.enrolled_machine_id != OLD.enrolled_machine_id OR "
+    "NEW.intent != OLD.intent OR NEW.intent_sha256 != OLD.intent_sha256 OR "
+    "NEW.reservation_expires_at != OLD.reservation_expires_at OR "
+    "(OLD.capture IS NOT NULL AND NEW.capture IS NOT OLD.capture) OR "
+    "(OLD.admission_id IS NOT NULL AND NEW.admission_id IS NOT OLD.admission_id) OR "
+    "NEW.closed < OLD.closed OR NEW.ever_custodied < OLD.ever_custodied OR "
+    "NEW.revision <= OLD.revision BEGIN SELECT RAISE(ABORT, 'immutable'); END",
+    "CREATE TABLE source_handoff_operations (control_id TEXT PRIMARY KEY NOT NULL, "
+    "job_id TEXT NOT NULL UNIQUE, handoff_id TEXT NOT NULL REFERENCES source_handoffs(handoff_id), "
+    "kind TEXT NOT NULL CHECK(kind IN ('prepare','upload','settle')), "
+    "request TEXT NOT NULL, request_sha256 TEXT NOT NULL, "
+    "phase TEXT NOT NULL, revision INTEGER NOT NULL CHECK(revision BETWEEN 1 AND 2147483647), "
+    "UNIQUE(handoff_id, kind), CHECK((kind='prepare' AND phase='prepared') OR "
+    "(kind='upload' AND phase IN ('bound','admitted')) OR "
+    "(kind='settle' AND phase='closed'))) STRICT",
+    "CREATE TRIGGER operation_no_delete BEFORE DELETE ON source_handoff_operations "
+    "BEGIN SELECT RAISE(ABORT, 'immutable'); END",
+    "CREATE TRIGGER operation_progress BEFORE UPDATE ON source_handoff_operations WHEN "
+    "NEW.control_id != OLD.control_id OR NEW.job_id != OLD.job_id OR "
+    "NEW.handoff_id != OLD.handoff_id OR NEW.kind != OLD.kind OR "
+    "NEW.request != OLD.request OR NEW.request_sha256 != OLD.request_sha256 OR "
+    "OLD.phase != 'bound' OR NEW.phase != 'admitted' OR "
+    "NEW.revision <= OLD.revision BEGIN SELECT RAISE(ABORT, 'immutable'); END",
+)
+_SCHEMA = _SCHEMA_V4 + _CUSTODY_SCHEMA
+_SCHEMA_VERSION = 5
 _UUID = TypeAdapter(UuidV4)
+_DIGEST = TypeAdapter(Digest)
+_INSTANT = TypeAdapter(Instant)
+
+
+@dataclass(frozen=True)
+class SourceMigration:
+    applied: bool
+    incarnation: str
+
+
+@dataclass(frozen=True)
+class _ReceiptMetadata:
+    receipt: object
+    identity: SourceIdentity
+    captured_at: str
+    state: str
+    envelope_sha256: str
+
+
+@dataclass(frozen=True)
+class CustodyObservation:
+    """Source facts, never an R1 result or authorization to access content."""
+
+    handoff_id: str
+    scope: object
+    capture: object
+    fence_generation: int
+    state_revision: int
+    closed: bool
+    ever_custodied: bool
+    receipt: object | None
+    content_state: str
+
+
+def _metadata_authorizer(action, first, second, _database, _trigger):
+    if action == sqlite3.SQLITE_READ and first == "source_content" and second == "envelope":
+        return sqlite3.SQLITE_DENY
+    return (
+        sqlite3.SQLITE_OK
+        if action
+        in (
+            sqlite3.SQLITE_SELECT,
+            sqlite3.SQLITE_READ,
+            sqlite3.SQLITE_FUNCTION,
+            sqlite3.SQLITE_RECURSIVE,
+        )
+        else sqlite3.SQLITE_DENY
+    )
 
 
 @dataclass(frozen=True)
@@ -198,6 +299,40 @@ def _busy(error: sqlite3.Error) -> bool:
         sqlite3.SQLITE_BUSY,
         sqlite3.SQLITE_LOCKED,
     )
+
+
+@_boundary
+def _stored_request(raw, digest, kind):
+    """One decoder for immutable intent and operation fingerprints."""
+    from .custody_protocol import canonical_request, parse_untrusted_request
+
+    if kind not in ("prepare", "upload", "settle"):
+        raise SourceStoreUnavailable()
+    value = parse_untrusted_request(raw.encode())
+    if value.operation != kind:
+        raise SourceStoreUnavailable()
+    if canonical_request(value).decode() != raw:
+        raise SourceStoreUnavailable()
+    if hashlib.sha256(raw.encode()).hexdigest() != digest:
+        raise SourceStoreUnavailable()
+    return value
+
+
+@_boundary
+def _handoff_state(capture, generation, revision, closed, admission, ever):
+    """Storage state invariant, before any cross-row or caller comparisons."""
+    if (
+        closed not in (0, 1)
+        or ever not in (0, 1)
+        or generation != closed + 1
+        or revision > 2147483647
+        or bool(ever) != (admission is not None)
+        or (ever and capture is None)
+        or revision < 1 + int(capture is not None) + ever + closed
+    ):
+        raise SourceStoreUnavailable()
+    if admission is not None:
+        _UUID.validate_python(admission)
 
 
 class _IdentityHistory:
@@ -336,7 +471,9 @@ class SourceStore:
                     raise SourceStoreBusy()
                 time.sleep(min(0.01, remaining))
 
-    def _schema(self, db: sqlite3.Connection, *, allow_empty: bool = False) -> bool:
+    def _schema(
+        self, db: sqlite3.Connection, *, allow_empty: bool = False, allow_v4: bool = False
+    ) -> bool:
         found = sorted(
             row[0]
             for row in db.execute(
@@ -346,7 +483,9 @@ class SourceStore:
         version = db.execute("PRAGMA user_version").fetchone()[0]
         if not found and version == 0 and allow_empty:
             return False
-        if found != sorted(_SCHEMA) or version != _SCHEMA_VERSION:
+        expected = _SCHEMA_V4 if allow_v4 and version == 4 else _SCHEMA
+        versions = (4, _SCHEMA_VERSION) if allow_v4 else (_SCHEMA_VERSION,)
+        if found != sorted(expected) or version not in versions:
             raise SourceStoreUnavailable()
         return True
 
@@ -380,7 +519,9 @@ class SourceStore:
         return last, history
 
     @contextmanager
-    def _transaction(self, *, initialize: bool = False) -> Iterator[sqlite3.Connection]:
+    def _transaction(
+        self, *, initialize: bool = False, migrate: bool = False
+    ) -> Iterator[sqlite3.Connection]:
         if initialize:
             self._create()
         self._paths()
@@ -408,11 +549,13 @@ class SourceStore:
                 raise SourceStoreUnavailable()
             self._wait(db, "BEGIN IMMEDIATE", deadline)
             self._paths()
-            present = self._schema(db, allow_empty=initialize)
+            present = self._schema(db, allow_empty=initialize, allow_v4=migrate)
             if present:
                 self._authority(db)
                 self._clock_history(db)
                 self._lifecycle(db)
+                if db.execute("PRAGMA user_version").fetchone()[0] == _SCHEMA_VERSION:
+                    self._incarnation(db)
             yield db
             self._paths()
             failed = False
@@ -426,6 +569,297 @@ class SourceStore:
             with suppress(sqlite3.Error):
                 db.rollback()
             db.close()
+
+    def _incarnation(self, db: sqlite3.Connection, expected: str | None = None) -> str:
+        rows = db.execute("SELECT incarnation FROM source_store_identity").fetchall()
+        if len(rows) != 1:
+            raise SourceStoreUnavailable()
+        value = _UUID.validate_python(rows[0][0])
+        if expected is not None and value != expected:
+            raise SourceStoreConflict()
+        return value
+
+    @contextmanager
+    def _read_snapshot(self, *, expected_incarnation: str | None = None):
+        db = None
+        failure = None
+        try:
+            self._paths()
+            db = sqlite3.connect(
+                self.path.as_uri() + "?mode=ro", uri=True, timeout=0, isolation_level=None
+            )
+            deadline = time.monotonic() + self.busy_timeout_ms / 1000
+            self._wait(db, "PRAGMA query_only=ON", deadline)
+            self._wait(db, "BEGIN", deadline)
+            # Pin the snapshot before inspecting its version or yielding it.
+            self._wait(db, "SELECT sql FROM sqlite_master LIMIT 1", deadline)
+            self._schema(db)
+            if db.execute("PRAGMA journal_mode").fetchone()[0] != "wal":
+                raise SourceStoreUnavailable()
+            db.set_authorizer(_metadata_authorizer)
+            self._incarnation(db, expected_incarnation)
+            self._authority(db)
+            self._clock_history(db)
+            self._lifecycle(db)
+            yield db
+            self._paths()
+        except SourceStoreError as exc:
+            failure = type(exc)
+        except sqlite3.Error as exc:
+            failure = SourceStoreBusy if _busy(exc) else SourceStoreUnavailable
+        except (OSError, ValueError, TypeError, RecursionError):
+            failure = SourceStoreUnavailable
+        finally:
+            if db is not None:
+                db.close()
+        if failure is not None:
+            # A contextmanager receives a caller's active exception. Clear it.
+            try:
+                raise failure() from None
+            except SourceStoreError as error:
+                error.__context__ = None
+                raise
+
+    def _receipt_metadata(self, db, row) -> _ReceiptMetadata:
+        # Lazy import preserves the existing public receipt owner and import graph.
+        from .admission import SourceReceipt
+
+        ident, org, namespace, event, raw_receipt, envelope_hash = row
+        receipt = SourceReceipt.model_validate_json(raw_receipt)
+        if (
+            _canonical(receipt.model_dump(by_alias=True)).decode() != raw_receipt
+            or (
+                receipt.admission_id,
+                receipt.organization_id,
+                receipt.namespace_id,
+                receipt.event_id,
+            )
+            != (ident, org, namespace, event)
+            or (receipt.host_id, receipt.organization_id) != (self.host_id, self.organization_id)
+        ):
+            raise SourceStoreUnavailable()
+        _DIGEST.validate_python(envelope_hash)
+        custody = db.execute(
+            "SELECT identity, captured_at, state FROM source_custody WHERE admission_id=?",
+            (ident,),
+        ).fetchone()
+        if custody is None:
+            raise SourceStoreUnavailable()
+        identity_raw, captured_at, state = custody
+        identity = SourceIdentity.model_validate_json(identity_raw)
+        if _identity_text(identity) != identity_raw or identity.namespace_id != namespace:
+            raise SourceStoreUnavailable()
+        _INSTANT.validate_python(captured_at)
+        if datetime.fromisoformat(captured_at) > datetime.fromisoformat(receipt.accepted_at):
+            raise SourceStoreUnavailable()
+        exists = (
+            db.execute("SELECT 1 FROM source_content WHERE admission_id=?", (ident,)).fetchone()
+            is not None
+        )
+        if state not in ("retained", "purged") or exists != (state == "retained"):
+            raise SourceStoreUnavailable()
+        if (
+            db.execute(
+                "SELECT 1 FROM authority_history WHERE generation=?", (receipt.trust_generation,)
+            ).fetchone()
+            is None
+        ):
+            raise SourceStoreUnavailable()
+        return _ReceiptMetadata(receipt, identity, captured_at, state, envelope_hash)
+
+    def _validate_migration_rows(self, db):
+        from .admission import SourceAdmission
+
+        if db.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
+            raise SourceStoreUnavailable()
+        if db.execute("PRAGMA foreign_key_check").fetchone() is not None:
+            raise SourceStoreUnavailable()
+        for row in db.execute(
+            "SELECT admission_id, organization_id, namespace_id, event_id, receipt, "
+            "envelope_sha256 FROM source_receipts"
+        ):
+            metadata = self._receipt_metadata(db, row)
+            SourceAdmission._validate_content(db, metadata)
+        if db.execute("PRAGMA user_version").fetchone()[0] == _SCHEMA_VERSION:
+            for (ident,) in db.execute("SELECT handoff_id FROM source_handoffs"):
+                self._handoff_metadata(db, ident)
+
+    def _handoff_metadata(self, db, ident):
+        from .custody_protocol import CaptureReference
+
+        row = db.execute("SELECT * FROM source_handoffs WHERE handoff_id=?", (ident,)).fetchone()
+        if row is None:
+            return None
+        (
+            handoff,
+            incarnation,
+            host,
+            org,
+            namespace,
+            event,
+            route,
+            machine,
+            intent_raw,
+            intent_hash,
+            deadline,
+            capture_raw,
+            generation,
+            revision,
+            closed,
+            admission,
+            ever,
+        ) = row
+        prepared = _stored_request(intent_raw, intent_hash, "prepare")
+        scope = prepared.scope
+        if (handoff, host, org, namespace, event, route, machine) != (
+            prepared.handoff_id,
+            scope.host_id,
+            scope.organization_id,
+            scope.namespace_id,
+            scope.event_id,
+            scope.route_digest,
+            prepared.enrolled_machine_id,
+        ):
+            raise SourceStoreUnavailable()
+        if (host, org) != (self.host_id, self.organization_id):
+            raise SourceStoreUnavailable()
+        if incarnation != self._incarnation(db):
+            raise SourceStoreUnavailable()
+        _INSTANT.validate_python(deadline)
+        capture = None
+        if capture_raw is not None:
+            capture = CaptureReference.model_validate_json(capture_raw)
+            if _canonical(capture.model_dump()).decode() != capture_raw:
+                raise SourceStoreUnavailable()
+            if datetime.fromisoformat(capture.captured_at) >= datetime.fromisoformat(deadline):
+                raise SourceStoreUnavailable()
+        _handoff_state(capture, generation, revision, closed, admission, ever)
+        operations = {}
+        for control, job, op_handoff, kind, raw, digest, phase, op_revision in db.execute(
+            "SELECT * FROM source_handoff_operations WHERE handoff_id=?", (ident,)
+        ):
+            request = _stored_request(raw, digest, kind)
+            # UNIQUE(handoff_id, kind) in the exact manifest owns slot uniqueness.
+            if (control, job, op_handoff) != (
+                request.control_id,
+                request.job_id,
+                request.handoff_id,
+            ):
+                raise SourceStoreUnavailable()
+            if request.scope != scope or request.enrolled_machine_id != machine:
+                raise SourceStoreUnavailable()
+            if not 1 <= op_revision <= revision:
+                raise SourceStoreUnavailable()
+            if kind == "prepare":
+                if raw != intent_raw or phase != "prepared" or op_revision != 1:
+                    raise SourceStoreUnavailable()
+            elif kind == "upload":
+                if (
+                    request.payload.capture != capture
+                    or request.expected_fence_generation != 1
+                    or phase != ("admitted" if ever else "bound")
+                    or op_revision < 2 + ever
+                ):
+                    raise SourceStoreUnavailable()
+            elif (
+                not closed
+                or phase != "closed"
+                or request.expected_fence_generation not in (1, 2)
+                or (request.payload.capture is not None and request.payload.capture != capture)
+            ):
+                raise SourceStoreUnavailable()
+            operations[kind] = request
+        if "prepare" not in operations or (capture is not None and "upload" not in operations):
+            raise SourceStoreUnavailable()
+        receipt_row = db.execute(
+            "SELECT admission_id, organization_id, namespace_id, event_id, receipt, "
+            "envelope_sha256 FROM source_receipts "
+            "WHERE organization_id=? AND namespace_id=? AND event_id=?",
+            (org, namespace, event),
+        ).fetchone()
+        receipt = None
+        content_state = "unknown" if ever else "not_received"
+        if receipt_row is not None:
+            if receipt_row[0] != admission:
+                raise SourceStoreUnavailable()
+            metadata = self._receipt_metadata(db, receipt_row)
+            receipt = metadata.receipt
+            if (
+                metadata.envelope_sha256 != capture.envelope_sha256
+                or receipt.payload_digest != capture.payload_digest
+                or metadata.identity != prepared.payload.source
+                or metadata.captured_at != capture.captured_at
+                or receipt.recovery_deadline != capture.recovery_deadline
+                or receipt.policy_id != prepared.payload.policy_id
+                or receipt.policy_version != prepared.payload.policy_version
+            ):
+                raise SourceStoreUnavailable()
+            content_state = metadata.state
+        elif admission is not None:
+            retired, _ = self._lifecycle(db)
+            if namespace not in retired:
+                raise SourceStoreUnavailable()
+        return CustodyObservation(
+            handoff,
+            scope,
+            capture,
+            generation,
+            revision,
+            bool(closed),
+            bool(ever),
+            receipt,
+            content_state,
+        ), prepared.enrolled_machine_id
+
+    def _observe_custody(self, db, handoff_id, scope, machine, capture):
+        result = self._handoff_metadata(db, handoff_id)
+        if result is None:
+            return None
+        facts, recorded_machine = result
+        if facts.scope != scope or recorded_machine != machine:
+            raise SourceStoreConflict()
+        if capture is not None and facts.capture != capture:
+            raise SourceStoreConflict()
+        return facts
+
+    def _lookup_receipt(self, db, identity, event_id, payload_digest, envelope_sha256):
+        row = db.execute(
+            "SELECT admission_id, organization_id, namespace_id, event_id, receipt, "
+            "envelope_sha256 FROM source_receipts "
+            "WHERE organization_id=? AND namespace_id=? AND event_id=?",
+            (self.organization_id, identity.namespace_id, event_id),
+        ).fetchone()
+        if row is None:
+            return None
+        metadata = self._receipt_metadata(db, row)
+        if (
+            metadata.identity != identity
+            or metadata.receipt.payload_digest != payload_digest
+            or metadata.envelope_sha256 != envelope_sha256
+        ):
+            raise SourceStoreConflict()
+        return metadata
+
+    @_boundary
+    def migrate(self) -> SourceMigration:
+        """Explicit privileged upgrade; never initializes or repairs invalid storage."""
+        with self._transaction(migrate=True) as db:
+            self._validate_migration_rows(db)
+            applied = db.execute("PRAGMA user_version").fetchone()[0] == 4
+            if applied:
+                for statement in _CUSTODY_SCHEMA:
+                    db.execute(statement)
+                db.execute("INSERT INTO source_store_identity VALUES (1, ?)", (str(uuid4()),))
+                db.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
+            self._schema(db)
+            result = SourceMigration(applied, self._incarnation(db))
+        return result
+
+    @_boundary
+    def read_incarnation(self) -> str:
+        """Explicit host setup only; never substitute this for an expected binding."""
+        with self._read_snapshot() as db:
+            return self._incarnation(db)
 
     def _lifecycle(self, db: sqlite3.Connection):
         retired, horizons = set(), {}
@@ -550,6 +984,7 @@ class SourceStore:
                 "INSERT INTO deployment VALUES (1, ?, ?)", (self.host_id, self.organization_id)
             )
             self._insert(db, authority)
+            db.execute("INSERT INTO source_store_identity VALUES (1, ?)", (str(uuid4()),))
             self._schema(db)
             self._authority(db)
         return True
