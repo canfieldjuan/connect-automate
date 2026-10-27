@@ -2144,3 +2144,84 @@ def test_managed_prepare_expiry_at_final_sample(private_root):
     with pytest.raises(SourceAuthenticationError):
         access.register_intent(prepared, reservation_expires_at=RESERVATION)
     assert snapshot(owner) == before
+
+
+@pytest.mark.parametrize("registered", [False, True])
+def test_managed_retired_namespace_refuses_registration_without_rows(private_root, registered):
+    from connect_automate.lead_intake.auth import SourceAuthenticationError
+
+    owner, access, prepared = managed_setup(private_root)
+    if registered:
+        access.register_intent(prepared, reservation_expires_at=RESERVATION)
+    assert SourceContent(owner, clock=lambda: NOW).retire_namespace(prepared.scope.namespace_id)
+    before = snapshot(owner)
+    counts = tuple(len(before[table]) for table in ("source_handoffs", "source_handoff_operations"))
+    assert counts == ((1, 1) if registered else (0, 0))
+    for _ in range(2):
+        # Reopen so the exact retry must respect durable retirement as well.
+        reopened = reader(store(private_root), clock=lambda: NOW)
+        with pytest.raises(SourceAuthenticationError):
+            reopened.register_intent(prepared, reservation_expires_at=RESERVATION)
+        after = snapshot(owner)
+        assert tuple(
+            len(after[table]) for table in ("source_handoffs", "source_handoff_operations")
+        ) == counts
+        assert after == before
+
+
+@pytest.mark.parametrize("cutoff_offset", [0, 1])
+@pytest.mark.parametrize(
+    "field,changed",
+    [
+        ("provider", "other-provider"),
+        ("account_id", "other-account"),
+        ("mailbox_identity_key", "f" * 64),
+        ("message_id", "other-message"),
+    ],
+)
+def test_managed_purge_preserves_other_bound_identity(private_root, field, changed, cutoff_offset):
+    from datetime import datetime, timedelta
+
+    from connect_automate.lead_intake.auth import SourceAuthenticationError
+
+    owner, access, prepared, upload, raw, _ = upload_setup(private_root)
+    other_value = envelope()
+    other_value["payload"]["event_id"] = str(uuid4())
+    other_source = other_value["payload"]["source"]
+    other_source[field] = changed
+    resign(other_value)
+    if field != "message_id":
+        grants = trust().model_dump()["key_grants"]
+        grants[0]["mailboxes"] = [
+            *grants[0]["mailboxes"],
+            tuple(other_source[key] for key in ("provider", "account_id", "mailbox_identity_key")),
+        ]
+        owner.publish_authority(next_snapshot(key_grants=grants), expected_generation=1)
+    other = managed_request(other_value)
+    assert other.scope.namespace_id == prepared.scope.namespace_id
+    assert other.payload.source != prepared.payload.source
+    access.register_intent(other, reservation_expires_at=RESERVATION)
+    other_upload = managed_operation(other, "upload", capture(other_value))
+    other_before = access.bind_upload(other_upload)
+    target_before = observe(access, prepared)
+    assert other_before.capture.captured_at == target_before.capture.captured_at
+    cutoff = datetime.fromisoformat(target_before.capture.captured_at) + timedelta(
+        seconds=cutoff_offset
+    )
+    assert SourceContent(owner, clock=lambda: NOW).purge_message(
+        prepared.payload.source, cutoff=cutoff
+    )
+    reopened = reader(store(private_root), clock=lambda: NOW)
+    target_after, other_after = observe(reopened, prepared), observe(reopened, other)
+    assert target_after.closed
+    assert target_after.fence_generation == target_before.fence_generation + 1
+    assert target_after.state_revision == target_before.state_revision + 1
+    assert not other_after.closed
+    assert other_after.fence_generation == other_before.fence_generation
+    assert other_after.state_revision == other_before.state_revision
+    assert other_after == other_before
+    with pytest.raises(SourceAuthenticationError):
+        reopened.admit_bound(upload, raw)
+    admitted = reopened.admit_bound(other_upload, encode(other_value))
+    assert admitted.applied
+    assert observe(reopened, other).receipt == admitted.receipt
