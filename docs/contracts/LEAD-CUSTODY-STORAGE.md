@@ -1,6 +1,6 @@
 # R2: source-owned custody resolution and durable fences
 
-Status: **ACCEPTED R2 work order; implementation has not started.**
+Status: **ACCEPTED R2 work order; migration/read-only slice implemented, qualification pending.**
 Juan selected “This lead-intake session (recommended)” as its sole owner, using
 pack-kit's preserved draft as input. On 2026-10-26 he directly instructed this
 session, “I approve the contract lets check oversight”. This accepts PR #51's
@@ -97,8 +97,8 @@ Historical test totals are not fresh qualification of this base.
 The implementation proposal is limited to the source library, its tests and CI
 selection. New names below are proposed private APIs, not existing capabilities.
 Source paths in this table are relative to `src/connect_automate/`; test, fixture,
-workflow and documentation paths are repository-relative. This PR edits only
-this document and the parent contract's status/continuation pointers.
+workflow and documentation paths are repository-relative. The original contract
+PR edited only this document and the parent contract's status/continuation pointers.
 
 | Owner | Required change |
 | --- | --- |
@@ -380,7 +380,7 @@ fixtures, expected outcomes or source authentication policy.
 
 ### Explicit non-scope and assumptions/blockers
 
-- No executable edits in this PR. No new service, capability registration,
+- No executable edits in the original contract PR (#51). No new service, capability registration,
   enrollment/proof wire format, HTTP endpoint, scheduler or live mailbox.
 - No Watcher, EOM, Atlas, application pin, release/catalogue, keyring or production
   key changes. No pack/action-result owner changes, extraction or lead creation.
@@ -433,30 +433,117 @@ Preserve the source clock-floor/final-auth checks after waits, including expiry,
 revocation and backward/forward movement. Use short test parameter IDs and
 explicit UTF-8 fixture reads on both platforms from the first executable push.
 Run focused regression/adjacent files plus Ruff during iteration; do not repeatedly
-rerun unrelated broad matrices. No tests were run for this documentation-only PR.
+rerun unrelated broad matrices. No tests were run for the original contract-only
+PR; implementation evidence is recorded below.
 
 ## Implementation summary
 
-This change adds the accepted R2 contract, its acceptance-only record and a
-continuation pointer/status update in the parent contract. It changes no source,
-schema, migration, test, dependency, workflow or application. API/table names above
-describe authorized work, not implemented capabilities.
+The first bounded implementation adds schema-5 initialization, explicit migration,
+a private metadata-only observer and shared receipt metadata validation. Existing
+content authentication remains in the admission owner. The new handoff tables
+are not exposed through registration or any managed mutation API in this slice.
+The original contract/acceptance record remains above; later R2 operations are
+authorized work, not implemented capabilities.
 
 ## Cold diff audit
 
-- `docs/contracts/LEAD-CUSTODY-STORAGE.md`: inventory, source ownership, explicit
-  migration, local operations, lifecycle and failure rules, parity/mutation plan
-  and acceptance gates. Checked against the pinned source and historical packets.
-- `docs/contracts/LEAD-RECEIVER-CUSTODY.md`: record R1 merge and link the canonical
-  R2 acceptance; do not change the accepted R1 vocabulary or duplicate R2 rules.
-- Verify only these Markdown paths differ; check links, citations, base/hash
-  references and whitespace. Code tests are intentionally not rerun for prose.
+- `lead_intake/source_store.py`: preserves the frozen schema-4 objects, adds
+  schema-5 identity/handoff/operation storage, explicit atomic migration, a
+  read-only snapshot with a body-denying SELECT authorizer, and the shared
+  metadata/state/request validators. No managed source mutations are exposed.
+- `lead_intake/admission.py`: delegates metadata validation to the source owner;
+  retained content still passes canonical/hash/payload/historical signature checks
+  at the existing admission owner. Public admission and receipt shapes are unchanged.
+- `lead_intake/custody_store.py`: private host-bound facade; strict reference inputs,
+  expected incarnation, finite constructor bounds and source facts only. No SQL,
+  source authentication, clock, scheduler, workflow access or dispatch.
+- `tests/test_lead_custody_store.py`: exact migration preflight/row preservation,
+  metadata-only snapshots, independent state/fingerprint/corruption clauses,
+  binding/capacity-type boundaries and immutable SQL identity checks.
+- `tests/test_lead_custody_races.py`: actual spawned-process contention, both writer
+  orders, per-write failures/crashes, uncertain commit and lost-response reopen.
+- `tests/fixtures/lead_source_admission/v4-source-schema.sql`: frozen from the
+  inventory pin; no live database or private content. Existing tests/fixtures are
+  unchanged regression inputs.
+- `.github/workflows/ci.yml`: selects both new files on native Windows from the
+  first executable push. No job, dependency or application pin changes.
+- This document records accepted scope and evidence; the parent document's
+  implementation status is historical as of the contract-only PR.
 
 ## Gap audit
 
-R2 design review and operator acceptance are recorded above. The acceptance-only
-head still requires its own exact-head merge gates.
-**NOT DONE:** migration/owner implementation, fail-first and parity proofs,
-native implementation CI and exact-head implementation reviews.
-R1 is complete. R3-R5 and protected-machine work remain separately gated. A
-contract approval or local synthetic pass is not production receiver qualification.
+**NOT DONE:** the local combined affected lane passed; the first implementation
+slice still requires exact-head Linux/Windows CI, oversight and connector review
+before merge.
+Managed registration/binding/admission/closure/lifecycle integration and remaining
+process qualification are later bounded R2 PRs. R3-R5 and protected-machine work
+remain separately gated. No receiver deployment or production adoption is claimed.
+
+## First bounded implementation record
+
+The contract merged in PR #51 at
+`3f1397a4a0fb08bf9e7ab2e38f25541321d2ac24`, with the same tree as the reviewed
+acceptance commit `9252ac2527d3b295061107c3465fe1dc1c0ba499`. Juan's subsequent
+“continue” starts only the first ordered implementation slice. Source, fixture,
+dependency and workflow inputs still match the inventory pin; only the accepted
+contract documents changed between that pin and this base.
+
+Required surface for this PR is limited to `source_store.py` (exact schema-5
+initialization, explicit migration, read snapshot and shared metadata validation),
+`admission.py` (metadata/content validation split preserving retained-byte checks),
+the new private read-only `custody_store.py` facade, the two new custody test files,
+the frozen version-4 schema fixture, native Windows test selection and this record.
+No registration, binding, managed admission, close or revalidation entry point is
+exposed. Their complete in-writer fence and lifecycle boundary remains the next
+bounded PR. Existing tests and fixtures stay unchanged.
+
+`SourceStore.migrate()` explicitly returns the applied/no-op result and committed
+incarnation. Explicit setup may read that identity; observation requires an
+expected incarnation supplied by its host binding and never adopts a replacement.
+The private observation facade returns source facts only, including an exact
+legacy receipt lookup and keyed handoff metadata observation. It does not produce
+an R1 wire result or authorize source access. Synthetic fixtures may seed future
+managed rows to test the schema and reader; no production writer is introduced.
+
+Verification: unchanged baseline before edits; fail-first migration/observation
+probes; exact schema and row preflight, row equality, two-process migration and
+writer ordering, per-write rollback/crash/reopen, unknown commit outcomes,
+read-only/live-WAL snapshots, isolated corruption guards and clause mutants.
+Existing receipt/body checks must still run through their original admission
+owner. Run the contract-required combined affected lane before the grouped push;
+include both new test files in Windows CI from that push. No production migration,
+mail access, service or application adoption is part of this work.
+
+The scope-record commit preceded executable edits. Incremental evidence:
+
+- Unchanged baseline: `2656 passed in 129.56s (0:02:09)`.
+- New metadata suite after consolidation: `211 passed in 20.09s`.
+- Native migration/write-order suite: `54 passed in 38.21s`.
+- Guard/read-boundary counterfactuals: 74 intended assertion failures, no survivors
+  or invalid probes. The initial masked cases were retained in the evidence packet;
+  request decoding and state invariants now have single independently tested owners.
+  Derived duplicate comparisons were removed; exact SQL uniqueness owns operation slots.
+- Pinned old `SourceStore` accepts schema 4 and refuses migrated schema 5 with
+  `SourceStoreUnavailable`. Owner SHA-256
+  `18eb7132769176fb421d26ccf93b2655c8ec1cf94fd5e32dc540a40dfd302230`.
+
+A defect introduced while developing this implementation was reproduced before publication:
+`custody_store.py:_input` used the coercing default of `TypeAdapter(Digest)`, so
+bytes and bytearray digest references were accepted. Four strict-text cases failed
+before the fix and passed after the shared input owner began using `strict=True`.
+Both digest fields use that owner; no downstream compensating check was added.
+The exact coercing variant is also killed by the regression suite.
+
+The combined required affected lane at implementation commit
+`49235afb67ec1c1632b571cfc24fad0bf217d0d2` completed:
+`2921 passed in 203.46s (0:03:23)`. Repository Ruff reported `All checks passed!`;
+the changed Python files passed formatting. Existing tests, reserved owners,
+dependencies and application pins are unchanged. This evidence-only follow-up
+changes no executable input; code tests are not rerun for its prose.
+
+Durable evidence alias: `custody-r2-implementation/manifest.json`, SHA-256
+`92cdb05c2ed4d9af66e17d792f0184a496a6e2b29f5cfec764ac12894e30f291`.
+The packet retains the baseline, fail-first results, strict-reference defect,
+both mutation rounds, process evidence, pinned old owner and final combined run.
+These are local results, not completed native Windows or receiver qualification.
+No code outside the allowlist changed.

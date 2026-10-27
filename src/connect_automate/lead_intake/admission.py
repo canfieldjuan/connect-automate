@@ -22,7 +22,6 @@ from .receipts import ReceiptReference
 from .source import (
     MAX_SOURCE_BYTES,
     Revision,
-    SourceIdentity,
     _Closed,
     canonical_source,
     parse_untrusted_source,
@@ -83,48 +82,25 @@ class SourceAdmission:
         return self._store.host_id, self._store.organization_id
 
     def _existing(self, db, row) -> tuple[SourceReceipt, str]:
-        ident, org, namespace, event, raw_receipt, envelope_hash = row
-        receipt = SourceReceipt.model_validate_json(raw_receipt)
-        if (
-            _json(receipt) != raw_receipt
-            or (
-                receipt.admission_id,
-                receipt.organization_id,
-                receipt.namespace_id,
-                receipt.event_id,
-            )
-            != (ident, org, namespace, event)
-            or (receipt.host_id, receipt.organization_id)
-            != (self._store.host_id, self._store.organization_id)
-        ):
-            raise SourceStoreUnavailable()
-        custody = db.execute(
-            "SELECT identity, captured_at, state FROM source_custody WHERE admission_id=?", (ident,)
-        ).fetchone()
-        if custody is None:
-            raise SourceStoreUnavailable()
-        identity_raw, captured_at, state = custody
-        identity = SourceIdentity.model_validate_json(identity_raw)
-        if _json(identity) != identity_raw or identity.namespace_id != receipt.namespace_id:
-            raise SourceStoreUnavailable()
-        content = db.execute(
-            "SELECT envelope FROM source_content WHERE admission_id=?", (ident,)
-        ).fetchone()
+        return self._validate_content(db, self._store._receipt_metadata(db, row))
+
+    @staticmethod
+    def _validate_content(db, metadata) -> tuple[SourceReceipt, str]:
+        receipt, state = metadata.receipt, metadata.state
         if state == "purged":
-            if content is not None:
-                raise SourceStoreUnavailable()
             return receipt, state
-        if state != "retained" or content is None:
-            raise SourceStoreUnavailable()
+        content = db.execute(
+            "SELECT envelope FROM source_content WHERE admission_id=?", (receipt.admission_id,)
+        ).fetchone()
         raw = content[0]
-        if hashlib.sha256(raw).hexdigest() != envelope_hash:
+        if hashlib.sha256(raw).hexdigest() != metadata.envelope_sha256:
             raise SourceStoreUnavailable()
         source = parse_untrusted_source(raw)
         if canonical_source(source) != raw or payload_digest(source) != receipt.payload_digest:
             raise SourceStoreUnavailable()
         if (
-            source.payload.source != identity
-            or source.payload.snapshot.captured_at != captured_at
+            source.payload.source != metadata.identity
+            or source.payload.snapshot.captured_at != metadata.captured_at
             or source.payload.event_id != receipt.event_id
         ):
             raise SourceStoreUnavailable()
