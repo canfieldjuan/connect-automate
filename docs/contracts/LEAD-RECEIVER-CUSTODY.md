@@ -1,6 +1,6 @@
 # Body-only receiver custody: work order and protocol proposal
 
-Status: **R1 MERGED; R2 work order ACCEPTED; later integration remains proposed.**
+Status: **R1/R2 library work MERGED; bounded R3.1 composition work order ACCEPTED.**
 On 2026-10-25 Juan
 said, “i accept, lets begin”, accepting the R1 work order reviewed at
 `66d16a65a807d5dc19b0ef8691be767f50933a83` and merged in
@@ -12,8 +12,12 @@ The workflow-lookup re-pin and guard-coverage repair merged in PR #50 at
 `81f4ad0f5fdd02585eef6c96faa9a5ae34af6b4e`; Linux/Windows CI, oversight and Codex
 completed successfully. Historical pending statements below describe those stages.
 The separately accepted next work order is [R2 storage and fences](LEAD-CUSTODY-STORAGE.md).
-Its canonical acceptance record binds the reviewed revision and authorized scope;
-R2 implementation has not started.
+Its canonical acceptance record binds the reviewed revision and authorized scope.
+R2 library qualification merged in PR #55; its completion record is maintained
+in that document. The next bounded work order is
+[R3.1 fenced runtime composition](LEAD-CUSTODY-COMPOSITION.md). Its canonical
+acceptance record binds the reviewed revision; executable work follows the
+contract-only merge in a separate PR.
 
 The accepted [application policy](LEAD-SOURCE-HANDOFF.md#current-acceptance-and-work-order-status)
 remains authoritative: one business per deployment, receiver-owned raw custody,
@@ -369,7 +373,7 @@ and Codex connector review remain required; docs acceptance is not adoption.
 | --- | --- | --- |
 | R1: pure protocol vocabulary | New private `lead_intake/custody_protocol.py` and focused tests; existing source scalar/schema validators reused | G0 prerequisite only. Closed metadata/result schemas, legal state combinations, digest distinctions and bounds. No I/O or public wiring. Rollback removes unused vocabulary. |
 | [R2: source-owned custody resolution and fence](LEAD-CUSTODY-STORAGE.md) | Source store/admission owners, explicit migration contract; adapter metadata owner specified first | G1/G3 prerequisites. Exact lookup after purge, atomic generation check, both settlement/write orders, restart, lost mapping and every partial-write boundary. Rollback disables new ingress and preserves stores; no downgrade that ignores fences. |
-| R3: receiver protocol composition | Thin adapter over qualified owners and existing Connect transport | G1/G3 prerequisites with synthetic source fixtures. Prepare/upload/status/resume/settle, exact route identity, no-action pack, loss/restart/quotas/result bounds. Real authentication/service wiring blocked on accepted and proven protected machine boundary. Disable capability; keep authenticated recovery available where qualified. |
+| [R3: receiver protocol composition](LEAD-CUSTODY-COMPOSITION.md) | Begin with fenced raw runtime submission; later compose receiver operations over qualified owners and existing Connect transport | G1/G3 prerequisites with synthetic source fixtures. Full R3 still requires prepare/upload/status/resume/settle, exact route identity, no-action pack, loss/restart/quotas/result bounds. Real authentication/service wiring blocked on accepted and proven protected machine boundary. Disable capability; keep authenticated recovery available where qualified. |
 | R4: Watcher body source and reference retry | Existing rules, source/body/removal owners, job schema and queue pump | G1/G3. Body-only unfollowed capture without follow mutation, unavailable/truncated input, reference-only restart, stable IDs, both digests and no attachment regression. Disable new lead rules; preserve reconciliation records. |
 | R5: cross-app retention and installed proof | Each storage/removal owner; protected installation | G6 prerequisite. Offline purge, capture cutoff, metadata retention, raw-free backup/restore, current authorization, packaged native parity. No production activation until these and protected-host gates pass. |
 

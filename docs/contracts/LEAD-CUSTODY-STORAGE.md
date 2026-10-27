@@ -1,6 +1,20 @@
 # R2: source-owned custody resolution and durable fences
 
-Status: **ACCEPTED R2 work order; managed mutation slice implemented locally, qualification pending.**
+Status: **R2 library implementation and qualification MERGED; receiver/adoption remain gated.**
+
+Completion: [PR #55](https://github.com/canfieldjuan/connect-automate/pull/55) merged
+at `2b893e3b320638a7fbdcc3de26b0b1ca3e66dc9b`, with tree
+`c9878ce1170d8655879d616966d2bc5b15438a73` equal to reviewed head
+`205a34026dc7131b220ab25f33085fe8ac70fe5e`. Exact-head Linux and native Windows CI,
+oversight PASS and connector review without findings were verified before merge;
+no unresolved review threads remained. Durable alias
+`custody-r2-qualification/merge-205a340`, manifest SHA-256
+`1ce8587b434dc8218b9792c46be9cd790ad2992fa00cadbe4e7fb026b28ee7a0`,
+records those gates and merge-tree equality. Historical pending notes below remain
+stage records. [R3.1 composition](LEAD-CUSTODY-COMPOSITION.md) records the next
+work order and its acceptance; this completion grants no receiver, machine-authentication or adoption
+authority.
+
 Juan selected “This lead-intake session (recommended)” as its sole owner, using
 pack-kit's preserved draft as input. On 2026-10-26 he directly instructed this
 session, “I approve the contract lets check oversight”. This accepts PR #51's
