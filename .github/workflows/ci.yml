@@ -50,6 +50,8 @@ jobs:
           tests/test_lead_custody_protocol.py
           tests/test_lead_custody_store.py
           tests/test_lead_custody_races.py
+          tests/test_lead_custody_composition.py
+          tests/test_lead_custody_composition_recovery.py
           tests/test_lead_source_auth.py
           tests/test_lead_source_fixture_encoding.py
           tests/test_windows_connect.py

@@ -285,6 +285,25 @@ class PackRuntime:
         uncertainty may follow either commit; use historical lookup or an authorized
         retry with the same signed request, not a cached receipt or a new event ID.
         """
+        return self._submit_source(binding=binding, raw_source_bytes=raw_source_bytes)
+
+    def _submit_custody_source(self, *, custody, request, raw_source_bytes: bytes):
+        """Private raw managed submission, never a prepared-receipt entry point."""
+        from ..lead_intake.custody_handoff import _CustodyHandoff
+
+        if type(custody) is not _CustodyHandoff or custody.runtime is not self:
+            raise EventBindingError()
+        return self._submit_source(
+            binding=custody.route.binding,
+            raw_source_bytes=raw_source_bytes,
+            custody=custody,
+            request=request,
+        )
+
+    def _submit_source(
+        self, *, binding: str, raw_source_bytes: bytes, custody=None, request=None
+    ) -> SourceHandoffResult:
+        """One raw-submission boundary and one persisted workflow completion path."""
         from ..lead_intake.auth import SourceAuthenticationError
         from ..lead_intake.results import (
             SourceHandoffResult,
@@ -306,7 +325,18 @@ class PackRuntime:
             AutomateLicenseError,
         )
         try:
-            prepared = self._prepare_source(binding=binding, raw_source_bytes=raw_source_bytes)
+            if custody is None:
+                prepared = self._prepare_source(binding=binding, raw_source_bytes=raw_source_bytes)
+            else:
+                from ..lead_intake.custody_handoff import _CustodyHandoff
+
+                if (
+                    type(custody) is not _CustodyHandoff
+                    or custody.runtime is not self
+                    or custody.route.binding != binding
+                ):
+                    raise EventBindingError()
+                prepared = custody._prepare(request, raw_source_bytes)
         except (SourceStoreUnavailable, SourceStoreUncertain):
             pass
         except (
@@ -322,6 +352,8 @@ class PackRuntime:
         else:
             try:
                 self._host.require_license()
+                if custody is not None:
+                    custody._check_runtime()
                 outcome = self._engine._admit_event(
                     self._pack.workflow,
                     subject=self._subject,

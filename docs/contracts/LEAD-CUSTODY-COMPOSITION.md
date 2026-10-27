@@ -1,11 +1,11 @@
 # R3 receiver composition: first bounded work order
 
-Status: **R3.1 contract ACCEPTED; contract-only merge and executable proof pending.**
+Status: **R3.1 private composition implemented; local proof passed, PR gates pending.**
 
 Juan asked, “Is R3 next? If so let’s start”, starting contract preparation. The
 [parent sequence](LEAD-RECEIVER-CUSTODY.md#bounded-implementation-sequence-and-verification)
 requires a committed contract and explicit acceptance before executable work.
-No executable work is included in this contract PR.
+Contract-only PR #56 merged before this separate executable implementation.
 
 ## Acceptance record
 
@@ -254,28 +254,89 @@ remain merge gates. Record durable evidence outside the worktree.
 
 ## Implementation summary
 
-Contract only: this contract, the parent continuation pointer and the R2 completion
-status record change. The later acceptance record changes status and records the
-operator's decision, without altering the reviewed design. No executable, test,
-dependency, workflow or schema edits.
-Code tests are not rerun for this documentation-only proposal. Source inventory,
-reference checks and the cold diff audit validate its claims; prior test results
-remain explicitly historical evidence.
+Contract-only PR #56 merged as `2789094177c1a4592464c2c3960aade8ce57f082`;
+its tree equals accepted/reviewed head `fbc7567269f431e008632f58887ed578f5d2505e`.
+The executable work follows that merge on a separate branch and PR.
+
+- `lead_intake/custody_handoff.py:31-117` (under `src/connect_automate/`) adds
+  private immutable host composition over the verified runtime and concrete R2
+  facade. It copies/revalidates the route and machine reference, pins source
+  scope, owner and retained incarnation, and refuses action-bearing packs.
+  It reads configured facade metadata only; no SQL or deployment lookup is added.
+- `automate/runtime.py:281-407` (same prefix) keeps public signatures unchanged
+  and routes raw legacy/managed inputs through one existing workflow completion
+  block. Managed input cannot supply an admission callback or a prepared receipt.
+  License/binding checks run before both source and workflow admission.
+- `lead_intake/handoff.py:55-122` keeps one source-scope and receipt-to-event
+  validator. Only a freshly returned source-owner result reaches the common
+  workflow path. Legacy preparation still uses its original admission owner.
+- `tests/test_lead_custody_composition.py` covers the new guards, body metadata,
+  replay, no-action and fixed-error boundaries. Historical no-match is seeded
+  through the existing workflow owner; valid lead packs still match all.
+- `tests/test_lead_custody_composition_recovery.py` reuses the existing joined
+  SQL/commit actor, completion protocol, reopen assertions and R2 lifecycle actor.
+  The test-only bridge observes a real `admit_bound` return; it never substitutes
+  a receipt or invokes legacy admission. Source/workflow commits stay separate.
+- `.github/workflows/ci.yml` adds both new files to Windows selection from the
+  first executable push. Source/custody/result schemas, dependencies, previous
+  tests/fixtures, public exports and all other application owners are unchanged.
+
+### Local evidence
+
+Durable alias: `custody-r3-fenced-runtime`; manifest SHA-256
+`ceca70b5c7dafea35475c5316bda06a72f0a6c86315a0d1de6acd3f5a9f8c75c`.
+Inputs are synthetic. This lane does
+not access a mailbox, inference provider, employee identity or external delivery.
+
+| Evidence | Observed result |
+| --- | --- |
+| `parity-before.txt` | `3164 passed in 452.78s (0:07:32)` before executable changes; input inventory unchanged. |
+| `fail-first.txt` | Managed-entry probe failed with the missing private module, as declared. |
+| `shared-legacy-parity.txt` / `shared-legacy-audit.json` | `773 passed in 66.92s (0:01:06)` before managed wiring; extracted completion AST unchanged and prior runtime signatures identical. |
+| `managed-final-focused.txt` plus `proxy-guards.txt`, `isolated-guard-tests.txt`, `construction-guards.txt` | Managed boundary, process and added isolation tests passed incrementally; the combined run below is the final executable gate. |
+| `counterfactual-final/results.json` | All selected 22 removed-guard variants fail at their intended assertions. Initial pack-pin masking and late receipt detection were corrected in tests and their earlier outputs retained. |
+| `lint-final.txt` | `All checks passed!` |
+| `combined.txt` / `combined-verification.json` | `3293 passed in 480.44s (0:08:00)`; frozen inputs unchanged through completion. |
+| `workflow-contention-regressions.txt` / `final-input-audit.json` | `2 passed in 6.70s` after appending the independently proven workflow replay/contention cases; all earlier test AST and other executable inputs unchanged. |
+
+The initial test authoring failures were fixture/oracle errors: actions are a
+list, the test host is frozen, and missing intent is an authentication refusal.
+Tests were corrected against the existing owners; production semantics were not
+changed to accommodate them. Counterfactual copies never modify repository code.
 
 ## Cold diff audit
 
-The proposal must be limited to this new contract, the parent R3 pointer/current
-status, and the canonical R2 completion record. Check every source citation at the
-inventory pin, verify local document links, and prove executable inputs unchanged.
-Record the actual checks and proposal commit in the durable contract packet.
+The diff is restricted to the accepted allowlist. Existing runtime methods other
+than the public submission wrapper remain AST-identical; all existing signatures,
+source storage owners, R1 vocabulary, result/lookup owners, dependencies and old
+test/fixture bytes remain unchanged (`cold-structure-audit.json`).
+
+`boundary-probe`: valid body states and copied requests pass; invalid/mixed
+request fields, false/zero/empty host configuration, foreign scope/route/machine,
+unsupported kinds, wrong incarnation and action-bearing packs refuse at their
+owners. Direct constructor/owner sentinels distinguish removed guards from later
+backstops. Existing R1/source bounds remain in the unchanged parity lane.
+
+`effect-trace`: managed raw submission reaches workflow metadata | the concrete
+R2 writer authenticates and fences, shared receipt validation precedes the existing
+workflow transaction | real stores, per-write rollback, source/workflow commit
+crashes, lost responses, native process contention, lifecycle order and replay
+assert exact receipt/record identities. The source writer is released before the
+workflow call. No second writer, dispatch loop or cached-success path is added.
+
+The new library entry remains private and unused by deployed receivers. These
+checks do not attest to a machine or establish production readiness.
 
 ## Gap audit
 
-**NOT DONE — accepted R3.1 executable work has not started.** Contract review and
-operator acceptance are recorded; current-head contract-only merge gates and
-executable proofs remain pending. Completing R3.1 will not
-complete R3 or qualify a receiver. The next contracts must cover reference-only
-resume through current custody authority, evidence-based status/settlement,
-transport-operation identity/storage/retention/recovery and result bounds before
-any protected provider wiring. Those must reuse the existing owners and transport;
-none is delegated to an in-memory cache or an assumed machine-authentication layer.
+**NOT DONE — exact-head CI and independent review gates pending.**
+R3.1 implementation is limited to the accepted private composition. Native Windows
+CI, Linux CI, exact-head oversight and connector reconciliation must pass before
+merge. Contract acceptance does not waive these gates.
+
+A source commit followed by workflow failure and then closure/expiry retains
+custody but cannot recover through this upload path. The regression asserts that
+it refuses without inventing workflow acceptance. Reference-only resume, receiver
+result/status/settlement composition, transport-operation durability/retention,
+protected machine authorization, ingress budgets and production adoption remain
+separate work orders. No receiver is advertised or activated here.
