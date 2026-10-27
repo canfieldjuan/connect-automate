@@ -547,3 +547,98 @@ The packet retains the baseline, fail-first results, strict-reference defect,
 both mutation rounds, process evidence, pinned old owner and final combined run.
 These are local results, not completed native Windows or receiver qualification.
 No code outside the allowlist changed.
+
+
+## Second implementation work order: managed mutation boundary
+
+### Root cause
+
+At merged base `c6aa8a9f7679c8fb89f0c0b8773f6e8f484293ca`, the source owner
+persists and validates schema-5 handoff metadata but exposes no managed writer.
+`SourceAdmission.admit_source` owns the existing authenticated transaction without
+a reserved-event fence; `SourceContent` owns lifecycle effects without handoff
+closure. Registration cannot safely ship without those same-writer protections.
+This is the next implementation ordered by the accepted R2 design, authorized by
+Juan's “Let’s start”; it does not change that design or qualify a receiver.
+
+### Required change surface
+
+- `source_store.py`: private registration, operation fingerprint/capacity,
+  capture/fence/link/closure and lifecycle helpers. All new SQL stays here;
+  schema-5 tables, triggers and migration remain unchanged.
+- `admission.py`: extract the existing transaction body into one shared admission
+  core. Add reserved-event refusal to the legacy path and private managed admission
+  and existing-custody revalidation. Raw authentication remains here; no callback
+  or forged authentication result may authorize an effect.
+- `custody_store.py`: private host facade, no SQL. Accept an optional host clock
+  for mutating operations (missing/non-callable clock refuses mutation); existing
+  read-only construction and observation remain usable without a clock. Reparse
+  R1 request models through canonical encoding/decoding. Return private source
+  facts, not receiver wire results or employee/machine authorization.
+- `content.py`: coordinate closure with existing expiry, physical-message purge
+  and namespace retirement in their source writer transaction.
+- `tests/test_lead_custody_store.py` and `tests/test_lead_custody_races.py`: real
+  operation regressions, isolated guard counterfactuals and essential process
+  ordering/crash coverage. Existing source tests remain unchanged unless adding
+  managed-only cases. Both custody files already run in native Windows CI.
+- This document: work order now; implementation, cold-diff and evidence later.
+
+### Explicit non-scope
+
+No schema migration, R1 vocabulary, exports, dependencies, runtime submission,
+lookup/projection/action-result owners or tests, handoff composition, application
+pins, receiver/provider/service, Watcher/EOM changes, extraction or adoption.
+No new workflow engine, source copies, authorization claim or production settings.
+No separate admission implementation or lifecycle reason store. Existing legacy
+formatting/key-rotation semantics remain unchanged for unreserved events.
+
+### Assumptions/blockers
+
+Private callers remain within the accepted local OS-user trust boundary. An
+expected incarnation and explicit finite limits come from the host. Private
+mutations consume strict R1 request values; a host-supplied clock is required for
+time-sensitive writes. It is not taken from request metadata. Prepare additionally
+receives an immutable reservation deadline; revalidation additionally receives
+an exact admission ID and raw canonical artifact. There is no new wire contract.
+A first settlement after lifecycle closure records its operation at the existing
+closed state revision; it does not advance the fence again. Exact retries never
+extend reservation, consume additional slots or advance state revision.
+
+No implementation blocker is known. Native Windows and independent exact-head
+reviews remain merge gates. Later process qualification and receiver/production
+gates remain separate; this PR must still prove every newly exposed safety path.
+
+### Verification plan
+
+Run the unchanged combined affected library lane at the pinned base before source
+edits; retain runtime, dependency/fixture/source hashes and output under durable
+alias `custody-r2-managed`. The first regression deliberately calls missing managed
+operations, then proves registration/binding/admission/close through the real owner.
+Add individual otherwise-valid negative and positive cases for full immutable
+identity, replay, scope, canonical bytes, current source authentication, fence,
+reservation, capacity, incarnation and revision limits. Exercise lost responses,
+per-write rollback/crash and both writer orders for admission/close and
+reservation/legacy admission in actual spawned processes with IPC checkpoints.
+Expiry, purge cutoff equality/later captures, unbound captures, retirement and
+cleanup must preserve closed/ever-custodied facts. Revalidation cannot create rows.
+
+Run focused tests and Ruff incrementally, then the contract-required combined lane
+before one grouped push. Counterfactuals must fail at the intended assertion;
+preserve rejected/masked probes too. CI must run native Windows from the first
+push. Independent oversight and connector reconciliation remain merge gates.
+Rollback disables managed ingress while preserving the fenced schema-5 store;
+never reopen, drop tombstones, down-migrate or restore a pre-fence backup.
+
+### Implementation summary
+
+Pending. This work-order commit changes documentation only, before source edits.
+
+### Cold diff audit
+
+Only this canonical contract receives the bounded implementation record. The
+accepted R2 semantics and first-slice evidence above are unchanged.
+
+### Gap audit
+
+NOT DONE — managed operations, lifecycle integration, regression/process proof,
+combined gate, native Windows and exact-head review remain to be completed.
