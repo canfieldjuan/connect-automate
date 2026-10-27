@@ -823,6 +823,74 @@ erasure is authorized.
 
 ### Implementation summary, cold diff audit and gap audit
 
-NOT DONE — work order only. Baseline, added process qualification, counterfactuals,
-local combined gate and exact-head CI/review remain to be recorded. No new test
-or production behavior is claimed by this document.
+The executable change is confined to `tests/test_lead_custody_races.py`.
+Production source, schemas, fixtures, dependencies, CI selection and public exports
+remain identical to the merged base. This slice qualifies existing owners; it
+adds no receiver, mailbox activity or new business behavior.
+
+Cold diff audit:
+
+- `managed_child` retains its original owner operations and defaults. It adds
+  before-writer/clock-sample checkpoints, retained replay, revocation, cleanup,
+  expiry, read and observe actions, plus captured diagnostics. Clocks still come
+  from the embedding host fixture. New capture variants use the existing signing
+  and request helpers. No production rule is implemented in the actor.
+- `ordered_managed` extracts the old IPC/SQLITE_BUSY coordinator and is shared by
+  old and new races. The new before-writer mode waits for closure to commit before
+  releasing admission. The final-clock mode freezes the first sampled value and
+  moves the next sample through an event. Sleeps never establish ordering.
+- The original per-write/commit matrix remains and now includes retired cleanup,
+  expiry and retained replay. Faults include the synthetic source envelope in the
+  SQL exception, so fixed errors and empty captured diagnostics are asserted even
+  after commit. Original migration actor/tests remain structurally unchanged.
+- New native tests cover the remaining bind/admit/close lifecycle orders, authority
+  ordering, equal/later capture horizons, post-wait/final time changes, stale and
+  current-generation replay after reopen, no additional mutation slot, receipt
+  erasure after retirement, native WAL snapshot stability, same-path replacement,
+  and unknown versus closed-empty. Positive retained reads and later captures are
+  asserted alongside refusals. Snapshots assert rollback and receipt preservation.
+- Lost-response cases explicitly assert that neither a result nor a receipt is
+  published before the crash, then recover the same durable receipt in a fresh
+  process. This assertion exposed an ordering defect in the new test actor:
+  the initial receipt trace preceded the response-loss checkpoint. The unchanged
+  source was not responsible. Both admission and retained-replay assertions failed
+  before moving that trace, and passed afterward. The regression remains in CI.
+
+Verification recorded under durable alias `custody-r2-qualification`:
+
+- Unchanged baseline at work-order commit
+  `639de99f2e8cc56ea2cbdccb271eb4f5eca10ce2`:
+  `3117 passed in 467.75s (0:07:47)`. All captured source/test/dependency inputs
+  still matched when it completed, before the first test edit.
+- Process file before the final lost-response assertion: `126 passed in 193.72s`.
+  This earlier pass is not substituted for the final combined gate below.
+- Lost-response probe: `2 failed, 126 deselected in 1.13s` at the intended premature
+  receipt assertion; after repair, `2 passed, 126 deselected in 1.49s`.
+- Targeted disposable-copy counterfactuals cover pre-lock fencing, final managed
+  sampling, final authentication, backward time, replay generation/receipt binding,
+  incarnation, lifecycle closure, invented settlement success and unfenced replay.
+  Removing custody linkage is caught by the existing final metadata consistency
+  check before commit: this is explicitly a backstop, not an isolated link guard.
+  The import-copy loader also installs in spawned child interpreters. Checkout
+  source is never replaced to run a counterfactual.
+- Test construction failures are retained in the packet: the initial text edit
+  matched an old migration test, then was corrected by function scope and checked
+  against the committed base; an unbound capture requires the specific conflict
+  error; the request fixture requires a capture dictionary; import order was fixed.
+  These were test/harness corrections, not source fixes or product-rule changes.
+- The initial combined attempt was deliberately interrupted for the discovered
+  lost-response instrumentation defect. Its partial pass is not a passing gate.
+  The final combined lane passed: `3164 passed in 440.20s (0:07:20)`.
+  Its input manifest matched after completion; test file SHA-256
+  `85bfe4678c959066b7ef6f1ddacade48a3889701509fbed9fc7de14c89a50404`.
+  Final Ruff: `All checks passed!`. The final counterfactual rerun killed all
+  11 variants at the intended assertions, with no survivors or invalid probes.
+  Durable `combined-final.json`, `combined-final-inputs.json`,
+  `counterfactual-final/mutations/results.json`, `cold-diff-audit.json` and
+  `manifest.json` retain commands, input pins, source-copy changes and publication
+  identity. The work-order and executable commits are separate.
+
+NOT DONE — local qualification passed. Exact-head Linux and native Windows CI,
+independent oversight and connector reconciliation remain required before merge.
+No installed receiver, production adoption, machine trust, retention-policy choice
+or R3/R4/R5 completion is claimed.
