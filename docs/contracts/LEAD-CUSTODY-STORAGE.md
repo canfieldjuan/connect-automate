@@ -1,6 +1,6 @@
 # R2: source-owned custody resolution and durable fences
 
-Status: **ACCEPTED R2 work order; migration/read-only slice implemented, qualification pending.**
+Status: **ACCEPTED R2 work order; managed mutation slice implemented locally, qualification pending.**
 Juan selected “This lead-intake session (recommended)” as its sole owner, using
 pack-kit's preserved draft as input. On 2026-10-26 he directly instructed this
 session, “I approve the contract lets check oversight”. This accepts PR #51's
@@ -547,3 +547,182 @@ The packet retains the baseline, fail-first results, strict-reference defect,
 both mutation rounds, process evidence, pinned old owner and final combined run.
 These are local results, not completed native Windows or receiver qualification.
 No code outside the allowlist changed.
+
+
+## Second implementation work order: managed mutation boundary
+
+### Root cause
+
+At merged base `c6aa8a9f7679c8fb89f0c0b8773f6e8f484293ca`, the source owner
+persists and validates schema-5 handoff metadata but exposes no managed writer.
+`SourceAdmission.admit_source` owns the existing authenticated transaction without
+a reserved-event fence; `SourceContent` owns lifecycle effects without handoff
+closure. Registration cannot safely ship without those same-writer protections.
+This is the next implementation ordered by the accepted R2 design, authorized by
+Juan's “Let’s start”; it does not change that design or qualify a receiver.
+
+### Required change surface
+
+- `source_store.py`: private registration, operation fingerprint/capacity,
+  capture/fence/link/closure and lifecycle helpers. All new SQL stays here;
+  schema-5 tables, triggers and migration remain unchanged.
+- `admission.py`: extract the existing transaction body into one shared admission
+  core. Add reserved-event refusal to the legacy path and private managed admission
+  and existing-custody revalidation. Raw authentication remains here; no callback
+  or forged authentication result may authorize an effect.
+- `custody_store.py`: private host facade, no SQL. Accept an optional host clock
+  for mutating operations (missing/non-callable clock refuses mutation); existing
+  read-only construction and observation remain usable without a clock. Reparse
+  R1 request models through canonical encoding/decoding. Return private source
+  facts, not receiver wire results or employee/machine authorization.
+- `content.py`: coordinate closure with existing expiry, physical-message purge
+  and namespace retirement in their source writer transaction.
+- `tests/test_lead_custody_store.py` and `tests/test_lead_custody_races.py`: real
+  operation regressions, isolated guard counterfactuals and essential process
+  ordering/crash coverage. Existing source tests remain unchanged unless adding
+  managed-only cases. Both custody files already run in native Windows CI.
+- This document: work order now; implementation, cold-diff and evidence later.
+
+### Explicit non-scope
+
+No schema migration, R1 vocabulary, exports, dependencies, runtime submission,
+lookup/projection/action-result owners or tests, handoff composition, application
+pins, receiver/provider/service, Watcher/EOM changes, extraction or adoption.
+No new workflow engine, source copies, authorization claim or production settings.
+No separate admission implementation or lifecycle reason store. Existing legacy
+formatting/key-rotation semantics remain unchanged for unreserved events.
+
+### Assumptions/blockers
+
+Private callers remain within the accepted local OS-user trust boundary. An
+expected incarnation and explicit finite limits come from the host. Private
+mutations consume strict R1 request values; a host-supplied clock is required for
+time-sensitive writes. It is not taken from request metadata. Prepare additionally
+receives an immutable reservation deadline; revalidation additionally receives
+an exact admission ID and raw canonical artifact. There is no new wire contract.
+A first settlement after lifecycle closure records its operation at the existing
+closed state revision; it does not advance the fence again. Exact retries never
+extend reservation, consume additional slots or advance state revision.
+
+No implementation blocker is known. Native Windows and independent exact-head
+reviews remain merge gates. Later process qualification and receiver/production
+gates remain separate; this PR must still prove every newly exposed safety path.
+
+### Verification plan
+
+Run the unchanged combined affected library lane at the pinned base before source
+edits; retain runtime, dependency/fixture/source hashes and output under durable
+alias `custody-r2-managed`. The first regression deliberately calls missing managed
+operations, then proves registration/binding/admission/close through the real owner.
+Add individual otherwise-valid negative and positive cases for full immutable
+identity, replay, scope, canonical bytes, current source authentication, fence,
+reservation, capacity, incarnation and revision limits. Exercise lost responses,
+per-write rollback/crash and both writer orders for admission/close and
+reservation/legacy admission in actual spawned processes with IPC checkpoints.
+Expiry, purge cutoff equality/later captures, unbound captures, retirement and
+cleanup must preserve closed/ever-custodied facts. Revalidation cannot create rows.
+
+Run focused tests and Ruff incrementally, then the contract-required combined lane
+before one grouped push. Counterfactuals must fail at the intended assertion;
+preserve rejected/masked probes too. CI must run native Windows from the first
+push. Independent oversight and connector reconciliation remain merge gates.
+Rollback disables managed ingress while preserving the fenced schema-5 store;
+never reopen, drop tombstones, down-migrate or restore a pre-fence backup.
+
+### Implementation summary
+
+The docs-only work order was committed as
+`c4b418cb7ccc2f689a1eac84094733449d86db7e` before executable edits. The unchanged
+combined baseline at the merged base completed with exit zero. This slice adds
+private registration, binding, fenced raw admission, permanent settlement and
+retained-custody revalidation. One shared admission core retains both current
+raw-authentication checkpoints and the original content/receipt writer. The
+source owner coordinates handoff linkage and operation phase in that transaction.
+The legacy path now refuses reserved events under its own writer.
+
+Expiry, physical-message purge and namespace retirement close matching handoffs
+in their existing transactions. Purge preserves newer captures and unbound
+intents; the existing horizon rejects an eventual old capture. Retired receipt
+erasure leaves ever-custodied history intact and observation unknown. Capacity
+reserves the complete operation budget at prepare; exhausted capacity does not
+prevent completion of existing work. No schema, wire, runtime, workflow or
+application ownership changes are introduced.
+
+### Cold diff audit
+
+Paths below are relative to this repository; line references describe this slice.
+
+- `src/connect_automate/lead_intake/source_store.py:844`: owns reserved-event
+  exclusion and all new SQL, scope/fingerprint/time/capacity checks, capture
+  linkage and permanent closure. `:936` registers; `:1012` binds; `:1052` settles;
+  `:1068` compares raw source evidence; `:1107` links custody; `:1123` coordinates
+  lifecycle closure. Real-operation negatives and isolated owner probes cover
+  these guards, with process ordering and per-write rollback/crash assertions.
+- `src/connect_automate/lead_intake/admission.py:146`: both entry paths use the
+  shared transaction body at `:160`; current authentication remains before and
+  after staged writes. Revalidation cannot enter first receipt creation. Existing
+  unreserved tests remain regression inputs, unchanged.
+- `src/connect_automate/lead_intake/custody_store.py:117`: private request-reparsing
+  facade for all managed operations. No SQL, machine authentication, transport or
+  workflow composition. Incarnation and missing-clock cases cover every mutation.
+- `src/connect_automate/lead_intake/content.py:66,124,157`: adds same-writer closure
+  to the existing expiry/purge/retirement owners, preserving legacy return values.
+- `tests/test_lead_custody_store.py:1326`: appends real managed operation, immutable
+  identity, scope, body-state, quota, clock, lifecycle and independent guard cases;
+  previous tests remain byte-identical prefixes.
+- `tests/test_lead_custody_races.py:266`: appends the existing spawn/IPC harness
+  pattern for managed writes. Checkpoints are derived from actually executed SQL;
+  crashes and injected SQL errors cover every observed write, both sides of commit
+  and lost responses. Separate-process tests observe actual writer contention for
+  admission/close, reservation/legacy, duplicates, lifecycle, expiry and capacity.
+- This document records the bounded work order and evidence. CI already selects
+  both files on native Windows; the workflow is unchanged.
+
+boundary-probe: valid and unavailable body envelopes, exact retries, falsy/copied
+request values, min/max reservation and revision edges, each capture/intent
+comparison, changed operation identities, and both fence outcomes are exercised.
+The isolated guard probes remove individual comparisons without relying on an
+earlier parser rejection or later metadata validator to kill the counterfactual.
+
+effect-trace: permanent upload exclusion | the source owner's writer-locked
+handoff generation plus legacy reserved-event check | both process orders show
+closure first refuses admission; admission first preserves the committed receipt.
+
+### Verification evidence and repairs
+
+- Local managed matrix before counterfactuals: `139 passed, 210 deselected in 20.86s`.
+- Essential process matrix: `24 passed, 54 deselected in 66.66s (0:01:06)`.
+- Selected counterfactuals: 34 intended assertion failures, zero survivors or
+  invalid probes. Each changed implementation is retained in the durable packet.
+- Repository Ruff: `All checks passed!`; scope audit proves schema AST equality,
+  unchanged prior custody-test prefixes and no edits outside the explicit allowlist.
+- Final combined lane: `3107 passed in 361.98s (0:06:01)`. The recorded source,
+  test and dependency hashes match implementation commit `ba7ef1c37ce405b24e10feeaba6ded12ea3328f3`.
+  Existing source-store functions are AST-identical, and the extracted legacy
+  admission body is AST-identical after removing only the declared managed guards.
+  These local results do not establish native Windows, receiver or production readiness.
+
+An unpublished defect introduced in this slice used `first + max_duration` at
+the pre-fix snapshot at `source_store.py:970`. A valid reservation near the calendar limit reproduced an
+`OverflowError`; the owner now compares `deadline - first` with the finite duration.
+The same regression passes, alongside ordinary duration boundaries. No downstream
+fallback or special calendar case was added.
+
+The first expanded test run also exposed new-fixture mistakes: an invented
+`captured_chars` key and tuple/list confusion in policy construction. The fixtures
+now use the frozen owner's `stored_chars` and an explicit mutable copy. A related
+changed-envelope case had been rejected by malformed-body validation before its
+intended comparison; it now constructs a valid body digest and proves independent
+source authentication before testing the custody conflict. The corrected focused
+lane passed; original failed/masked attempts remain in the evidence packet.
+
+### Gap audit
+
+NOT DONE — native Windows and exact-head independent review remain before merge.
+R2's later qualification and R3 receiver composition retain their separate gates.
+
+Durable evidence alias: `custody-r2-managed/manifest.json`, SHA-256
+`c7715cc95d74d205bd27df9cd1eb6eb9ef668859ef048e25a61a3c976e51815c`. It retains the unchanged baseline, source-input
+pins, expected failures and repairs, process traces, selected counterfactuals,
+combined gate and committed-input equality proof. This follow-up is documentation
+only; executable tests are not rerun for evidence prose.

@@ -840,6 +840,310 @@ class SourceStore:
             raise SourceStoreConflict()
         return metadata
 
+    def _unreserved_event(self, db, namespace, event):
+        if (
+            db.execute(
+                "SELECT 1 FROM source_handoffs "
+                "WHERE organization_id=? AND namespace_id=? AND event_id=?",
+                (self.organization_id, namespace, event),
+            ).fetchone()
+            is not None
+        ):
+            raise SourceAuthenticationError()
+
+    def _custody_request_state(self, db, request):
+        if (request.scope.host_id, request.scope.organization_id) != (
+            self.host_id,
+            self.organization_id,
+        ):
+            raise SourceStoreConflict()
+        facts = self._observe_custody(
+            db,
+            request.handoff_id,
+            request.scope,
+            request.enrolled_machine_id,
+            None if request.operation == "prepare" else request.payload.capture,
+        )
+        return facts
+
+    def _custody_intent(self, db, ident):
+        row = db.execute(
+            "SELECT intent,intent_sha256,reservation_expires_at FROM source_handoffs "
+            "WHERE handoff_id=?",
+            (ident,),
+        ).fetchone()
+        if row is None:
+            raise SourceAuthenticationError()
+        return _stored_request(row[0], row[1], "prepare"), datetime.fromisoformat(row[2])
+
+    @staticmethod
+    def _next_custody_revision(facts):
+        if facts.state_revision >= 2147483647:
+            raise SourceStoreConflict()
+        return facts.state_revision + 1
+
+    @staticmethod
+    def _open_custody(facts, request):
+        if facts.closed or request.expected_fence_generation != facts.fence_generation:
+            raise SourceAuthenticationError()
+
+    def _custody_operation(self, db, request):
+        from .custody_protocol import canonical_request
+
+        raw = canonical_request(request).decode()
+        rows = db.execute(
+            "SELECT request,request_sha256,kind,phase FROM source_handoff_operations "
+            "WHERE control_id=? OR job_id=? OR (handoff_id=? AND kind=?)",
+            (request.control_id, request.job_id, request.handoff_id, request.operation),
+        ).fetchall()
+        if not rows:
+            return None
+        if len(rows) != 1:
+            raise SourceStoreConflict()
+        stored, digest, kind, phase = rows[0]
+        _stored_request(stored, digest, kind)
+        if stored != raw:
+            raise SourceStoreConflict()
+        return phase
+
+    @staticmethod
+    def _insert_custody_operation(db, request, phase, revision):
+        from .custody_protocol import canonical_request
+
+        raw = canonical_request(request).decode()
+        db.execute(
+            "INSERT INTO source_handoff_operations VALUES (?,?,?,?,?,?,?,?)",
+            (
+                request.control_id,
+                request.job_id,
+                request.handoff_id,
+                request.operation,
+                raw,
+                hashlib.sha256(raw.encode()).hexdigest(),
+                phase,
+                revision,
+            ),
+        )
+
+    def _custody_sample(self, db, clock, first=None):
+        sample = self._check_clock(db, clock())
+        if first is not None and sample < first:
+            raise SourceAuthenticationError()
+        authority, _ = self._authority(db)
+        self._record_clock(db, sample, authority.generation)
+        return sample
+
+    def _register_custody(
+        self, db, request, deadline_text, clock, max_handoffs, max_ops, max_seconds
+    ):
+        from .custody_protocol import canonical_request
+
+        facts = self._custody_request_state(db, request)
+        operation = self._custody_operation(db, request)
+        retired, _ = self._lifecycle(db)
+        if request.scope.namespace_id in retired:
+            raise SourceAuthenticationError()
+        if facts is not None:
+            _, original_deadline = self._custody_intent(db, request.handoff_id)
+            if operation != "prepared" or original_deadline != datetime.fromisoformat(
+                deadline_text
+            ):
+                raise SourceStoreConflict()
+            return facts
+        if operation is not None:
+            raise SourceStoreUnavailable()
+        s = request.scope
+        if (
+            db.execute(
+                "SELECT 1 FROM source_handoffs "
+                "WHERE organization_id=? AND namespace_id=? AND event_id=?",
+                (s.organization_id, s.namespace_id, s.event_id),
+            ).fetchone()
+            or db.execute(
+                "SELECT 1 FROM source_receipts "
+                "WHERE organization_id=? AND namespace_id=? AND event_id=?",
+                (s.organization_id, s.namespace_id, s.event_id),
+            ).fetchone()
+        ):
+            raise SourceStoreConflict()
+        count = db.execute("SELECT COUNT(*) FROM source_handoffs").fetchone()[0]
+        if count >= max_handoffs or (count + 1) * 3 > max_ops:
+            raise SourceStoreConflict()
+        first = self._check_clock(db, clock())
+        deadline = datetime.fromisoformat(deadline_text)
+        if not timedelta(0) < deadline - first <= timedelta(seconds=max_seconds):
+            raise SourceAuthenticationError()
+        raw = canonical_request(request).decode()
+        db.execute(
+            "INSERT INTO source_handoffs VALUES (?,?,?,?,?,?,?,?,?,?,?,NULL,1,1,0,NULL,0)",
+            (
+                request.handoff_id,
+                self._incarnation(db),
+                s.host_id,
+                s.organization_id,
+                s.namespace_id,
+                s.event_id,
+                s.route_digest,
+                request.enrolled_machine_id,
+                raw,
+                hashlib.sha256(raw.encode()).hexdigest(),
+                deadline_text,
+            ),
+        )
+        self._insert_custody_operation(db, request, "prepared", 1)
+        final = self._custody_sample(db, clock, first)
+        if final >= deadline:
+            raise SourceAuthenticationError()
+        return self._custody_request_state(db, request)
+
+    def _capture_eligible(self, db, prepared, capture, deadline, now):
+        self._admission_policy(db, prepared.payload.source, capture.captured_at)
+        authority, _ = self._authority(db)
+        if (prepared.payload.policy_id, prepared.payload.policy_version) not in {
+            (policy.policy_id, policy.policy_version) for policy in authority.retention_policies
+        }:
+            raise SourceAuthenticationError()
+        if not (
+            datetime.fromisoformat(capture.captured_at) <= now < deadline
+            and now < datetime.fromisoformat(capture.recovery_deadline)
+        ):
+            raise SourceAuthenticationError()
+
+    def _bind_custody(self, db, request, clock):
+        # An unbound intent has no capture to compare yet. Once pinned, the
+        # shared metadata observer compares the entire pair on every operation.
+        facts = self._observe_custody(
+            db, request.handoff_id, request.scope, request.enrolled_machine_id, None
+        )
+        phase = self._custody_operation(db, request)
+        if facts is None:
+            raise SourceAuthenticationError()
+        self._open_custody(facts, request)
+        if facts.capture is not None and facts.capture != request.payload.capture:
+            raise SourceStoreConflict()
+        prepared, deadline = self._custody_intent(db, request.handoff_id)
+        first = self._check_clock(db, clock())
+        self._capture_eligible(db, prepared, request.payload.capture, deadline, first)
+        if phase is None:
+            if facts.capture is not None:
+                raise SourceStoreUnavailable()
+            revision = self._next_custody_revision(facts)
+            db.execute(
+                "UPDATE source_handoffs SET capture=?,revision=? WHERE handoff_id=?",
+                (
+                    _canonical(request.payload.capture.model_dump()).decode(),
+                    revision,
+                    request.handoff_id,
+                ),
+            )
+            self._insert_custody_operation(db, request, "bound", revision)
+        final = self._custody_sample(db, clock, first)
+        self._capture_eligible(db, prepared, request.payload.capture, deadline, final)
+        return self._custody_request_state(db, request)
+
+    def _close_custody(self, db, facts):
+        if not facts.closed:
+            revision = self._next_custody_revision(facts)
+            db.execute(
+                "UPDATE source_handoffs SET closed=1,generation=2,revision=? WHERE handoff_id=?",
+                (revision, facts.handoff_id),
+            )
+
+    def _settle_custody(self, db, request, clock):
+        facts = self._custody_request_state(db, request)
+        phase = self._custody_operation(db, request)
+        if facts is None:
+            raise SourceAuthenticationError()
+        if phase is not None:
+            return facts
+        if request.expected_fence_generation != facts.fence_generation:
+            raise SourceAuthenticationError()
+        first = self._check_clock(db, clock())
+        self._close_custody(db, facts)
+        closed = self._custody_request_state(db, request)
+        self._insert_custody_operation(db, request, "closed", closed.state_revision)
+        self._custody_sample(db, clock, first)
+        return self._custody_request_state(db, request)
+
+    def _managed_admission_state(self, db, request, raw, verified, existing_admission):
+        from .source import canonical_source
+
+        facts = self._custody_request_state(db, request)
+        if facts is None:
+            raise SourceAuthenticationError()
+        prepared, deadline = self._custody_intent(db, request.handoff_id)
+        p, cap, intent = verified.source.payload, request.payload.capture, prepared.payload
+        if (
+            raw != canonical_source(verified.source)
+            or hashlib.sha256(raw).hexdigest() != cap.envelope_sha256
+            or len(raw) != cap.artifact_size
+            or verified.payload_digest != cap.payload_digest
+            or p.snapshot.snapshot_id != cap.snapshot_id
+            or p.snapshot.captured_at != cap.captured_at
+            or p.retention.recovery_deadline != cap.recovery_deadline
+            or p.source != intent.source
+            or p.watcher_event_id != intent.watcher_event_id
+            or (p.trigger.rule_id, p.trigger.rule_version) != (intent.rule_id, intent.rule_version)
+            or (p.retention.policy_id, p.retention.policy_version)
+            != (intent.policy_id, intent.policy_version)
+            or p.event_id != request.scope.event_id
+        ):
+            raise SourceStoreConflict()
+        if existing_admission is not None:
+            if (
+                request.expected_fence_generation != facts.fence_generation
+                or facts.receipt is None
+                or facts.receipt.admission_id != existing_admission
+                or facts.content_state != "retained"
+            ):
+                raise SourceAuthenticationError()
+        else:
+            if self._custody_operation(db, request) is None:
+                raise SourceAuthenticationError()
+            self._open_custody(facts, request)
+            self._capture_eligible(db, prepared, cap, deadline, verified.verified_at)
+        return facts
+
+    def _link_custody(self, db, request, facts, admission_id):
+        if facts.ever_custodied:
+            if facts.receipt is None or facts.receipt.admission_id != admission_id:
+                raise SourceStoreUnavailable()
+            return
+        revision = self._next_custody_revision(facts)
+        db.execute(
+            "UPDATE source_handoffs SET admission_id=?,ever_custodied=1,revision=? "
+            "WHERE handoff_id=?",
+            (admission_id, revision, request.handoff_id),
+        )
+        db.execute(
+            "UPDATE source_handoff_operations SET phase='admitted',revision=? WHERE control_id=?",
+            (revision, request.control_id),
+        )
+
+    def _close_custody_for_receipt(self, db, admission_id):
+        rows = db.execute(
+            "SELECT handoff_id FROM source_handoffs WHERE admission_id=?", (admission_id,)
+        ).fetchall()
+        for (ident,) in rows:
+            facts, _ = self._handoff_metadata(db, ident)
+            self._close_custody(db, facts)
+
+    def _close_custody_for_lifecycle(self, db, namespace, identity=None, cutoff=None):
+        rows = db.execute(
+            "SELECT handoff_id FROM source_handoffs WHERE namespace_id=? AND closed=0", (namespace,)
+        ).fetchall()
+        for (ident,) in rows:
+            facts, _ = self._handoff_metadata(db, ident)
+            if identity is not None:
+                prepared, _ = self._custody_intent(db, ident)
+                if (
+                    prepared.payload.source != identity
+                    or facts.capture is None
+                    or not _capture_at_or_before(facts.capture.captured_at, cutoff)
+                ):
+                    continue
+            self._close_custody(db, facts)
+
     @_boundary
     def migrate(self) -> SourceMigration:
         """Explicit privileged upgrade; never initializes or repairs invalid storage."""

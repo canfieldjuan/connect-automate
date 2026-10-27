@@ -137,80 +137,110 @@ class SourceAdmission:
             raise SourceStoreUnavailable()
         return receipt, state
 
-    @_boundary
-    def admit_source(self, raw: bytes) -> SourceAdmissionResult:
+    @staticmethod
+    def _raw(raw):
         if type(raw) is not bytes or not 0 < len(raw) <= MAX_SOURCE_BYTES:
             raise SourceAuthenticationError()
+
+    @_boundary
+    def admit_source(self, raw: bytes) -> SourceAdmissionResult:
+        self._raw(raw)
         with self._store._transaction() as db:
-            authority, _ = self._store._authority(db)
-            first = authenticate_source(
-                raw, trust=authority, now=self._store._check_clock(db, self._clock())
-            )
-            payload = first.source.payload
-            self._store._admission_policy(db, payload.source, payload.snapshot.captured_at)
-            row = db.execute(
-                "SELECT admission_id, organization_id, namespace_id, event_id, receipt, "
-                "envelope_sha256 FROM source_receipts "
-                "WHERE organization_id=? AND namespace_id=? AND event_id=?",
-                (first.organization_id, first.namespace_id, payload.event_id),
-            ).fetchone()
-            applied = row is None
-            state = "retained"
-            if row is not None:
-                receipt, state = self._existing(db, row)
-                if receipt.payload_digest != first.payload_digest:
-                    raise SourceAdmissionConflict()
-            else:
-                ident = str(uuid4())
-                canonical = canonical_source(first.source)
-                # Deferred FKs let content be staged before the final decision
-                # sample. The immutable receipt is the last row written.
-                db.execute("INSERT INTO source_content VALUES (?, ?)", (ident, canonical))
-                db.execute(
-                    "INSERT INTO source_custody VALUES (?, ?, ?, 'retained')",
-                    (ident, _json(payload.source), payload.snapshot.captured_at),
-                )
-            current, _ = self._store._authority(db)
-            final = authenticate_source(
-                raw, trust=current, now=self._store._check_clock(db, self._clock())
-            )
-            if (
-                final.trust_generation != first.trust_generation
-                or final.verified_at < first.verified_at
-            ):
-                raise SourceAuthenticationError()
-            self._store._record_clock(db, final.verified_at, final.trust_generation)
-            if applied:
-                receipt = SourceReceipt.model_validate(
-                    {
-                        "schema": "lead.source.receipt",
-                        "schema_version": "1.0",
-                        "admission_id": ident,
-                        "host_id": final.host_id,
-                        "organization_id": final.organization_id,
-                        "namespace_id": final.namespace_id,
-                        "event_id": payload.event_id,
-                        "payload_digest": final.payload_digest,
-                        "accepted_at": final.verified_at.isoformat(timespec="microseconds").replace(
-                            "+00:00", "Z"
-                        ),
-                        "key_id": final.key_id,
-                        "trust_generation": final.trust_generation,
-                        "policy_id": final.policy_id,
-                        "policy_version": final.policy_version,
-                        "recovery_deadline": payload.retention.recovery_deadline,
-                    }
-                )
-                db.execute(
-                    "INSERT INTO source_receipts VALUES (?, ?, ?, ?, ?, ?)",
-                    (
-                        ident,
-                        final.organization_id,
-                        final.namespace_id,
-                        payload.event_id,
-                        _json(receipt),
-                        hashlib.sha256(canonical).hexdigest(),
-                    ),
-                )
-            result = SourceAdmissionResult(receipt=receipt, applied=applied, content_state=state)
+            result = self._admit(db, raw)
         return result
+
+    @_boundary
+    def _admit_managed(self, request, raw, *, incarnation, existing_admission=None):
+        self._raw(raw)
+        with self._store._transaction() as db:
+            self._store._incarnation(db, incarnation)
+            result = self._admit(db, raw, request, existing_admission)
+        return result
+
+    def _admit(self, db, raw, request=None, existing_admission=None):
+        """Single content/receipt writer for legacy, fenced and retained replay."""
+        authority, _ = self._store._authority(db)
+        first = authenticate_source(
+            raw, trust=authority, now=self._store._check_clock(db, self._clock())
+        )
+        payload = first.source.payload
+        if request is None:
+            self._store._unreserved_event(db, first.namespace_id, payload.event_id)
+        else:
+            self._store._managed_admission_state(db, request, raw, first, existing_admission)
+        self._store._admission_policy(db, payload.source, payload.snapshot.captured_at)
+        row = db.execute(
+            "SELECT admission_id, organization_id, namespace_id, event_id, receipt, "
+            "envelope_sha256 FROM source_receipts "
+            "WHERE organization_id=? AND namespace_id=? AND event_id=?",
+            (first.organization_id, first.namespace_id, payload.event_id),
+        ).fetchone()
+        applied = row is None
+        state = "retained"
+        if row is not None:
+            receipt, state = self._existing(db, row)
+            if receipt.payload_digest != first.payload_digest:
+                raise SourceAdmissionConflict()
+        else:
+            if existing_admission is not None:
+                raise SourceAuthenticationError()
+            ident = str(uuid4())
+            canonical = canonical_source(first.source)
+            # Deferred FKs let content be staged before the final decision
+            # sample. The immutable receipt is the last row written.
+            db.execute("INSERT INTO source_content VALUES (?, ?)", (ident, canonical))
+            db.execute(
+                "INSERT INTO source_custody VALUES (?, ?, ?, 'retained')",
+                (ident, _json(payload.source), payload.snapshot.captured_at),
+            )
+        current, _ = self._store._authority(db)
+        final = authenticate_source(
+            raw, trust=current, now=self._store._check_clock(db, self._clock())
+        )
+        if (
+            final.trust_generation != first.trust_generation
+            or final.verified_at < first.verified_at
+        ):
+            raise SourceAuthenticationError()
+        if request is not None:
+            facts = self._store._managed_admission_state(
+                db, request, raw, final, existing_admission
+            )
+        self._store._record_clock(db, final.verified_at, final.trust_generation)
+        if applied:
+            receipt = SourceReceipt.model_validate(
+                {
+                    "schema": "lead.source.receipt",
+                    "schema_version": "1.0",
+                    "admission_id": ident,
+                    "host_id": final.host_id,
+                    "organization_id": final.organization_id,
+                    "namespace_id": final.namespace_id,
+                    "event_id": payload.event_id,
+                    "payload_digest": final.payload_digest,
+                    "accepted_at": final.verified_at.isoformat(timespec="microseconds").replace(
+                        "+00:00", "Z"
+                    ),
+                    "key_id": final.key_id,
+                    "trust_generation": final.trust_generation,
+                    "policy_id": final.policy_id,
+                    "policy_version": final.policy_version,
+                    "recovery_deadline": payload.retention.recovery_deadline,
+                }
+            )
+            db.execute(
+                "INSERT INTO source_receipts VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    ident,
+                    final.organization_id,
+                    final.namespace_id,
+                    payload.event_id,
+                    _json(receipt),
+                    hashlib.sha256(canonical).hexdigest(),
+                ),
+            )
+        if request is not None:
+            if existing_admission is None:
+                self._store._link_custody(db, request, facts, receipt.admission_id)
+            self._store._custody_request_state(db, request)
+        return SourceAdmissionResult(receipt=receipt, applied=applied, content_state=state)

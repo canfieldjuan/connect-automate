@@ -63,8 +63,8 @@ class SourceContent:
         self._store._record_clock(db, final, authority.generation)
         return final
 
-    @staticmethod
-    def _purge(db, ident):
+    def _purge(self, db, ident):
+        self._store._close_custody_for_receipt(db, ident)
         db.execute("DELETE FROM source_content WHERE admission_id=?", (ident,))
         db.execute(
             "UPDATE source_custody SET state='purged' WHERE admission_id=? AND state='retained'",
@@ -145,6 +145,7 @@ class SourceContent:
                 self._custody._existing(db, self._row(db, ident))
                 if _capture_at_or_before(captured_at, cutoff):
                     self._purge(db, ident)
+            self._store._close_custody_for_lifecycle(db, identity.namespace_id, identity, cutoff)
             db.execute(
                 "INSERT INTO source_purge_horizons VALUES (?, ?, ?) "
                 "ON CONFLICT(identity) DO UPDATE SET cutoff=excluded.cutoff",
@@ -161,6 +162,7 @@ class SourceContent:
                 return False
             first = self._store._check_clock(db, self._clock())
             final = self._final(db, first)
+            self._store._close_custody_for_lifecycle(db, namespace)
             db.execute("INSERT INTO source_retired VALUES (?, ?)", (namespace, _clock_text(final)))
         return True
 
