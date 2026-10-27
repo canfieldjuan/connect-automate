@@ -11,8 +11,8 @@ no unresolved review threads remained. Durable alias
 `custody-r2-qualification/merge-205a340`, manifest SHA-256
 `1ce8587b434dc8218b9792c46be9cd790ad2992fa00cadbe4e7fb026b28ee7a0`,
 records those gates and merge-tree equality. Historical pending notes below remain
-stage records. [R3.1 composition](LEAD-CUSTODY-COMPOSITION.md) is the next proposed
-work order; this completion grants no receiver, machine-authentication or adoption
+stage records. [R3.1 composition](LEAD-CUSTODY-COMPOSITION.md) records the next
+work order and its acceptance; this completion grants no receiver, machine-authentication or adoption
 authority.
 
 Juan selected “This lead-intake session (recommended)” as its sole owner, using

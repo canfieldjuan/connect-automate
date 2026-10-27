@@ -1,12 +1,26 @@
 # R3 receiver composition: first bounded work order
 
-Status: **PROPOSED; contract review and exact-revision acceptance pending.**
+Status: **R3.1 contract ACCEPTED; contract-only merge and executable proof pending.**
 
-Juan asked, “Is R3 next? If so let’s start”. This starts R3 contract preparation.
-It does not record acceptance of a design that had not yet been written. The
+Juan asked, “Is R3 next? If so let’s start”, starting contract preparation. The
 [parent sequence](LEAD-RECEIVER-CUSTODY.md#bounded-implementation-sequence-and-verification)
 requires a committed contract and explicit acceptance before executable work.
-No executable work is included in this proposal.
+No executable work is included in this contract PR.
+
+## Acceptance record
+
+On 2026-10-27, oversight mailbox `15f5c0a6` relayed Juan's decision verbatim:
+**“accept R3.1”**. The relay explicitly binds that decision to contract revision
+`75d093da630d955d86bedb03cc473c2d1ed4909e`, reviewed with oversight CONTRACT PASS
+`537b619d` / [review 5671881148](https://github.com/canfieldjuan/connect-automate/pull/56#pullrequestreview-5671881148).
+The operator's relayed acceptance supplies authority; the reviewer's PASS alone
+does not. This acceptance-only record changes no design rule.
+
+Merge PR #56 as contract-only after its exact-head gates. Implement R3.1 in a
+separate PR on the merged contract: unchanged legacy-parity baseline first, then
+the declared fail-first managed-entry probe. Enforce the no-action restriction in
+code. Receiver activation, reference-only resume and adoption remain outside this
+acceptance. No executable edits precede this acceptance record.
 
 R2 library qualification merged in [PR #55](https://github.com/canfieldjuan/connect-automate/pull/55).
 This proposal starts with **R3.1: fenced raw submission into the verified runtime**.
@@ -197,7 +211,8 @@ no automatic reread, recapture, retry scheduler, queue, database or retention ru
   change accidentally. Preserve that block's behavior and its existing tests;
   apply the new no-action restriction only to the managed entry.
 - **Gate:** independent contract review and Juan's exact-revision acceptance
-  precede executable changes. This proposal contains no acceptance record.
+  are recorded above. The contract-only PR must pass its current-head gates and
+  merge before executable work begins in a separate PR.
 - Before implementation, re-pin current main and prove relevant existing tests
   unchanged. If main changes reserved runtime/result owners, reconcile their
   current contracts and diff before extracting the common path.
@@ -239,8 +254,10 @@ remain merge gates. Record durable evidence outside the worktree.
 
 ## Implementation summary
 
-Proposal only: this contract, the parent continuation pointer and the R2 completion
-status record change. No executable, test, dependency, workflow or schema edits.
+Contract only: this contract, the parent continuation pointer and the R2 completion
+status record change. The later acceptance record changes status and records the
+operator's decision, without altering the reviewed design. No executable, test,
+dependency, workflow or schema edits.
 Code tests are not rerun for this documentation-only proposal. Source inventory,
 reference checks and the cold diff audit validate its claims; prior test results
 remain explicitly historical evidence.
@@ -254,8 +271,9 @@ Record the actual checks and proposal commit in the durable contract packet.
 
 ## Gap audit
 
-**NOT DONE — R3 implementation is not authorized or implemented.** R3.1's contract
-review/acceptance and executable proofs are pending. Completing R3.1 will not
+**NOT DONE — accepted R3.1 executable work has not started.** Contract review and
+operator acceptance are recorded; current-head contract-only merge gates and
+executable proofs remain pending. Completing R3.1 will not
 complete R3 or qualify a receiver. The next contracts must cover reference-only
 resume through current custody authority, evidence-based status/settlement,
 transport-operation identity/storage/retention/recovery and result bounds before
