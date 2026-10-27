@@ -726,3 +726,103 @@ Durable evidence alias: `custody-r2-managed/manifest.json`, SHA-256
 pins, expected failures and repairs, process traces, selected counterfactuals,
 combined gate and committed-input equality proof. This follow-up is documentation
 only; executable tests are not rerun for evidence prose.
+
+## Remaining R2 process qualification work order (2026-10-27)
+
+This is the final bounded R2 qualification slice in the accepted sequence above,
+started on Juan's instruction, "Let’s review over and pick up next slice".
+The earlier migration/read-only and managed-boundary slices are merged. The
+managed-boundary review repairs are also merged; independent oversight confirmed
+their negative proofs. This work order introduces no new product or contract rule.
+R3 composition still requires its separately accepted contract.
+
+### Root cause and required change surface
+
+The managed boundary exists, but its native-process matrix does not yet cover
+all the accepted lifecycle orderings, a worker stopped before acquiring the
+writer, or closed retained-custody revalidation after restart. The current WAL
+snapshot and replacement-incarnation tests use local connections. These are
+qualification gaps, not evidence of a production defect.
+
+Extend `tests/test_lead_custody_races.py` through its existing spawn/pipe,
+checkpoint, observed-SQLITE_BUSY, per-write crash, and reopen helpers. Keep
+existing operation inputs and assertions; add the missing actions and probes at
+that harness owner instead of building a second runner. Use the existing source
+and custody fixtures and the real private facade, SourceStore, SourceAdmission
+and SourceContent operations. This canonical document records the inventory,
+planned differences and resulting evidence.
+
+### Inventory of validated work
+
+Base: merged `6c93681277b1a7ef4fabf9347fcd9fab007dd034`, tree
+`94f99d09a833148a615ab319f7e3a4b3d62ce28e`, identical to the reviewed managed head.
+The prior combined lane recorded `3117 passed in 387.58s`; this is historical
+evidence, not a run performed for this work order. Exact-head Linux/Windows CI,
+oversight PASS and connector review qualified that merge.
+
+| Existing owner/proof | Retained inputs and behavior |
+| --- | --- |
+| `tests/test_lead_custody_races.py` | Real spawned processes, native private-directory protection, pipe checkpoints, actual busy-lock observation, executed-write crash/failure enumeration, commit/lost-response recovery and exact store snapshots. Hash `f28b86de0e9b90633cf96d9e9fb0f5ead9990d3dad3da8935d2f0ae04fc15756`. |
+| `tests/test_lead_custody_store.py` | Managed request/capture fixtures and real owner operations; retired-registration and full-identity purge negatives. Hash `527c3133e1c7e8c0b005dbcad0bdf8e7face1c5dd770a06d9a026d415c638be0`. |
+| `tests/test_lead_source_races.py` | Existing grant/signature/lookup/commit revocation checkpoints and post-wait/final authentication proof through the shared admission owner. Hash `8440eb6e94b3cfd9712f154d524591b8934d8266386eff9aa1fb230ef5a669fa`. |
+| Existing clock, joined recovery/lifecycle and source-content tests | Clock floor, authenticated replay, retention, cutoff and no-resurrection invariants remain in the combined regression lane. |
+| Synthetic signing vectors | Unchanged `tests/fixtures/lead_source_auth/vectors.json`, hash `f06d60a7beaa0ab7acbda8f53a0072288282267563070def4a7ec80263343627`; no private messages or production keys. |
+| Runtime/dependencies | Local Python `3.13.11`; existing Linux and Windows CI use Python `3.13`. `uv.lock` hash `ef00a5b983e507a66f1dcca1687bf1f6523f031a44e640e5d9ae380832ecc5e3`. No model, inference prompt, service or mailbox is involved. |
+| Durable previous proof | `custody-r2-managed/manifest.json`, `custody-r2-managed/review-g1-g2/manifest.json` and `custody-r2-managed/merge-72f2796/manifest.json`; existing synthetic traces and counterfactuals remain retained. |
+
+### Planned differences from the validated harness
+
+| Difference | Reason and required evidence |
+| --- | --- |
+| Add a before-writer pause and bounded action support for revalidation, authority revocation and retired cleanup | Exercise the accepted worker-stall and restart paths through real owners. Retain the old actor actions and default clock/packet behavior unchanged. |
+| Reuse one ordered-process coordinator for additional lifecycle pairs | Complete both writer orders for bind/admit/close versus purge/retirement, including unbound old/new captures. Order comes from IPC and observed lock contention, never sleeps. Existing expected outcomes remain assertions. |
+| Add managed post-wait clock and authority cases | Prove backward/forward changes and revocation cannot be bypassed by a queued or restarted managed admission. Keep the existing source authorization/checkpoint tests unchanged. |
+| Add fresh-process closed-custody revalidation and retirement cleanup recovery | Stale generation refuses, current authenticated retained replay preserves the same receipt and creates no operation slot, purge/expiry/revocation refuse, and erased retired receipts remain unknown history. |
+| Exercise metadata snapshots and replacement with a separate process | A live WAL snapshot stays stable across a real closure commit; a fresh snapshot sees closure. A new store incarnation at the same path refuses old packets without creating records. |
+| Add focused counterfactual probes in durable disposable import copies | The pre-writer fence/time-of-check-to-time-of-use, final checks, admission-link/revalidation and lifecycle cases must fail at intended assertions when their owner guarantee is removed. Reuse the earlier mutation-loader pattern; do not alter checkout source to run mutants. |
+
+No other differences are planned. Existing per-write crash/lost-response and
+unmanaged replay/capacity proofs are reused; extend their operation coverage only
+where the added lifecycle/revalidation paths require it. Any reproducible owner
+defect is reported and repaired at its origin under the accepted invariant, with
+fail-before/pass-after evidence; an untested hypothesis is not a source change.
+
+### Explicit non-scope
+
+No production-source change is planned. No schema, dependency, public export,
+R1 protocol, result/transport, receiver/service, machine-authentication, workflow,
+Watcher/EOM, application pin, extraction, retention-policy or adoption change.
+Do not infer authority from synthetic machine references. R3/R4/R5 and installed
+application proof remain separate work; no new dispatch or workflow mechanism.
+
+### Assumptions and verification plan
+
+The existing R2 acceptance authorizes this ordered qualification work; this
+docs-only work-order commit precedes test edits. Source custody remains the
+single transaction owner. The same native harness must run on Linux and Windows.
+Any platform-specific proof still absent after the new CI run stays explicitly
+unqualified rather than becoming a release-note exception.
+
+Before test edits, rerun the unchanged combined affected lane at this base and
+record executable, dependency, fixture and test hashes under durable alias
+`custody-r2-qualification`. Add otherwise-valid negative cases and positive
+neighbors. Reopen before state inspection, preserve actual write/lock traces,
+check fixed exception type/message/no cause/context and body-free IPC/log output,
+and distinguish committed success from lost response and unavailable evidence.
+Every new probe must either kill its intended counterfactual or identify an
+existing backstop explicitly; setup/import failure is not a killed mutation.
+
+Run focused process/adjacent tests and Ruff incrementally, followed by the
+contract-required combined affected lane before the grouped push. Preserve all
+old tests and source behavior; list the exact harness-only differences in the
+cold diff audit. The existing CI already selects the custody race file on native
+Windows. Exact-head Linux/Windows CI, independent oversight, connector
+reconciliation and tree identity remain merge gates. Rollback disables managed
+ingress while retaining the fenced store; no downgrade, reopening or tombstone
+erasure is authorized.
+
+### Implementation summary, cold diff audit and gap audit
+
+NOT DONE — work order only. Baseline, added process qualification, counterfactuals,
+local combined gate and exact-head CI/review remain to be recorded. No new test
+or production behavior is claimed by this document.
