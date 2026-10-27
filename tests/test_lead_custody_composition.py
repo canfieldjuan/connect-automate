@@ -233,7 +233,7 @@ def test_binding_is_frozen_and_closed_values_are_copied(managed):
     assert submit(handoff, upload, raw).workflow_outcome == "accepted"
 
 
-@pytest.mark.parametrize("kind", ["deployment", "incarnation", "owner", "binding"])
+@pytest.mark.parametrize("kind", ["host", "deployment", "incarnation", "owner", "binding"])
 def test_configuration_drift_refused_before_source(managed, monkeypatch, kind):
     from test_lead_source_auth import OTHER
     from test_lead_source_store import store
@@ -243,7 +243,9 @@ def test_configuration_drift_refused_before_source(managed, monkeypatch, kind):
     _, owner, runtime, access, prepared, upload, raw = managed
     handoff = composition(runtime, access, prepared)
     monkeypatch.setattr(access, "admit_bound", forbidden)
-    if kind == "deployment":
+    if kind == "host":
+        monkeypatch.setattr(owner, "host_id", OTHER)
+    elif kind == "deployment":
         monkeypatch.setattr(owner, "organization_id", OTHER)
     elif kind == "incarnation":
         monkeypatch.setattr(access, "_incarnation", OTHER)
