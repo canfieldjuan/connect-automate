@@ -1276,3 +1276,871 @@ def test_same_event_cannot_have_second_reservation(private_root):
         row = list(db.execute("SELECT * FROM source_handoffs").fetchone())
         row[0], row[8], row[9] = value["handoff_id"], raw, hashlib.sha256(raw.encode()).hexdigest()
         db.execute("INSERT INTO source_handoffs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
+
+
+# Managed operations use the real owners; the earlier SQL fixtures remain only
+# for independent metadata/corruption tests.
+RESERVATION = "2026-10-18T12:45:00Z"
+
+
+def managed_request(value=None):
+    value = envelope() if value is None else value
+    p = value["payload"]
+    data = request(value=value)
+    data.update(handoff_id=str(uuid4()), control_id=str(uuid4()), job_id=str(uuid4()))
+    data["scope"].update(
+        host_id=value["authorization"]["host_id"],
+        organization_id=p["organization_id"],
+        namespace_id=p["source"]["namespace_id"],
+        event_id=p["event_id"],
+    )
+    data["payload"].update(
+        rule_id=p["trigger"]["rule_id"],
+        rule_version=p["trigger"]["rule_version"],
+        policy_id=p["retention"]["policy_id"],
+        policy_version=p["retention"]["policy_version"],
+    )
+    return parse_untrusted_request(encode(data))
+
+
+def managed_operation(prepared, kind, cap=None, generation=1):
+    data = prepared.model_dump()
+    data.update(
+        operation=kind,
+        expected_fence_generation=generation,
+        control_id=str(uuid4()),
+        job_id=str(uuid4()),
+        payload={"capture": cap},
+    )
+    return parse_untrusted_request(encode(data))
+
+
+def managed_setup(root, value=None, **options):
+    owner = store(root)
+    owner.initialize(trust())
+    access = reader(owner, clock=lambda: NOW, **options)
+    prepared = managed_request(value)
+    return owner, access, prepared
+
+
+def test_managed_admission_close_and_revalidation(private_root):
+    from connect_automate.lead_intake.auth import SourceAuthenticationError
+
+    owner, access, prepared = managed_setup(private_root)
+    first = access.register_intent(prepared, reservation_expires_at=RESERVATION)
+    assert (first.fence_generation, first.state_revision, first.ever_custodied) == (1, 1, False)
+    upload = managed_operation(prepared, "upload", capture(envelope()))
+    bound = access.bind_upload(upload)
+    assert (bound.state_revision, bound.capture) == (2, upload.payload.capture)
+    raw = canonical_source(parse_untrusted_source(encode(envelope())))
+    admitted = access.admit_bound(upload, raw)
+    assert admitted.applied is True
+    assert access.admit_bound(upload, raw).receipt == admitted.receipt
+    settled = managed_operation(prepared, "settle", capture(envelope()))
+    closed = access.close_admission(settled)
+    assert (closed.closed, closed.fence_generation, closed.state_revision) == (True, 2, 4)
+    assert closed.receipt == admitted.receipt
+    assert access.close_admission(settled) == closed
+    with pytest.raises(SourceAuthenticationError):
+        access.admit_bound(upload, raw)
+    with pytest.raises(SourceAuthenticationError):
+        SourceAdmission(owner, clock=lambda: NOW).admit_source(raw)
+    resume = managed_operation(prepared, "resume", capture(envelope()), 2)
+    before = snapshot(owner)
+    resumed = access.revalidate_existing(resume, raw, admission_id=admitted.receipt.admission_id)
+    assert resumed.receipt == admitted.receipt and resumed.applied is False
+    assert snapshot(owner) == before
+
+
+def rewrite_request(value, path, changed):
+    data = value.model_dump()
+    target = data
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = changed
+    return parse_untrusted_request(encode(data))
+
+
+def upload_setup(root, *, admit=False, value=None, **options):
+    owner, access, prepared = managed_setup(root, value, **options)
+    access.register_intent(prepared, reservation_expires_at=RESERVATION)
+    value = envelope() if value is None else value
+    upload = managed_operation(prepared, "upload", capture(value))
+    access.bind_upload(upload)
+    raw = canonical_source(parse_untrusted_source(encode(value)))
+    result = access.admit_bound(upload, raw) if admit else None
+    return owner, access, prepared, upload, raw, result
+
+
+@pytest.mark.parametrize("phase", ["prepared", "bound", "admitted", "closed"])
+def test_managed_legacy_refusal_all_phases(private_root, phase):
+    from connect_automate.lead_intake.auth import SourceAuthenticationError
+
+    owner, access, prepared = managed_setup(private_root)
+    access.register_intent(prepared, reservation_expires_at=RESERVATION)
+    raw = encode(envelope())
+    if phase != "prepared":
+        upload = managed_operation(prepared, "upload", capture(envelope()))
+        access.bind_upload(upload)
+        if phase in ("admitted", "closed"):
+            access.admit_bound(upload, raw)
+        if phase == "closed":
+            access.close_admission(managed_operation(prepared, "settle"))
+    before = snapshot(owner)
+    with pytest.raises(SourceAuthenticationError):
+        SourceAdmission(owner, clock=lambda: NOW).admit_source(raw)
+    assert snapshot(owner) == before
+
+
+@pytest.mark.parametrize("kind", ["prepare", "upload", "settle"])
+@pytest.mark.parametrize(
+    "field", ["control_id", "job_id", "proof_reference", "enrolled_machine_id", "handoff_id"]
+)
+def test_managed_operation_fingerprint_rejects_changed_field(private_root, kind, field):
+    owner, access, prepared, upload, raw, _ = upload_setup(private_root)
+    operation = prepared if kind == "prepare" else upload
+    if kind == "settle":
+        operation = managed_operation(prepared, "settle")
+        access.close_admission(operation)
+    altered = rewrite_request(operation, [field], str(uuid4()))
+    before = snapshot(owner)
+    with pytest.raises(SourceStoreConflict):
+        if kind == "prepare":
+            access.register_intent(altered, reservation_expires_at=RESERVATION)
+        elif kind == "upload":
+            access.bind_upload(altered)
+        else:
+            access.close_admission(altered)
+    assert snapshot(owner) == before
+
+
+@pytest.mark.parametrize("phase", ["prepare", "bind", "admit", "close", "resume"])
+def test_managed_incarnation_refuses_every_mutation(private_root, phase):
+    owner, access, prepared, upload, raw, result = upload_setup(private_root, admit=True)
+    wrong = reader(owner, expected_incarnation=str(uuid4()), clock=lambda: NOW)
+    before = snapshot(owner)
+    with pytest.raises(SourceStoreConflict):
+        if phase == "prepare":
+            wrong.register_intent(prepared, reservation_expires_at=RESERVATION)
+        elif phase == "bind":
+            wrong.bind_upload(upload)
+        elif phase == "admit":
+            wrong.admit_bound(upload, raw)
+        elif phase == "close":
+            wrong.close_admission(managed_operation(prepared, "settle"))
+        else:
+            wrong.revalidate_existing(
+                managed_operation(prepared, "resume", capture(envelope())),
+                raw,
+                admission_id=result.receipt.admission_id,
+            )
+    assert snapshot(owner) == before
+
+
+@pytest.mark.parametrize("case", ["handoffs", "operations", "no-slot"])
+def test_managed_capacity_reserves_settlement_and_preserves_retries(private_root, case):
+    from connect_automate.lead_intake.auth import SourceAuthenticationError
+
+    options = (
+        dict(max_handoffs=1)
+        if case == "handoffs"
+        else dict(max_mutation_records=2 if case == "no-slot" else 3)
+    )
+    owner, access, prepared = managed_setup(private_root, **options)
+    if case == "no-slot":
+        before = snapshot(owner)
+        with pytest.raises(SourceStoreConflict):
+            access.register_intent(prepared, reservation_expires_at=RESERVATION)
+        assert snapshot(owner) == before
+        return
+    first = access.register_intent(prepared, reservation_expires_at=RESERVATION)
+    assert access.register_intent(prepared, reservation_expires_at=RESERVATION) == first
+    other = envelope()
+    other["payload"]["event_id"] = str(uuid4())
+    resign(other)
+    with pytest.raises(SourceStoreConflict):
+        access.register_intent(managed_request(other), reservation_expires_at=RESERVATION)
+    upload = managed_operation(prepared, "upload", capture(envelope()))
+    access.bind_upload(upload)
+    receipt = access.admit_bound(upload, encode(envelope())).receipt
+    close = managed_operation(prepared, "settle")
+    closed = access.close_admission(close)
+    assert access.close_admission(close) == closed
+    assert closed.receipt == receipt
+    with pytest.raises(SourceAuthenticationError):
+        access.bind_upload(upload)
+    resume = managed_operation(prepared, "resume", capture(envelope()), 2)
+    assert (
+        access.revalidate_existing(
+            resume, encode(envelope()), admission_id=receipt.admission_id
+        ).receipt
+        == receipt
+    )
+    with database(owner.path) as db:
+        assert db.execute("SELECT count(*) FROM source_handoff_operations").fetchone()[0] == 3
+
+
+def test_managed_legacy_receipt_cannot_be_adopted(private_root):
+    owner, access, prepared = managed_setup(private_root)
+    SourceAdmission(owner, clock=lambda: NOW).admit_source(encode(envelope()))
+    before = snapshot(owner)
+    with pytest.raises(SourceStoreConflict):
+        access.register_intent(prepared, reservation_expires_at=RESERVATION)
+    assert snapshot(owner) == before
+
+
+@pytest.mark.parametrize(
+    "field,changed",
+    [
+        ("envelope_sha256", "0" * 64),
+        ("payload_digest", "0" * 64),
+        ("snapshot_id", OTHER),
+        ("captured_at", "2026-10-18T12:00:01Z"),
+        ("recovery_deadline", "2026-10-18T13:00:01Z"),
+        ("artifact_size", 1),
+    ],
+)
+def test_managed_capture_binding_fields_independent(private_root, field, changed):
+    owner, access, prepared = managed_setup(private_root)
+    access.register_intent(prepared, reservation_expires_at=RESERVATION)
+    cap = capture(envelope())
+    assert cap[field] != changed
+    cap[field] = changed
+    upload = managed_operation(prepared, "upload", cap)
+    access.bind_upload(upload)
+    before = snapshot(owner)
+    with pytest.raises(SourceStoreConflict):
+        access.admit_bound(upload, encode(envelope()))
+    assert snapshot(owner) == before
+
+
+@pytest.mark.parametrize(
+    "path,changed",
+    [
+        (["payload", "source", "message_id"], "different-message"),
+        (["payload", "watcher_event_id"], "0" * 64),
+        (["payload", "rule_id"], OTHER),
+        (["payload", "rule_version"], 2),
+    ],
+)
+def test_managed_intent_binding_fields_independent(private_root, path, changed):
+    owner, access, prepared = managed_setup(private_root)
+    assert prepared.model_dump()["payload"][path[-1]] != changed if len(path) == 2 else True
+    prepared = rewrite_request(prepared, path, changed)
+    access.register_intent(prepared, reservation_expires_at=RESERVATION)
+    upload = managed_operation(prepared, "upload", capture(envelope()))
+    access.bind_upload(upload)
+    before = snapshot(owner)
+    with pytest.raises(SourceStoreConflict):
+        access.admit_bound(upload, encode(envelope()))
+    assert snapshot(owner) == before
+
+
+@pytest.mark.parametrize("kind", ["bind", "admit"])
+@pytest.mark.parametrize("when", ["first", "final"])
+def test_managed_reservation_expiry_rolls_back(private_root, kind, when):
+    from datetime import datetime
+
+    from connect_automate.lead_intake.auth import SourceAuthenticationError
+
+    owner, access, prepared = managed_setup(private_root)
+    access.register_intent(prepared, reservation_expires_at=RESERVATION)
+    upload = managed_operation(prepared, "upload", capture(envelope()))
+    if kind == "admit":
+        access.bind_upload(upload)
+    samples = iter(
+        [NOW, datetime.fromisoformat(RESERVATION)]
+        if when == "final"
+        else [datetime.fromisoformat(RESERVATION)]
+    )
+    late = reader(owner, clock=lambda: next(samples))
+    before = snapshot(owner)
+    with pytest.raises(SourceAuthenticationError):
+        late.bind_upload(upload) if kind == "bind" else late.admit_bound(upload, encode(envelope()))
+    assert snapshot(owner) == before
+
+
+def test_managed_closed_empty_never_admits_and_unknown_never_closes(private_root):
+    from connect_automate.lead_intake.auth import SourceAuthenticationError
+
+    owner, access, prepared = managed_setup(private_root)
+    close = managed_operation(prepared, "settle")
+    with pytest.raises(SourceAuthenticationError):
+        access.close_admission(close)
+    assert observe(access, prepared) is None
+    access.register_intent(prepared, reservation_expires_at=RESERVATION)
+    closed = access.close_admission(close)
+    assert closed.closed and not closed.ever_custodied and closed.receipt is None
+    with pytest.raises(SourceAuthenticationError):
+        access.bind_upload(managed_operation(prepared, "upload", capture(envelope())))
+    assert snapshot(owner)["source_content"] == []
+
+
+def test_managed_revalidation_after_reservation_expiry_and_revoke(private_root):
+    from datetime import timedelta
+
+    from connect_automate.lead_intake.auth import SourceAuthenticationError
+
+    owner, access, prepared, upload, raw, admitted = upload_setup(private_root, admit=True)
+    later = reader(owner, clock=lambda: NOW + timedelta(minutes=16))
+    with pytest.raises(SourceAuthenticationError):
+        later.admit_bound(upload, raw)
+    resume = managed_operation(prepared, "resume", capture(envelope()))
+    assert (
+        later.revalidate_existing(resume, raw, admission_id=admitted.receipt.admission_id).applied
+        is False
+    )
+    grants = trust().model_dump()["key_grants"]
+    grants[0]["status"] = "revoked"
+    owner.publish_authority(next_snapshot(key_grants=grants), expected_generation=1)
+    before = snapshot(owner)
+    with pytest.raises(SourceAuthenticationError):
+        later.revalidate_existing(resume, raw, admission_id=admitted.receipt.admission_id)
+    assert snapshot(owner) == before
+    assert observe(access, prepared).receipt == admitted.receipt
+
+
+@pytest.mark.parametrize("raw_kind", ["formatted", "copied", "signature"])
+def test_managed_requires_exact_raw_authenticated_artifact(private_root, raw_kind):
+    from connect_automate.lead_intake.auth import SourceAuthenticationError
+
+    owner, access, prepared, upload, raw, _ = upload_setup(private_root)
+    if raw_kind == "formatted":
+        raw = json.dumps(envelope(), indent=2).encode()
+        expected = SourceStoreConflict
+    elif raw_kind == "copied":
+        raw = parse_untrusted_source(raw)
+        expected = SourceAuthenticationError
+    else:
+        value = envelope()
+        value["authorization"]["signature"] = "A" * 86
+        raw = encode(value)
+        expected = SourceAuthenticationError
+    before = snapshot(owner)
+    with pytest.raises(expected) as failure:
+        access.admit_bound(upload, raw)
+    assert failure.value.__cause__ is None and failure.value.__context__ is None
+    assert snapshot(owner) == before
+
+
+@pytest.mark.parametrize("phase", ["prepared", "bound", "admitted"])
+@pytest.mark.parametrize("lifecycle", ["purge", "retire"])
+def test_managed_lifecycle_closes_only_known_captures(private_root, phase, lifecycle):
+    from datetime import datetime
+
+    from connect_automate.lead_intake.auth import SourceAuthenticationError
+
+    owner, access, prepared = managed_setup(private_root)
+    access.register_intent(prepared, reservation_expires_at=RESERVATION)
+    upload = managed_operation(prepared, "upload", capture(envelope()))
+    if phase != "prepared":
+        access.bind_upload(upload)
+        if phase == "admitted":
+            access.admit_bound(upload, encode(envelope()))
+    content = SourceContent(owner, clock=lambda: NOW)
+    if lifecycle == "purge":
+        content.purge_message(
+            prepared.payload.source,
+            cutoff=datetime.fromisoformat(upload.payload.capture.captured_at),
+        )
+    else:
+        content.retire_namespace(prepared.scope.namespace_id)
+    facts = observe(access, prepared)
+    assert facts.closed is (lifecycle == "retire" or phase != "prepared")
+    with pytest.raises(SourceAuthenticationError):
+        access.bind_upload(upload)
+    if facts.closed:
+        old_settle = managed_operation(prepared, "settle")
+        with pytest.raises(SourceAuthenticationError):
+            access.close_admission(old_settle)
+        current = managed_operation(prepared, "settle", generation=2)
+        assert access.close_admission(current) == facts
+        assert access.close_admission(current) == facts
+    if lifecycle == "retire" and phase == "admitted":
+        content.cleanup_retired(prepared.scope.namespace_id, limit=100)
+        gone = observe(access, prepared)
+        assert gone.closed and gone.ever_custodied and gone.receipt is None
+        assert gone.content_state == "unknown"
+
+
+@pytest.mark.parametrize("bound", [False, True])
+def test_managed_late_purge_preserves_newer_capture(private_root, bound):
+    from datetime import datetime, timedelta
+
+    value = envelope()
+    value["payload"]["snapshot"]["captured_at"] = "2026-10-18T12:00:01Z"
+    value["payload"]["occurred_at"] = "2026-10-18T12:00:01Z"
+    resign(value)
+    owner, access, prepared = managed_setup(private_root, value)
+    access.register_intent(prepared, reservation_expires_at=RESERVATION)
+    upload = managed_operation(prepared, "upload", capture(value))
+    if bound:
+        access.bind_upload(upload)
+    SourceContent(owner, clock=lambda: NOW).purge_message(
+        prepared.payload.source,
+        cutoff=datetime.fromisoformat(upload.payload.capture.captured_at) - timedelta(seconds=1),
+    )
+    assert not observe(access, prepared).closed
+    access.bind_upload(upload)
+    assert access.admit_bound(upload, encode(value)).applied
+
+
+def test_managed_expired_content_closes_and_preserves_receipt(private_root):
+    from datetime import datetime
+
+    from connect_automate.lead_intake.content import SourceContentUnavailable
+
+    owner, access, prepared, upload, raw, admitted = upload_setup(private_root, admit=True)
+    content = SourceContent(
+        owner, clock=lambda: datetime.fromisoformat(upload.payload.capture.recovery_deadline)
+    )
+    with pytest.raises(SourceContentUnavailable):
+        content.read_content(admitted.receipt.admission_id)
+    facts = observe(access, prepared)
+    assert facts.closed and facts.ever_custodied and facts.receipt == admitted.receipt
+    assert facts.content_state == "purged"
+
+
+@pytest.mark.parametrize("kind", ["prepare", "upload", "settle", "resume"])
+@pytest.mark.parametrize("bad", [None, False, "", 0])
+def test_managed_copied_requests_reparsed(private_root, kind, bad):
+    owner, access, prepared, upload, raw, admitted = upload_setup(private_root, admit=True)
+    operation = (
+        prepared if kind == "prepare" else managed_operation(prepared, kind, capture(envelope()))
+    )
+    forged = operation.model_copy(update={"proof_reference": bad})
+    before = snapshot(owner)
+    with pytest.raises(SourceStoreInputError) as failure:
+        if kind == "prepare":
+            access.register_intent(forged, reservation_expires_at=RESERVATION)
+        elif kind == "upload":
+            access.admit_bound(forged, raw)
+        elif kind == "settle":
+            access.close_admission(forged)
+        else:
+            access.revalidate_existing(forged, raw, admission_id=admitted.receipt.admission_id)
+    assert failure.value.__cause__ is None and failure.value.__context__ is None
+    assert snapshot(owner) == before
+
+
+@pytest.mark.parametrize("kind", ["prepare", "bind", "admit", "close", "resume"])
+def test_managed_without_clock_never_mutates(private_root, kind):
+    owner, _, prepared, upload, raw, admitted = upload_setup(private_root, admit=True)
+    access = reader(owner)
+    before = snapshot(owner)
+    with pytest.raises(SourceStoreInputError):
+        if kind == "prepare":
+            access.register_intent(prepared, reservation_expires_at=RESERVATION)
+        elif kind == "bind":
+            access.bind_upload(upload)
+        elif kind == "admit":
+            access.admit_bound(upload, raw)
+        elif kind == "close":
+            access.close_admission(managed_operation(prepared, "settle"))
+        else:
+            access.revalidate_existing(
+                managed_operation(prepared, "resume", capture(envelope())),
+                raw,
+                admission_id=admitted.receipt.admission_id,
+            )
+    assert snapshot(owner) == before
+
+
+@pytest.mark.parametrize(
+    "seconds,allowed", [(-1, False), (0, False), (1, True), (3600, True), (3601, False)]
+)
+def test_managed_reservation_bounds(private_root, seconds, allowed):
+    from datetime import timedelta
+
+    from connect_automate.lead_intake.auth import SourceAuthenticationError
+
+    owner, access, prepared = managed_setup(private_root)
+    deadline = (
+        (NOW + timedelta(seconds=seconds)).isoformat(timespec="seconds").replace("+00:00", "Z")
+    )
+    before = snapshot(owner)
+    if allowed:
+        first = access.register_intent(prepared, reservation_expires_at=deadline)
+        assert first.state_revision == 1
+        later = reader(owner, clock=lambda: NOW + timedelta(hours=2))
+        assert later.register_intent(prepared, reservation_expires_at=deadline) == first
+        assert later.close_admission(managed_operation(prepared, "settle")).closed
+    else:
+        with pytest.raises(SourceAuthenticationError):
+            access.register_intent(prepared, reservation_expires_at=deadline)
+        assert snapshot(owner) == before
+
+
+def test_managed_reservation_deadline_cannot_change(private_root):
+    owner, access, prepared = managed_setup(private_root)
+    access.register_intent(prepared, reservation_expires_at=RESERVATION)
+    before = snapshot(owner)
+    with pytest.raises(SourceStoreConflict):
+        access.register_intent(prepared, reservation_expires_at="2026-10-18T12:45:01Z")
+    assert snapshot(owner) == before
+
+
+@pytest.mark.parametrize("kind", ["bind", "admit", "close", "purge", "retire"])
+def test_managed_revision_overflow_before_effects(private_root, kind):
+    owner, access, prepared = managed_setup(private_root)
+    access.register_intent(prepared, reservation_expires_at=RESERVATION)
+    upload = managed_operation(prepared, "upload", capture(envelope()))
+    if kind != "bind":
+        access.bind_upload(upload)
+    with database(owner.path) as db:
+        db.execute("UPDATE source_handoffs SET revision=2147483647")
+    before = snapshot(owner)
+    with pytest.raises(SourceStoreConflict):
+        if kind == "bind":
+            access.bind_upload(upload)
+        elif kind == "admit":
+            access.admit_bound(upload, encode(envelope()))
+        elif kind == "close":
+            access.close_admission(managed_operation(prepared, "settle"))
+        elif kind == "purge":
+            SourceContent(owner, clock=lambda: NOW).purge_message(
+                prepared.payload.source, cutoff=NOW
+            )
+        else:
+            SourceContent(owner, clock=lambda: NOW).retire_namespace(prepared.scope.namespace_id)
+    assert snapshot(owner) == before
+
+
+@pytest.mark.parametrize("which", ["policy_id", "policy_version"])
+def test_managed_binding_checks_current_policy(private_root, which):
+    from connect_automate.lead_intake.auth import SourceAuthenticationError
+
+    owner, access, prepared = managed_setup(private_root)
+    prepared = rewrite_request(prepared, ["payload", which], OTHER if which == "policy_id" else 2)
+    access.register_intent(prepared, reservation_expires_at=RESERVATION)
+    before = snapshot(owner)
+    with pytest.raises(SourceAuthenticationError):
+        access.bind_upload(managed_operation(prepared, "upload", capture(envelope())))
+    assert snapshot(owner) == before
+
+
+def test_managed_near_calendar_end_reservation(private_root):
+    from datetime import UTC, datetime
+
+    owner, _, prepared = managed_setup(private_root)
+    access = reader(owner, clock=lambda: datetime(9999, 12, 31, 23, 59, 58, tzinfo=UTC))
+    result = access.register_intent(prepared, reservation_expires_at="9999-12-31T23:59:59Z")
+    assert result.state_revision == 1
+
+
+@pytest.mark.parametrize("state", ["unavailable", "complete", "truncated", "unknown"])
+def test_managed_source_body_states(private_root, state):
+    value = envelope()
+    if state == "unavailable":
+        value["payload"]["snapshot"]["body"] = {"state": "unavailable", "reason": "source_gone"}
+    else:
+        body = value["payload"]["snapshot"]["body"]
+        body["completeness"] = state
+        if state == "truncated":
+            body["source_chars"] = body["stored_chars"] + 1
+        elif state == "unknown":
+            body["source_chars"] = None
+    resign(value)
+    owner, access, prepared, upload, raw, result = upload_setup(
+        private_root, admit=True, value=value
+    )
+    assert result.applied
+    reopened = reader(store(private_root), clock=lambda: NOW)
+    assert reopened.admit_bound(upload, raw).receipt == result.receipt
+    assert SourceContent(owner, clock=lambda: NOW).read_content(result.receipt.admission_id) == raw
+
+
+@pytest.mark.parametrize(
+    "field,changed",
+    [
+        ("envelope_sha256", "0" * 64),
+        ("payload_digest", "0" * 64),
+        ("snapshot_id", OTHER),
+        ("captured_at", "2026-10-18T12:00:01Z"),
+        ("recovery_deadline", "2026-10-18T13:00:01Z"),
+        ("artifact_size", 1),
+    ],
+)
+def test_managed_capture_guard_isolated(private_root, field, changed):
+    """Do not let receipt metadata validation mask a missing ingress comparison."""
+    from connect_automate.lead_intake.auth import authenticate_source
+
+    owner, access, prepared = managed_setup(private_root)
+    access.register_intent(prepared, reservation_expires_at=RESERVATION)
+    cap = capture(envelope())
+    cap[field] = changed
+    upload = managed_operation(prepared, "upload", cap)
+    access.bind_upload(upload)
+    raw = encode(envelope())
+    verified = authenticate_source(raw, trust=trust(), now=NOW)
+    with owner._transaction() as db, pytest.raises(SourceStoreConflict):
+        owner._managed_admission_state(db, upload, raw, verified, None)
+
+
+def test_managed_canonical_guard_isolated(private_root):
+    from connect_automate.lead_intake.auth import authenticate_source
+
+    owner, access, prepared = managed_setup(private_root)
+    access.register_intent(prepared, reservation_expires_at=RESERVATION)
+    raw = json.dumps(envelope(), indent=2).encode()
+    cap = capture(envelope())
+    cap.update(envelope_sha256=hashlib.sha256(raw).hexdigest(), artifact_size=len(raw))
+    upload = managed_operation(prepared, "upload", cap)
+    access.bind_upload(upload)
+    with owner._transaction() as db, pytest.raises(SourceStoreConflict):
+        owner._managed_admission_state(
+            db, upload, raw, authenticate_source(raw, trust=trust(), now=NOW), None
+        )
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "source",
+        "watcher_event_id",
+        "rule_id",
+        "rule_version",
+        "policy_id",
+        "policy_version",
+        "event_id",
+    ],
+)
+def test_managed_intent_guard_isolated(private_root, field):
+    from connect_automate.lead_intake.auth import authenticate_source
+
+    owner, access, prepared = managed_setup(private_root)
+    if field == "source":
+        prepared = rewrite_request(prepared, ["payload", "source", "message_id"], "another-message")
+    elif field == "event_id":
+        prepared = rewrite_request(prepared, ["scope", field], OTHER)
+    else:
+        prepared = rewrite_request(
+            prepared,
+            ["payload", field],
+            "0" * 64 if field == "watcher_event_id" else 2 if field.endswith("version") else OTHER,
+        )
+    if field.startswith("policy"):
+        policies = list(trust().model_dump()["retention_policies"])
+        policies.append(
+            dict(
+                policy_id=prepared.payload.policy_id,
+                policy_version=prepared.payload.policy_version,
+                max_recovery_seconds=3600,
+            )
+        )
+        owner.publish_authority(next_snapshot(retention_policies=policies), expected_generation=1)
+    access.register_intent(prepared, reservation_expires_at=RESERVATION)
+    upload = managed_operation(prepared, "upload", capture(envelope()))
+    access.bind_upload(upload)
+    raw = encode(envelope())
+    with owner._transaction() as db:
+        verified = authenticate_source(raw, trust=owner._authority(db)[0], now=NOW)
+        with pytest.raises(SourceStoreConflict):
+            owner._managed_admission_state(db, upload, raw, verified, None)
+
+
+@pytest.mark.parametrize(
+    "case", ["generation", "admission", "purged", "expired", "changed-envelope"]
+)
+def test_managed_revalidation_refuses_changed_or_unavailable(private_root, case):
+    from datetime import datetime
+
+    from connect_automate.lead_intake.auth import SourceAuthenticationError
+
+    owner, access, prepared, upload, raw, result = upload_setup(private_root, admit=True)
+    resume = managed_operation(
+        prepared, "resume", capture(envelope()), 2 if case == "generation" else 1
+    )
+    admission_id = str(uuid4()) if case == "admission" else result.receipt.admission_id
+    if case == "purged":
+        SourceContent(owner, clock=lambda: NOW).purge_message(prepared.payload.source, cutoff=NOW)
+        resume = managed_operation(prepared, "resume", capture(envelope()), 2)
+    if case == "expired":
+        access = reader(
+            owner, clock=lambda: datetime.fromisoformat(upload.payload.capture.recovery_deadline)
+        )
+    if case == "changed-envelope":
+        value = envelope()
+        value["payload"]["snapshot"]["body"]["text"] = "other"
+        value["payload"]["snapshot"]["body"]["stored_chars"] = 5
+        value["payload"]["snapshot"]["body"]["source_chars"] = 5
+        value["payload"]["snapshot"]["body"]["sha256"] = hashlib.sha256(b"other").hexdigest()
+        resign(value)
+        raw = encode(value)
+        from connect_automate.lead_intake.auth import authenticate_source
+
+        authenticate_source(raw, trust=trust(), now=NOW)
+    before = snapshot(owner)
+    with pytest.raises((SourceAuthenticationError, SourceStoreConflict)):
+        access.revalidate_existing(resume, raw, admission_id=admission_id)
+    assert snapshot(owner) == before
+
+
+def test_managed_multiple_events_one_message_purge_is_cutoff_wide(private_root):
+    from datetime import datetime
+
+    owner, access, prepared = managed_setup(private_root)
+    intents = []
+    for stamp in ["2026-10-18T12:00:00Z", "2026-10-18T12:00:01Z", "2026-10-18T12:00:02Z"]:
+        value = envelope()
+        value["payload"]["event_id"] = str(uuid4())
+        value["payload"]["snapshot"]["captured_at"] = value["payload"]["occurred_at"] = stamp
+        resign(value)
+        intent = managed_request(value)
+        access.register_intent(intent, reservation_expires_at=RESERVATION)
+        upload = managed_operation(intent, "upload", capture(value))
+        access.bind_upload(upload)
+        access.admit_bound(upload, encode(value))
+        intents.append(intent)
+    SourceContent(owner, clock=lambda: NOW).purge_message(
+        prepared.payload.source, cutoff=datetime.fromisoformat("2026-10-18T12:00:01Z")
+    )
+    facts = [observe(access, intent) for intent in intents]
+    assert [f.closed for f in facts] == [True, True, False]
+    assert [f.content_state for f in facts] == ["purged", "purged", "retained"]
+    assert len(snapshot(owner)["source_receipts"]) == 3
+
+
+@pytest.mark.parametrize(
+    "closed,expected,allowed", [(False, 1, True), (False, 2, False), (True, 2, False)]
+)
+def test_managed_open_fence_owner(private_root, closed, expected, allowed):
+    from connect_automate.lead_intake.auth import SourceAuthenticationError
+
+    owner, access, prepared, upload, raw, _ = upload_setup(private_root)
+    if closed:
+        access.close_admission(managed_operation(prepared, "settle"))
+    facts = observe(access, prepared)
+    candidate = managed_operation(prepared, "upload", capture(envelope()), expected)
+    if allowed:
+        assert owner._open_custody(facts, candidate) is None
+    else:
+        with pytest.raises(SourceAuthenticationError):
+            owner._open_custody(facts, candidate)
+
+
+@pytest.mark.parametrize("case", ["generation", "admission", "purged"])
+def test_managed_revalidate_guard_isolated(private_root, case):
+    from connect_automate.lead_intake.auth import SourceAuthenticationError, authenticate_source
+
+    owner, access, prepared, upload, raw, result = upload_setup(private_root, admit=True)
+    generation = 2 if case == "generation" else 1
+    if case == "purged":
+        SourceContent(owner, clock=lambda: NOW).purge_message(prepared.payload.source, cutoff=NOW)
+        generation = 2
+    resume = managed_operation(prepared, "resume", capture(envelope()), generation)
+    ident = str(uuid4()) if case == "admission" else result.receipt.admission_id
+    with owner._transaction() as db, pytest.raises(SourceAuthenticationError):
+        owner._managed_admission_state(
+            db, resume, raw, authenticate_source(raw, trust=trust(), now=NOW), ident
+        )
+
+
+@pytest.mark.parametrize("kind", ["prepare", "bind", "admit", "close"])
+def test_managed_clock_regression_final_sample(private_root, kind):
+    from datetime import timedelta
+
+    from connect_automate.lead_intake.auth import SourceAuthenticationError
+
+    owner, access, prepared = managed_setup(private_root)
+    if kind != "prepare":
+        access.register_intent(prepared, reservation_expires_at=RESERVATION)
+    upload = managed_operation(prepared, "upload", capture(envelope()))
+    if kind == "admit":
+        access.bind_upload(upload)
+    samples = iter([NOW + timedelta(seconds=2), NOW + timedelta(seconds=1)])
+    access = reader(owner, clock=lambda: next(samples))
+    before = snapshot(owner)
+    with pytest.raises(SourceAuthenticationError):
+        if kind == "prepare":
+            access.register_intent(prepared, reservation_expires_at=RESERVATION)
+        elif kind == "bind":
+            access.bind_upload(upload)
+        elif kind == "admit":
+            access.admit_bound(upload, encode(envelope()))
+        else:
+            access.close_admission(managed_operation(prepared, "settle"))
+    assert snapshot(owner) == before
+
+
+@pytest.mark.parametrize("case", ["future", "deadline", "recovery", "policy"])
+def test_managed_capture_eligibility_owner(private_root, case):
+    from datetime import datetime, timedelta
+
+    from connect_automate.lead_intake.auth import SourceAuthenticationError
+
+    owner, access, prepared = managed_setup(private_root)
+    cap = CaptureReference.model_validate(capture(envelope()))
+    deadline = datetime.fromisoformat(RESERVATION)
+    now = NOW
+    if case == "future":
+        now = datetime.fromisoformat(cap.captured_at) - timedelta(seconds=1)
+    elif case == "deadline":
+        deadline = now
+    elif case == "recovery":
+        now = datetime.fromisoformat(cap.recovery_deadline)
+        deadline = now + timedelta(seconds=1)
+    else:
+        prepared = rewrite_request(prepared, ["payload", "policy_version"], 2)
+    with owner._transaction() as db, pytest.raises(SourceAuthenticationError):
+        owner._capture_eligible(db, prepared, cap, deadline, now)
+
+
+@pytest.mark.parametrize("which", ["control_id", "job_id"])
+def test_managed_global_operation_collision_owner(private_root, which):
+    owner, access, prepared, upload, raw, _ = upload_setup(private_root)
+    other = envelope()
+    other["payload"]["event_id"] = str(uuid4())
+    resign(other)
+    candidate = managed_request(other)
+    candidate = rewrite_request(candidate, [which], getattr(upload, which))
+    with owner._transaction() as db, pytest.raises(SourceStoreConflict):
+        owner._custody_operation(db, candidate)
+
+
+def test_managed_other_event_same_handoff_refused(private_root):
+    owner, access, prepared, upload, raw, _ = upload_setup(private_root)
+    other = rewrite_request(prepared, ["scope", "event_id"], str(uuid4()))
+    before = snapshot(owner)
+    with pytest.raises(SourceStoreConflict):
+        access.register_intent(other, reservation_expires_at=RESERVATION)
+    assert snapshot(owner) == before
+
+
+@pytest.mark.parametrize("field", ["host_id", "organization_id"])
+def test_managed_deployment_scope_owner(private_root, field):
+    owner, _, prepared = managed_setup(private_root)
+    wrong = rewrite_request(prepared, ["scope", field], str(uuid4()))
+    with owner._transaction() as db, pytest.raises(SourceStoreConflict):
+        owner._custody_request_state(db, wrong)
+
+
+def test_managed_revision_owner_ceiling(private_root):
+    from dataclasses import replace
+
+    owner, access, prepared = managed_setup(private_root)
+    facts = access.register_intent(prepared, reservation_expires_at=RESERVATION)
+    assert owner._next_custody_revision(replace(facts, state_revision=2147483646)) == 2147483647
+    with pytest.raises(SourceStoreConflict):
+        owner._next_custody_revision(replace(facts, state_revision=2147483647))
+
+
+def test_managed_operation_fingerprint_owner(private_root):
+    owner, access, prepared, upload, raw, _ = upload_setup(private_root)
+    changed = rewrite_request(upload, ["proof_reference"], str(uuid4()))
+    with owner._transaction() as db, pytest.raises(SourceStoreConflict):
+        owner._custody_operation(db, changed)
+
+
+def test_managed_prepare_expiry_at_final_sample(private_root):
+    from datetime import datetime
+
+    from connect_automate.lead_intake.auth import SourceAuthenticationError
+
+    owner, _, prepared = managed_setup(private_root)
+    samples = iter([NOW, datetime.fromisoformat(RESERVATION)])
+    access = reader(owner, clock=lambda: next(samples))
+    before = snapshot(owner)
+    with pytest.raises(SourceAuthenticationError):
+        access.register_intent(prepared, reservation_expires_at=RESERVATION)
+    assert snapshot(owner) == before
