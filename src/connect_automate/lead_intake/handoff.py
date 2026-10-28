@@ -19,7 +19,7 @@ from ..automate.events import (
 )
 from .admission import SourceAdmission, SourceAdmissionResult
 from .receipts import ReceiptReference
-from .source import parse_untrusted_source, payload_digest
+from .source import UntrustedSource, parse_untrusted_source, payload_digest
 from .source_store import SourceStoreUnavailable
 
 
@@ -58,47 +58,65 @@ class _SourceHandoff:
         # authority is still checked by SourceAdmission inside its own transaction.
         if self.admission.deployment != (scope.host_id, scope.organization_id):
             raise EventBindingError()
-        parsed = parse_untrusted_source(raw)
-        payload = parsed.payload
-        if (
-            parsed.authorization.host_id,
-            payload.organization_id,
-            payload.source.namespace_id,
-        ) != (scope.host_id, scope.organization_id, scope.namespace_id):
-            raise EventBindingError()
+        parsed = _source_for_binding(self.source, raw)
         # Every replay reauthenticates. No callback runs under the source writer.
         admitted = self.admission.admit_source(raw)
-        valid = False
-        try:
-            if not isinstance(admitted, SourceAdmissionResult):
-                raise ValueError("invalid source result")
-            admitted = SourceAdmissionResult.model_validate(admitted)
-            receipt = admitted.receipt
-            reference = ReceiptReference.model_validate(
-                {name: getattr(receipt, name) for name in ReceiptReference.model_fields}
-            )
-            valid = (
-                reference.host_id,
-                reference.organization_id,
-                reference.namespace_id,
-                reference.event_id,
-                reference.payload_digest,
-                reference.recovery_deadline,
-            ) == (
-                scope.host_id,
-                scope.organization_id,
-                scope.namespace_id,
-                payload.event_id,
-                payload_digest(parsed),
-                payload.retention.recovery_deadline,
-            )
-        except (ValueError, TypeError, RecursionError):
-            pass
-        if not valid:
-            raise SourceStoreUnavailable()
-        event = LeadSourceEvent(
-            source_kind="lead.source.received", schema_version="1.0", source_receipt=reference
+        return _prepared_source(self.source, parsed, admitted, self.clock)
+
+
+def _source_for_binding(source: SourceBinding, raw: bytes) -> UntrustedSource:
+    scope = lead_deployment_scope(source.scope, source.source_id)
+    parsed = parse_untrusted_source(raw)
+    payload = parsed.payload
+    if (
+        parsed.authorization.host_id,
+        payload.organization_id,
+        payload.source.namespace_id,
+    ) != (scope.host_id, scope.organization_id, scope.namespace_id):
+        raise EventBindingError()
+    return parsed
+
+
+def _prepared_source(
+    source: SourceBinding,
+    parsed: UntrustedSource,
+    admitted: SourceAdmissionResult,
+    clock: Callable[[], datetime],
+) -> _PreparedSource:
+    """Validate a fresh owner result; never a submission authority by itself."""
+    scope = lead_deployment_scope(source.scope, source.source_id)
+    payload = parsed.payload
+    valid = False
+    try:
+        if not isinstance(admitted, SourceAdmissionResult):
+            raise ValueError("invalid source result")
+        admitted = SourceAdmissionResult.model_validate(admitted)
+        receipt = admitted.receipt
+        reference = ReceiptReference.model_validate(
+            {name: getattr(receipt, name) for name in ReceiptReference.model_fields}
         )
-        now = self.clock()
-        check_event_time(event, now)
-        return _PreparedSource(event=event, source_applied=admitted.applied, now=now)
+        valid = (
+            reference.host_id,
+            reference.organization_id,
+            reference.namespace_id,
+            reference.event_id,
+            reference.payload_digest,
+            reference.recovery_deadline,
+        ) == (
+            scope.host_id,
+            scope.organization_id,
+            scope.namespace_id,
+            payload.event_id,
+            payload_digest(parsed),
+            payload.retention.recovery_deadline,
+        )
+    except (ValueError, TypeError, RecursionError):
+        pass
+    if not valid:
+        raise SourceStoreUnavailable()
+    event = LeadSourceEvent(
+        source_kind="lead.source.received", schema_version="1.0", source_receipt=reference
+    )
+    now = clock()
+    check_event_time(event, now)
+    return _PreparedSource(event=event, source_applied=admitted.applied, now=now)
