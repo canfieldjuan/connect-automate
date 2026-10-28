@@ -1,6 +1,6 @@
 # Body-only receiver custody: work order and protocol proposal
 
-Status: **R1/R2 library work MERGED; bounded R3.1 composition work order ACCEPTED.**
+Status: **R1/R2 and R3.1 library work MERGED; R3.2 retained-read contract PROPOSED.**
 On 2026-10-25 Juan
 said, “i accept, lets begin”, accepting the R1 work order reviewed at
 `66d16a65a807d5dc19b0ef8691be767f50933a83` and merged in
@@ -14,10 +14,12 @@ completed successfully. Historical pending statements below describe those stage
 The separately accepted next work order is [R2 storage and fences](LEAD-CUSTODY-STORAGE.md).
 Its canonical acceptance record binds the reviewed revision and authorized scope.
 R2 library qualification merged in PR #55; its completion record is maintained
-in that document. The next bounded work order is
-[R3.1 fenced runtime composition](LEAD-CUSTODY-COMPOSITION.md). Its canonical
-acceptance record binds the reviewed revision; executable work follows the
-contract-only merge in a separate PR.
+in that document. [R3.1 fenced runtime composition](LEAD-CUSTODY-COMPOSITION.md)
+merged in PR #57 at `a9cdf8b2d7e538bdf204076d75c567e43392bb0b`; its tree equals
+reviewed head `e5fa951afb245513108e24f4c085fdd85e875e95`. The next proposed bounded
+work order is [R3.2 source-owned retained-content read](LEAD-CUSTODY-RETAINED-READ.md),
+a prerequisite to reference-only runtime resume. Its review and exact-revision
+acceptance remain pending. No receiver activation or adoption is implied.
 
 The accepted [application policy](LEAD-SOURCE-HANDOFF.md#current-acceptance-and-work-order-status)
 remains authoritative: one business per deployment, receiver-owned raw custody,
