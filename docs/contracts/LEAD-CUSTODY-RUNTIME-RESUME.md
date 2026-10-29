@@ -1,6 +1,6 @@
 # R3.3: reference-only runtime resume
 
-Status: **ACCEPTED — contract-only merge gates pending; separate implementation authorized after merge.**
+Status: **ACCEPTED contract MERGED; implementation locally verified, CI and independent review pending.**
 
 Juan requested: “Let’s start the reference-only runtime resume contract and open
 a contract-only PR for oversight review.” That request authorized preparation and
@@ -39,6 +39,12 @@ tests must assert `SourceAuthenticationError` when applicable purge/expiry/cutof
 lands between the bound read and revalidation. `SourceContentUnavailable`
 remains the bound-read/no-observed-receipt refusal. Receiver orchestration,
 transport persistence, protected service activation and adoption remain excluded.
+
+The acceptance-only head above merged in PR #61 as
+`5ea984d18c10c745b8098fad89e841dc46502c68`. Its tree
+`99dc0dff1b83e0d197a53e3ad7041b54867194e9` equals the reviewed tree.
+Linux and native Windows checks, oversight and connector review passed before
+the guarded merge. The bounded executable work below is separately authorized.
 
 ## Contract
 
@@ -307,26 +313,96 @@ No weakening earlier tests or claiming production readiness from synthetic CI.
 
 ## Implementation summary
 
-This PR adds the proposed work order and updates parent navigation and stale
-R3.2 completion status. No executable files, tests, workflows, dependencies or
-schemas change. The existing-seam inventory passed; resume itself is unimplemented.
+The private composition now exposes `resume(request=...)`. It canonicalizes the
+request, observes the exact bound receipt, reads retained bytes through the source
+owner, and reauthenticates that same receipt before preparing a workflow event
+(`lead_intake/custody_handoff.py:90-150`). Fresh receipt identity, applied flag and
+content state are checked independently. Missing observation is unavailable, not
+a permanent-absence claim. A prepared-only handoff with an unbound supplied
+capture retains the existing observation owner's `SourceStoreConflict` refusal.
+
+The runtime selects concrete resume preparation inside the existing exception
+boundary (`automate/runtime.py:308-361`). Managed upload retains its own exact
+operation discriminator. No caller mode, callback or supplied prepared result
+selects an authority shortcut. The workflow completion block is byte-identical
+to the merged baseline. Source authorization still linearizes at revalidation;
+read, revalidation and workflow admission remain separate transactions.
+
+No earlier workaround was removed: this implements a deliberately absent
+composition while retaining the raw-upload refusal on closed or expired
+reservations. Source owners, schemas, dependencies, public exports and every
+previous test/fixture remain unchanged. Shared AI inference runtime work is
+outside this path and creates no new dependency here.
+
+## Verification evidence
+
+- Unchanged merged-contract baseline: **3256 passed in 451.32s (0:07:31)**,
+  before executable edits.
+- Declared fail-first: `test_closed_source_only_gap_resumes_after_reopen` failed
+  with the expected missing `resume` method `AttributeError`. The implementation
+  and unchanged adjacent raw/runtime tests then passed (**401 passed in 38.45s**).
+- Final new composition/recovery files: **163 passed in 74.37s (0:01:14)**.
+- Native recovery run with retained checkpoint output: **49 passed in 55.36s**.
+  Reused SQL/IPC/state oracles cover actual workflow writes, both source commits,
+  lost replies, separate-process overlap and lifecycle writer orders. Resume
+  workers receive only references/configuration; original source bytes remain
+  parent-side test-oracle input or are read by the source owner inside the child.
+- **14 isolated removed-guard probes killed**, including each fresh-result guard,
+  operation/owner pins, canonical consumption and reauthentication. Mutation is
+  process-local and does not edit production files.
+- Ruff: **All checks passed!**
+- Complete affected source/custody/runtime/recovery lane: **3419 passed**, as
+  disjoint groups with **1653 passed in 483.59s (0:08:03)** and
+  **1766 passed in 213.28s (0:03:33)**. The file union equals the original command;
+  no tests were omitted, and executable-input hashes remained unchanged.
+
+The earlier combined invocation ended at exit **143** without a pytest summary;
+it is preserved as incomplete and is not counted as passing evidence. No failing
+test or kernel OOM record was observed; the termination cause remains unknown.
+The complete rerun above required no product-code repair.
+
+Durable evidence alias: `custody-r3-runtime-resume`.
+`manifest.json` SHA-256:
+`343e946d59054441054bb9ef7a776eae59ab6c262453def7b17bd4533c2afe49`.
+It binds commands, input digests, fail-first output, native traces, guard probes,
+completed group results and the separate incomplete-run record.
+
+The native bridge distinguishes read and revalidation checkpoints and observes
+actual commits even when a clock sample makes no write. It preserves the original
+completion protocol. Existing raw source-only gap tests remain unchanged.
+Both new files are selected by the native Windows job from the first executable
+push. Windows and current-head CI/review results are not yet claimed here.
+
+`boundary-probe`: eligible open/closed envelopes, invalid/mixed/falsy and generation
+boundaries, full scope/route/machine/capture and independent fresh-result checks;
+all new guard probes detect their removed check. Unchanged protocol/source tests
+retain the size-limit boundary proof. Downstream calls consume the canonical copy.
+
+`effect-trace`: recover a committed source without reupload after the upload closes
+| concrete retained reader, fresh source authentication and shared event admission
+| missing-entry fail-first, reopened closed-source regression and native source-after
+crash/replay with stable workflow identity. Source locks are released before workflow
+admission; historical lookup remains usable after source eligibility ends.
 
 ## Cold diff audit
 
-- This file: source-pinned inventory, explicit porting differences, private resume
-  chain, owner allowlist, lifecycle/error semantics and proof plan. Source and
-  existing test inspection plus the recorded seam run support the inventory.
-- `LEAD-RECEIVER-CUSTODY.md`: record completed R3.2 and link this proposed next
-  work order; no change to the parent protocol or accepted policies.
-- `LEAD-CUSTODY-RETAINED-READ.md`: replace stale PR-pending status with its verified
-  merge and point to this proposal. The accepted retained-read contract is unchanged.
+- `custody_handoff.py`: shared request validator and bounded resume preparation;
+  no SQL, new store or authority callback.
+- `runtime.py`: private resume entry and preparation selection; unchanged shared
+  completion, legacy actions and error classification.
+- New test files: real owners and synthetic data, retained native harness/oracles,
+  strict stale-metadata errors and one isolated negative per new safety check.
+- CI: select the new files on Windows; no other workflow/dependency changes.
+- This document: measured implementation evidence outside the unchanged accepted
+  Contract section. Parent document: merge-status correction only, as requested
+  by oversight; no protocol or policy revision.
 
 ## Gap audit
 
-**NOT DONE — acceptance-only current-head gates and contract merge pending.**
+**NOT DONE — current-head CI, native Windows and independent
+oversight/connector review remain pending.**
 
-Contract review and exact-revision operator acceptance are recorded above.
-Implementation, joined resume proof and its Linux/Windows gates remain future
-work in a separate PR after the contract merge.
-Receiver lookup/status/settlement composition, durable transport operations,
-protected service wiring and adoption remain separate work orders.
+This is private-library submission proof only. The lookup-first receiver
+coordinator, status/settlement mapping, durable transport operations, protected
+service wiring and adoption remain separate work orders. No production readiness,
+employee authorization, inference integration or end-to-end lead extraction claim.

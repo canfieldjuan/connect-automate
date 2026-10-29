@@ -290,8 +290,13 @@ class PackRuntime:
     def _submit_custody_source(self, *, custody, request, raw_source_bytes: bytes):
         """Private raw managed submission, never a prepared-receipt entry point."""
         from ..lead_intake.custody_handoff import _CustodyHandoff
+        from ..lead_intake.custody_protocol import UploadRequest
 
-        if type(custody) is not _CustodyHandoff or custody.runtime is not self:
+        if (
+            type(custody) is not _CustodyHandoff
+            or custody.runtime is not self
+            or type(request) is not UploadRequest
+        ):
             raise EventBindingError()
         return self._submit_source(
             binding=custody.route.binding,
@@ -300,10 +305,23 @@ class PackRuntime:
             request=request,
         )
 
+    def _resume_custody_source(self, *, custody, request):
+        """Private reference-only entry; request values never confer authority."""
+        from ..lead_intake.custody_handoff import _CustodyHandoff
+        from ..lead_intake.custody_protocol import ResumeRequest
+
+        if (
+            type(custody) is not _CustodyHandoff
+            or custody.runtime is not self
+            or type(request) is not ResumeRequest
+        ):
+            raise EventBindingError()
+        return self._submit_source(binding=custody.route.binding, custody=custody, request=request)
+
     def _submit_source(
-        self, *, binding: str, raw_source_bytes: bytes, custody=None, request=None
+        self, *, binding: str, raw_source_bytes: bytes | None = None, custody=None, request=None
     ) -> SourceHandoffResult:
-        """One raw-submission boundary and one persisted workflow completion path."""
+        """One preparation boundary and one persisted workflow completion path."""
         from ..lead_intake.auth import SourceAuthenticationError
         from ..lead_intake.results import (
             SourceHandoffResult,
@@ -329,6 +347,7 @@ class PackRuntime:
                 prepared = self._prepare_source(binding=binding, raw_source_bytes=raw_source_bytes)
             else:
                 from ..lead_intake.custody_handoff import _CustodyHandoff
+                from ..lead_intake.custody_protocol import ResumeRequest
 
                 if (
                     type(custody) is not _CustodyHandoff
@@ -336,7 +355,10 @@ class PackRuntime:
                     or custody.route.binding != binding
                 ):
                     raise EventBindingError()
-                prepared = custody._prepare(request, raw_source_bytes)
+                if type(request) is ResumeRequest and raw_source_bytes is None:
+                    prepared = custody._prepare_resume(request)
+                else:
+                    prepared = custody._prepare(request, raw_source_bytes)
         except (SourceStoreUnavailable, SourceStoreUncertain):
             pass
         except (
