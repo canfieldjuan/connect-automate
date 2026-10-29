@@ -27,6 +27,10 @@ merged in PR #61 as `5ea984d18c10c745b8098fad89e841dc46502c68`, with
 the same tree. The separate bounded implementation is authorized; receiver
 activation and adoption remain outside that work order.
 
+[R3.4 lookup-first private recovery](LEAD-CUSTODY-RECOVERY.md) is a proposed,
+contract-only stack on the R3.3 implementation. It is not accepted or executable
+authority; review the dependency first and qualify the contract separately.
+
 The accepted [application policy](LEAD-SOURCE-HANDOFF.md#current-acceptance-and-work-order-status)
 remains authoritative: one business per deployment, receiver-owned raw custody,
 reference-only Watcher retries, bounded retention and local admin/user roles.
