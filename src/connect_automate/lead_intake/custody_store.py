@@ -5,6 +5,7 @@ supplies its previously retained store incarnation; this facade never enrolls on
 """
 
 from .admission import SourceAdmission
+from .content import SourceContent
 from .custody_protocol import (
     CaptureReference,
     ScopeReference,
@@ -163,3 +164,10 @@ class SourceCustodyStore:
             incarnation=self._incarnation,
             existing_admission=ident,
         )
+
+    @_boundary
+    def read_retained(self, request) -> bytes:
+        """Privileged retained read only; returned bytes grant no submission authority."""
+        request = _request(request, "resume")
+        content = SourceContent(self._store, clock=self._clock)
+        return content._read_retained(request, incarnation=self._incarnation)

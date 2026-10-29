@@ -74,28 +74,51 @@ class SourceContent:
     @_boundary
     def read_content(self, admission_id: str) -> bytes:
         ident = _id(admission_id)
-        raw = None
         with self._store._transaction() as db:
-            first = self._store._check_clock(db, self._clock())
-            row = self._row(db, ident)
-            retired, _ = self._store._lifecycle(db)
-            if row is None or row[2] in retired:
-                raise SourceContentUnavailable()
-            receipt, state = self._custody._existing(db, row)
-            if state == "purged":
-                raise SourceContentUnavailable()
-            final = self._final(db, first)
-            if final >= datetime.fromisoformat(receipt.recovery_deadline):
-                # Commit terminal expiry before reporting unavailable. C1 must
-                # never revive content whose expiry has already been observed.
-                self._purge(db, ident)
-            else:
-                raw = db.execute(
-                    "SELECT envelope FROM source_content WHERE admission_id=?", (ident,)
-                ).fetchone()[0]
+            raw = self._read_in_transaction(db, ident)
         if raw is None:
             raise SourceContentUnavailable()
         return raw
+
+    @_boundary
+    def _read_retained(self, request, *, incarnation) -> bytes:
+        with self._store._transaction() as db:
+            self._store._incarnation(db, incarnation)
+            facts = self._store._custody_request_state(db, request)
+            if facts is None:
+                raise SourceContentUnavailable()
+            if facts.fence_generation != request.expected_fence_generation:
+                raise SourceAuthenticationError()
+            if (
+                not facts.ever_custodied
+                or facts.receipt is None
+                or facts.content_state != "retained"
+            ):
+                raise SourceContentUnavailable()
+            raw = self._read_in_transaction(db, facts.receipt.admission_id)
+        if raw is None:
+            raise SourceContentUnavailable()
+        return raw
+
+    def _read_in_transaction(self, db, ident):
+        """Shared validation, clock and terminal-expiry owner for both readers."""
+        first = self._store._check_clock(db, self._clock())
+        row = self._row(db, ident)
+        retired, _ = self._store._lifecycle(db)
+        if row is None or row[2] in retired:
+            raise SourceContentUnavailable()
+        receipt, state = self._custody._existing(db, row)
+        if state == "purged":
+            raise SourceContentUnavailable()
+        final = self._final(db, first)
+        if final >= datetime.fromisoformat(receipt.recovery_deadline):
+            # Commit terminal expiry before reporting unavailable. C1 must
+            # never revive content whose expiry has already been observed.
+            self._purge(db, ident)
+            return None
+        return db.execute(
+            "SELECT envelope FROM source_content WHERE admission_id=?", (ident,)
+        ).fetchone()[0]
 
     @_boundary
     def cleanup_expired(self, *, limit: int) -> int:
