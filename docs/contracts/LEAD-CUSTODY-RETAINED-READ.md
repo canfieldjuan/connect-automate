@@ -1,19 +1,42 @@
 # R3.2: source-owned retained-content read
 
-Status: **PROPOSED — contract only; implementation is not authorized.**
+Status: **ACCEPTED — contract only; merge before a separate executable PR.**
 
 R3.1 merged in [PR #57](https://github.com/canfieldjuan/connect-automate/pull/57)
 at `a9cdf8b2d7e538bdf204076d75c567e43392bb0b`. Its reviewed tree is
 `bec25d68975e9123ebad1bdcd1db7704370951d8`. The operator's request to check
 oversight and continue starts this next contract. It is not an acceptance record
 for the design below. Independent contract review and exact-revision operator
-acceptance must precede a separate executable PR.
+acceptance must precede a separate executable PR. The acceptance below records
+the subsequent operator decision.
 
 This is the source-read prerequisite for reference-only resume. It does not
 implement the receiver's complete resume operation. The
 [parent sequence](LEAD-RECEIVER-CUSTODY.md#bounded-implementation-sequence-and-verification),
 [R2 retained revalidation rule](LEAD-CUSTODY-STORAGE.md)
 and [R3.1 composition](LEAD-CUSTODY-COMPOSITION.md) retain their ownership.
+
+## Acceptance record
+
+On 2026-10-29 at 01:31 UTC, oversight mailbox `ae610246` relayed Juan's
+decision verbatim: **“accept R3.2 and r5”**. For this lane, the relay binds R3.2
+acceptance to reviewed contract revision
+`6f7914f324fe9daca36b1c2c31fd8758855ea77a`, with oversight CONTRACT PASS
+`feedcf95` / [review 5689921121](https://github.com/canfieldjuan/connect-automate/pull/59#pullrequestreview-5689921121).
+The operator's relayed acceptance supplies authority; the reviewer's PASS alone
+does not. The separate r5 lane is outside this work order. This acceptance-only
+record changes no design rule.
+
+Merge PR #59 as contract-only after its exact-head gates. Implement R3.2 in a
+separate PR on the merged contract, with unchanged parity first and the declared
+missing-entry fail-first probe before implementation, following the verification
+plan below. No executable edits precede this acceptance record. Runtime resume,
+receiver activation and adoption remain outside this acceptance.
+
+Carry-forward for the later resume work order: derive the admission ID required
+by `revalidate_existing` from source-validated facts, never caller input, and
+retain that method's in-writer receipt-equality check so stale facts fail closed.
+This does not add a return value or runtime responsibility to this slice.
 
 ## Contract
 
@@ -234,7 +257,8 @@ equality and no unresolved review findings remain merge requirements.
 
 ## Implementation summary
 
-None. This PR proposes the source-owned bound read and updates the parent index.
+None. This PR specifies the source-owned bound read, records its acceptance and
+updates the parent index.
 Existing code and fixtures are unchanged. The current proof verifies only the
 inventory, not a new reader or complete reference-only recovery.
 
@@ -242,12 +266,14 @@ inventory, not a new reader or complete reference-only recovery.
 
 Only this contract and the parent work-order index may change in this proposal.
 Source, tests, fixtures, dependency and CI bytes must match the recorded inventory.
-The acceptance record is intentionally absent until the operator accepts the
-reviewed contract revision. No implementation or production readiness is implied.
+The acceptance-only follow-up records the operator's relayed decision against
+the reviewed revision without changing its semantics. No implementation or
+production readiness is implied.
 
 ## Gap audit
 
-**NOT DONE — independent contract review and operator acceptance pending.**
-After acceptance, implementation and its native proof require a separate PR.
+**NOT DONE — acceptance-only head gates and contract merge pending.**
+Independent contract review and operator acceptance are recorded above.
+Implementation and its native proof require a separate PR after contract merge.
 Runtime resume composition, receiver result/status/settlement mapping, durable
 transport operations and protected service adoption remain later work orders.
