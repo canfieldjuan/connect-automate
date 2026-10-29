@@ -1,6 +1,6 @@
 # R3.2: source-owned retained-content read
 
-Status: **ACCEPTED — contract only; merge before a separate executable PR.**
+Status: **R3.2 private read implemented; local proof passed, PR gates pending.**
 
 R3.1 merged in [PR #57](https://github.com/canfieldjuan/connect-automate/pull/57)
 at `a9cdf8b2d7e538bdf204076d75c567e43392bb0b`. Its reviewed tree is
@@ -257,23 +257,61 @@ equality and no unresolved review findings remain merge requirements.
 
 ## Implementation summary
 
-None. This PR specifies the source-owned bound read, records its acceptance and
-updates the parent index.
-Existing code and fixtures are unchanged. The current proof verifies only the
-inventory, not a new reader or complete reference-only recovery.
+Contract-only PR #59 merged as
+`f735fb4be7c3c9d841c636774de852eb2e9e5602`, with tree equal to reviewed acceptance
+head `b82a5dfd61baa3d0d147d2487181396e15bc62ab`. The operator then explicitly
+requested implementation in a separate PR. No executable changes preceded that
+merge. The merged base differs from the inventory pin only in contract documents.
+
+`SourceCustodyStore.read_retained` reparses the existing resume value and
+delegates to `SourceContent` with its configured store, clock and retained
+incarnation. The content owner checks the incarnation, exact source facts,
+generation and retained receipt under its writer before envelope access. Both
+read entries share the previous validation/clock/expiry body; they return only
+after successful commit. Reading still grants no submission authority.
+
+The new synthetic test file reuses existing fixtures and the native custody
+process harness. Its read actor substitutes the bound read for the harness's
+legacy read target, preserving the same SQL checkpoints, lifecycle actors,
+privacy assertions and real lock-contention ordering. Existing source helpers,
+authentication, schemas, runtime, tests and fixtures remain unchanged. Windows
+selects the new file from this implementation's first push.
+
+Local evidence under durable alias `custody-r3-retained-read`:
+
+- Unchanged pre-edit parity: **736 passed in 359.37s**.
+- Declared fail-first: `test_read_retained_returns_original_bytes` failed with
+  the missing-method `AttributeError`, **1 failed in 0.34s**, before source edits.
+- New reader proofs: **96 passed in 33.55s**, including native process ordering,
+  lost responses, commit faults and terminal expiry after clock reconciliation.
+- **25/25 isolated mutants killed** at their intended assertions, including
+  independent deployment/scope fields and every capture field before envelope
+  access, current generation, retained linkage, canonical consumption and expiry.
+- Legacy reader AST comparison preserves its validation and expiry sequence;
+  only assignment/else structure becomes helper returns. Ruff and diff checks pass.
+- Complete affected regression lane: **832 passed in 376.06s**. The unchanged
+  protocol scalar-boundary tests (including max-plus-one): **29 passed in 0.09s**.
+  Native Windows and exact-head independent review are not yet claimed.
 
 ## Cold diff audit
 
-Only this contract and the parent work-order index may change in this proposal.
-Source, tests, fixtures, dependency and CI bytes must match the recorded inventory.
-The acceptance-only follow-up records the operator's relayed decision against
-the reviewed revision without changing its semantics. No implementation or
-production readiness is implied.
+| Changed file | Contract trace and verification |
+| --- | --- |
+| `lead_intake/content.py:75-121` | One shared transaction body and one bound private read. AST parity, unchanged legacy tests, independent pre-envelope guard mutants, process ordering and expiry/commit-fault proofs. |
+| `lead_intake/custody_store.py:168-173` | Request-only facade over the concrete content owner; no SQL or caller-provided receipt. Malformed/copied-input, canonical-consumer, authority-separation and missing-clock tests. |
+| `tests/test_lead_custody_retained_read.py` | Bounded synthetic proof from the declared missing-entry regression through independently isolated guard cases and existing native-process harness. No existing fixture/test edits. |
+| `.github/workflows/ci.yml` | Adds only the new test file to the existing Windows job. Native Windows result remains a merge gate. |
+| This document | Appends measured implementation evidence and status; the accepted `Contract` section is unchanged. |
+
+No schema, dependency, public export, source/authentication owner, workflow,
+receiver or EOM change. No new validation policy, numeric limit, infrastructure,
+production-readiness or protected-host claim.
 
 ## Gap audit
 
-**NOT DONE — acceptance-only head gates and contract merge pending.**
-Independent contract review and operator acceptance are recorded above.
-Implementation and its native proof require a separate PR after contract merge.
+**NOT DONE — exact-head PR gates pending.**
+Contract review, operator acceptance and contract merge are recorded above.
+The separate implementation still requires Linux/Windows CI, oversight PASS,
+connector reconciliation and guarded merge with tree verification.
 Runtime resume composition, receiver result/status/settlement mapping, durable
 transport operations and protected service adoption remain later work orders.
