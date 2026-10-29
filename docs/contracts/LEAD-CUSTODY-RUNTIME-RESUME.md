@@ -1,12 +1,11 @@
 # R3.3: reference-only runtime resume
 
-Status: **PROPOSED — contract only; implementation is not authorized.**
+Status: **ACCEPTED — contract-only merge gates pending; separate implementation authorized after merge.**
 
 Juan requested: “Let’s start the reference-only runtime resume contract and open
-a contract-only PR for oversight review.” This authorizes this proposal and its
-review, not executable work. Independent contract review, explicit operator
-acceptance of the reviewed revision, and contract merge must precede a separate
-implementation PR. Acceptance of earlier slices does not accept this one.
+a contract-only PR for oversight review.” That request authorized preparation and
+review only. The subsequent acceptance below authorizes this bounded work order;
+the contract must merge before executable work begins in a separate PR.
 
 R3.2 merged in [PR #60](https://github.com/canfieldjuan/connect-automate/pull/60)
 as `9fedc09709fb5b0fa77dc650e5eed2b64c237c3b`, with tree
@@ -16,6 +15,30 @@ The [parent sequence](LEAD-RECEIVER-CUSTODY.md#bounded-implementation-sequence-a
 [source revalidation owner](LEAD-CUSTODY-STORAGE.md),
 [raw composition](LEAD-CUSTODY-COMPOSITION.md) and
 [retained reader](LEAD-CUSTODY-RETAINED-READ.md) retain their responsibilities.
+
+## Acceptance record
+
+On 2026-10-29, Juan stated directly in this lead-intake chat:
+**“Let’s check CI, oversight and connector reviews on PR61. i accept implementation”**.
+This accepts the R3.3 work order at reviewed revision
+`bcd75bc049770d9b7a4369f9df6afc41af70ddf9`, tree
+`9f41825cb08ef21fc8891e8d0e3acf8454bc8352`. Oversight CONTRACT REVIEW PASS is
+recorded in mailbox `02ddd25b` and
+[the exact-revision review](https://github.com/canfieldjuan/connect-automate/pull/61#issuecomment-6487150366).
+The direct operator statement supplies authorization; oversight PASS alone does not.
+
+At that reviewed revision, Linux `test` and `windows-placement` passed, the
+connector completed without findings, and no review threads were unresolved.
+This acceptance-only documentation commit must receive its own current-head
+checks and review before a guarded merge commit. Then implement the accepted
+slice in a separate PR, with unchanged parity and the declared fail-first proof
+before source edits. No executable work precedes that contract merge.
+
+Carry-forward from oversight, without a contract change: the stale-metadata
+tests must assert `SourceAuthenticationError` when applicable purge/expiry/cutoff
+lands between the bound read and revalidation. `SourceContentUnavailable`
+remains the bound-read/no-observed-receipt refusal. Receiver orchestration,
+transport persistence, protected service activation and adoption remain excluded.
 
 ## Contract
 
@@ -300,9 +323,10 @@ schemas change. The existing-seam inventory passed; resume itself is unimplement
 
 ## Gap audit
 
-**NOT DONE — contract review and operator acceptance pending.**
+**NOT DONE — acceptance-only current-head gates and contract merge pending.**
 
-The requested proposal is ready for independent review. Implementation, joined
-resume proof and its Linux/Windows gates remain future work in a separate PR.
+Contract review and exact-revision operator acceptance are recorded above.
+Implementation, joined resume proof and its Linux/Windows gates remain future
+work in a separate PR after the contract merge.
 Receiver lookup/status/settlement composition, durable transport operations,
 protected service wiring and adoption remain separate work orders.
