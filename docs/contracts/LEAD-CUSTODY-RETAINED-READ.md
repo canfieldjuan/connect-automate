@@ -1,6 +1,14 @@
 # R3.2: source-owned retained-content read
 
-Status: **R3.2 private read implemented; local proof passed, PR gates pending.**
+Status: **R3.2 private read MERGED; runtime resume remains separate.**
+
+Implementation [PR #60](https://github.com/canfieldjuan/connect-automate/pull/60)
+merged as `9fedc09709fb5b0fa77dc650e5eed2b64c237c3b` after exact-head Linux/Windows
+CI, oversight PASS and completed clean connector review. Its tree
+`e0b655dd29fdae79f3b127c0c44764d6f02dfc52` equals reviewed head
+`d81d953289f2ac63e1f58f4e7db6e798c4f15414`. This completion note changes no accepted
+semantics. The proposed next work order is
+[R3.3 reference-only runtime resume](LEAD-CUSTODY-RUNTIME-RESUME.md).
 
 R3.1 merged in [PR #57](https://github.com/canfieldjuan/connect-automate/pull/57)
 at `a9cdf8b2d7e538bdf204076d75c567e43392bb0b`. Its reviewed tree is
@@ -309,9 +317,10 @@ production-readiness or protected-host claim.
 
 ## Gap audit
 
-**NOT DONE — exact-head PR gates pending.**
+**DONE — the accepted R3.2 private-library scope is merged.**
 Contract review, operator acceptance and contract merge are recorded above.
-The separate implementation still requires Linux/Windows CI, oversight PASS,
-connector reconciliation and guarded merge with tree verification.
-Runtime resume composition, receiver result/status/settlement mapping, durable
-transport operations and protected service adoption remain later work orders.
+Implementation PR #60 passed Linux/Windows CI, oversight and connector review;
+the guarded merge tree equals the reviewed tree as recorded at the top.
+Runtime resume composition is proposed separately. Receiver result/status/settlement
+mapping, durable transport operations and protected service adoption remain later
+work orders. This completion is not qualification of the complete intake workflow.
