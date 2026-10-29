@@ -55,6 +55,8 @@ jobs:
           tests/test_lead_custody_composition_recovery.py
           tests/test_lead_custody_resume.py
           tests/test_lead_custody_resume_recovery.py
+          tests/test_lead_custody_recovery.py
+          tests/test_lead_custody_recovery_process.py
           tests/test_lead_source_auth.py
           tests/test_lead_source_fixture_encoding.py
           tests/test_windows_connect.py

@@ -14,7 +14,15 @@ from datetime import datetime
 
 from pydantic import TypeAdapter
 
-from ..automate.events import EventBindingError, SourceBinding, lead_deployment_scope
+from ..automate.engine import PackVersionError
+from ..automate.events import (
+    EventBindingError,
+    EventConflict,
+    EventInputError,
+    SourceBinding,
+    lead_deployment_scope,
+)
+from ..automate.host import AutomateLicenseError
 from ..automate.runtime import PackRuntime
 from ..entitlement import UuidV4
 from .content import SourceContentUnavailable
@@ -27,8 +35,15 @@ from .custody_protocol import (
 )
 from .custody_store import SourceCustodyStore
 from .handoff import _prepared_source, _source_for_binding
+from .receipts import ReceiptReference
+from .results import SourceHandoffLookup, SourceHandoffResult, SourceHandoffUnknown
 from .source import _canonical
-from .source_store import SourceStoreUnavailable
+from .source_store import (
+    CustodyObservation,
+    SourceStoreError,
+    SourceStoreUnavailable,
+    SourceStoreUncertain,
+)
 
 
 @dataclass(frozen=True, repr=False)
@@ -148,3 +163,86 @@ class _CustodyHandoff:
 
     def resume(self, *, request: ResumeRequest):
         return self.runtime._resume_custody_source(custody=self, request=request)
+
+    def recover(self, *, request: ResumeRequest) -> SourceHandoffLookup | SourceHandoffResult:
+        """Observe committed history before attempting one freshly authorized resume.
+
+        The two owners finish separate read snapshots. Neither observation is an
+        authorization lease; only a valid not-found may enter the existing resume.
+        """
+        try:
+            request = self._checked_request(request, ResumeRequest)
+            facts = self.custody.observe(
+                handoff_id=request.handoff_id,
+                scope=request.scope,
+                enrolled_machine_id=request.enrolled_machine_id,
+                capture=request.payload.capture,
+            )
+            if facts is None:
+                raise SourceContentUnavailable()
+            if (
+                type(facts) is not CustodyObservation
+                or facts.handoff_id != request.handoff_id
+                or facts.scope != request.scope
+                or facts.capture != request.payload.capture
+            ):
+                raise ValueError("inconsistent custody observation")
+            found = self.runtime.lookup_source_outcome(
+                binding=self.route.binding,
+                event_id=facts.scope.event_id,
+                expected_payload_digest=facts.capture.payload_digest,
+            )
+            if type(found) is not SourceHandoffLookup:
+                raise ValueError("invalid lookup value")
+            found = SourceHandoffLookup.model_validate(found, by_name=True)
+            if found.workflow_outcome != "not_found":
+                receipt = found.source_receipt
+                if (
+                    facts.ever_custodied is not True
+                    or found.actions
+                    or (
+                        receipt.host_id,
+                        receipt.organization_id,
+                        receipt.namespace_id,
+                        receipt.event_id,
+                        receipt.payload_digest,
+                        receipt.recovery_deadline,
+                    )
+                    != (
+                        facts.scope.host_id,
+                        facts.scope.organization_id,
+                        facts.scope.namespace_id,
+                        facts.scope.event_id,
+                        facts.capture.payload_digest,
+                        facts.capture.recovery_deadline,
+                    )
+                ):
+                    raise ValueError("inconsistent historical join")
+                if facts.receipt is not None:
+                    reference = ReceiptReference.model_validate(
+                        {
+                            name: getattr(facts.receipt, name)
+                            for name in ReceiptReference.model_fields
+                        }
+                    )
+                    if receipt != reference:
+                        raise ValueError("inconsistent historical receipt")
+                return found
+        except (SourceStoreUnavailable, SourceStoreUncertain):
+            pass
+        except (
+            EventBindingError,
+            EventInputError,
+            EventConflict,
+            PackVersionError,
+            AutomateLicenseError,
+            SourceContentUnavailable,
+            SourceStoreError,
+        ):
+            raise
+        except Exception:
+            pass
+        else:
+            # No reused observation, refreshed fence, retry or post-failure lookup.
+            return self.resume(request=request)
+        raise SourceHandoffUnknown()

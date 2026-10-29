@@ -1,14 +1,15 @@
 # R3.4: lookup-first private recovery
 
-Status: **ACCEPTED work order; acceptance-only review and contract merge pending; no executable work.**
+Status: **IMPLEMENTED locally under the accepted work order; separate implementation review and Linux/Windows CI pending.**
 
 This work order follows [R3.3 reference-only runtime resume](LEAD-CUSTODY-RUNTIME-RESUME.md).
 It was proposed as a stack on [implementation PR #62](https://github.com/canfieldjuan/connect-automate/pull/62),
 head `d98740136ff6264b875828e6843505a6f79b269a`, tree
 `8c19c07ef0c91af64e4e08bbfd1cbacf2e7fa9de`. That dependency merged unchanged
 as `9332cdfa81af1718892609e970da017b183d4cab`; the merge tree equals the reviewed
-tree. PR #63 now targets main. At the reviewed contract revision, retargeting
-preserved the original documentation-only stack delta exactly.
+tree. At the reviewed contract revision, retargeting to main preserved the
+original documentation-only stack delta exactly. Contract PR #63 then merged as
+`4bd562639e54531962782875eda14daa0fd147b3`, with its reviewed tree unchanged.
 
 Juan's original stacking request authorized preparation and review only. The
 direct acceptance below supplies the bounded implementation work order, subject
@@ -28,15 +29,65 @@ The operator's statement supplies acceptance; the review alone does not.
 
 The accepted Contract and original stack-review request below remain verbatim.
 Their proposal-time status passages describe the reviewed snapshot; this record
-states the current status. This commit records acceptance and parent completion
-only, with no source, tests, configuration, dependency or contract-design change.
+states the current status. The acceptance-only commit recorded acceptance and
+parent completion without source, tests, configuration, dependency or
+contract-design changes.
 
-This acceptance-only head still needs its own Linux/Windows checks, oversight
-delta PASS and reconciled connector review before a guarded merge commit with
-reviewed-tree equality. Then implement the accepted R3.4 scope in a separate PR,
-starting with unchanged parity and the declared fail-first proof. No executable
-work precedes that contract merge. Transport, protected-host activation,
-inference, extraction, application adoption and other slices remain excluded.
+The acceptance-only head passed Linux/Windows checks, oversight delta review and
+connector review with no findings before its guarded merge. The implementation
+below began afterward, on a separate branch, with unchanged parity and the
+declared fail-first proof. Transport, protected-host activation, inference,
+extraction, application adoption and other slices remain excluded.
+
+## Implementation execution record
+
+The accepted text from `## Contract` onward remains unchanged. Its proposal-time
+status and gap passages are historical; this record states the implementation's
+current evidence and remaining gates.
+
+The existing `_CustodyHandoff` now owns `recover(request=...)`: canonical request
+and runtime pins, concrete metadata observation, historical workflow lookup,
+closed result validation and exact receipt join. Known history keeps its lookup
+schema. Only validated `not_found` calls the existing resume once with the
+canonical request and unchanged fence. Unknown outcomes never become absence.
+There is no source lock across workflow access, opportunistic retry, receipt
+shortcut, SQL, schema or public interface change. All prior methods in this
+composition are AST-identical to the merged contract baseline; frozen source
+owners and prior tests are byte-identical.
+
+Measured Linux evidence on Python 3.13.11:
+
+- Unchanged affected baseline at `4bd562639e54531962782875eda14daa0fd147b3`:
+  **3419 passed in 440.58s** before the source edit.
+- Declared lost-response/revoked-key regression failed at the missing recovery
+  entry, then passed with historical access forbidden from body/auth/writers and
+  dispatch. Direct resume continues to refuse the revoked key.
+- Final new tests: **168 passed in 59.14s**. They include native spawn/reopen,
+  crash and SQL failures at observed writes, lost replies, overlapping recovery
+  and upload, and lifecycle changes between lookup and fresh authorization.
+- Unchanged adjacent tests: **1206 passed in 209.15s**. These overlap the baseline;
+  their counts are not added to claim unique coverage.
+- **26** isolated guard-removal probes fail their intended regression tests;
+  Ruff reports **All checks passed!**. The two new files are in native Windows
+  selection from the first implementation push; Windows execution is pending CI.
+
+Local repairs are retained in the evidence: the initial instance revalidation
+used the wire alias incorrectly, fixed at this new call site with field-name
+validation; the new process file initially omitted its imported fixture's
+dependency, corrected in that file; a null scope corruption was caught by a
+later access instead of its intended guard, replaced by valid mismatched scope
+and capture fixtures. The latter now independently kill their guard removals.
+No existing schema, owner or test was changed to accommodate these repairs.
+
+Evidence alias: `custody-r3-recovery`; `manifest.json` SHA-256
+`11f8aa6d7bc212edb24df98c464c01a3a9f18965c76598c3dcfe98e59027c6d7`.
+The packet pins executable inputs, commands, raw results, failed attempts,
+counterfactuals and the frozen-owner audit outside the checkout.
+
+**Gap audit: NOT DONE.** The separate implementation PR still needs exact-head
+Linux/Windows CI, oversight PASS and reconciled connector review before guarded
+merge. This proves a private library slice, not a receiver, machine authorization,
+retention-policy qualification, inference integration or application adoption.
 
 ## Contract
 
