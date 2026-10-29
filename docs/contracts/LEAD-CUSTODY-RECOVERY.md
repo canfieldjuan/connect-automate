@@ -1,21 +1,42 @@
 # R3.4: lookup-first private recovery
 
-Status: **PROPOSED; contract-only stack; NOT ACCEPTED; no executable work.**
+Status: **ACCEPTED work order; acceptance-only review and contract merge pending; no executable work.**
 
-This proposal follows [R3.3 reference-only runtime resume](LEAD-CUSTODY-RUNTIME-RESUME.md).
-It is stacked on [implementation PR #62](https://github.com/canfieldjuan/connect-automate/pull/62),
+This work order follows [R3.3 reference-only runtime resume](LEAD-CUSTODY-RUNTIME-RESUME.md).
+It was proposed as a stack on [implementation PR #62](https://github.com/canfieldjuan/connect-automate/pull/62),
 head `d98740136ff6264b875828e6843505a6f79b269a`, tree
-`8c19c07ef0c91af64e4e08bbfd1cbacf2e7fa9de`. That dependency is unmerged and
-independent review remains a gate. Its presence in this branch is not acceptance.
+`8c19c07ef0c91af64e4e08bbfd1cbacf2e7fa9de`. That dependency merged unchanged
+as `9332cdfa81af1718892609e970da017b183d4cab`; the merge tree equals the reviewed
+tree. PR #63 now targets main. At the reviewed contract revision, retargeting
+preserved the original documentation-only stack delta exactly.
 
-Juan asked whether we could stack the next PR and leave notes so oversight can
-review both and check the direction. This authorizes preparation and review of
-this proposal, not implementation or a waiver of the dependency's review gates.
-Oversight is temporarily unavailable; the stack does not depend on an immediate
-reply. Review and merge the dependency first. Re-pin any dependency change,
-reconcile its effect on this proposal, then review this contract's exact head.
-Explicit operator acceptance must be recorded in a documentation-only commit,
-and the accepted contract must merge before a separate executable PR begins.
+Juan's original stacking request authorized preparation and review only. The
+direct acceptance below supplies the bounded implementation work order, subject
+to contract merge first. No dependency or review gate is waived.
+
+## Acceptance record
+
+On 2026-10-29, in this lead-intake chat, Juan stated directly: **“I accept”**.
+The immediately preceding response identified the R3.4 lookup-first recovery
+contract at `0f3c1732a4f33ff99c5928626615fc6d52a73999`, tree
+`b79d391eb7c105ee3d898fdcdb2699a3f627a223`. That is the accepted revision.
+
+Oversight's unconditional CONTRACT PASS at that exact revision, after verifying
+the unchanged dependency merge and retarget to main, is mailbox `0affa42e` and
+[the retarget review](https://github.com/canfieldjuan/connect-automate/pull/63#issuecomment-6504816185).
+The operator's statement supplies acceptance; the review alone does not.
+
+The accepted Contract and original stack-review request below remain verbatim.
+Their proposal-time status passages describe the reviewed snapshot; this record
+states the current status. This commit records acceptance and parent completion
+only, with no source, tests, configuration, dependency or contract-design change.
+
+This acceptance-only head still needs its own Linux/Windows checks, oversight
+delta PASS and reconciled connector review before a guarded merge commit with
+reviewed-tree equality. Then implement the accepted R3.4 scope in a separate PR,
+starting with unchanged parity and the declared fail-first proof. No executable
+work precedes that contract merge. Transport, protected-host activation,
+inference, extraction, application adoption and other slices remain excluded.
 
 ## Contract
 

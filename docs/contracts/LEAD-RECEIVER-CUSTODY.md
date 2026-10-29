@@ -1,6 +1,6 @@
 # Body-only receiver custody: work order and protocol proposal
 
-Status: **R1/R2 and R3.1/R3.2 library work MERGED; R3.3 runtime-resume contract ACCEPTED and MERGED; implementation in progress.**
+Status: **R1/R2 and R3.1/R3.2/R3.3 library work MERGED; R3.4 lookup-first recovery work order ACCEPTED; contract merge pending.**
 On 2026-10-25 Juan
 said, “i accept, lets begin”, accepting the R1 work order reviewed at
 `66d16a65a807d5dc19b0ef8691be767f50933a83` and merged in
@@ -20,16 +20,19 @@ reviewed head `e5fa951afb245513108e24f4c085fdd85e875e95`.
 [R3.2 source-owned retained-content read](LEAD-CUSTODY-RETAINED-READ.md) merged in
 PR #60 as `9fedc09709fb5b0fa77dc650e5eed2b64c237c3b`; its tree equals reviewed
 head `d81d953289f2ac63e1f58f4e7db6e798c4f15414`.
-The next accepted work order is
+The completed runtime-resume work order is
 [R3.3 reference-only runtime resume](LEAD-CUSTODY-RUNTIME-RESUME.md).
 Its reviewed acceptance head `813ca40c632229b306d03ba3a633880e9c526f9f`
 merged in PR #61 as `5ea984d18c10c745b8098fad89e841dc46502c68`, with
-the same tree. The separate bounded implementation is authorized; receiver
-activation and adoption remain outside that work order.
+the same tree. Its separate implementation merged in PR #62 as
+`9332cdfa81af1718892609e970da017b183d4cab`; the merge tree equals reviewed head
+`d98740136ff6264b875828e6843505a6f79b269a`. Receiver activation and adoption remain
+outside that work order.
 
-[R3.4 lookup-first private recovery](LEAD-CUSTODY-RECOVERY.md) is a proposed,
-contract-only stack on the R3.3 implementation. It is not accepted or executable
-authority; review the dependency first and qualify the contract separately.
+[R3.4 lookup-first private recovery](LEAD-CUSTODY-RECOVERY.md#acceptance-record)
+is the next accepted work order. Its canonical acceptance record binds the
+reviewed revision. The acceptance-only contract must pass its gates and merge
+before executable work begins in a separate PR.
 
 The accepted [application policy](LEAD-SOURCE-HANDOFF.md#current-acceptance-and-work-order-status)
 remains authoritative: one business per deployment, receiver-owned raw custody,
