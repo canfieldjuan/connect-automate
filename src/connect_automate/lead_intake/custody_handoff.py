@@ -17,7 +17,9 @@ from pydantic import TypeAdapter
 from ..automate.events import EventBindingError, SourceBinding, lead_deployment_scope
 from ..automate.runtime import PackRuntime
 from ..entitlement import UuidV4
+from .content import SourceContentUnavailable
 from .custody_protocol import (
+    ResumeRequest,
     RouteReference,
     UploadRequest,
     canonical_request,
@@ -26,6 +28,7 @@ from .custody_protocol import (
 from .custody_store import SourceCustodyStore
 from .handoff import _prepared_source, _source_for_binding
 from .source import _canonical
+from .source_store import SourceStoreUnavailable
 
 
 @dataclass(frozen=True, repr=False)
@@ -84,13 +87,13 @@ class _CustodyHandoff:
         ):
             raise EventBindingError()
 
-    def _prepare(self, request: UploadRequest, raw: bytes):
+    def _checked_request(self, request, expected_type):
         self._check_runtime()
         valid = False
         try:
             request = parse_untrusted_request(canonical_request(request))
             scope = lead_deployment_scope(self._source.scope, self._source.source_id)
-            valid = type(request) is UploadRequest and (
+            valid = type(request) is expected_type and (
                 request.scope.host_id,
                 request.scope.organization_id,
                 request.scope.namespace_id,
@@ -107,11 +110,41 @@ class _CustodyHandoff:
             pass
         if not valid:
             raise EventBindingError()
+        return request
+
+    def _prepare(self, request: UploadRequest, raw: bytes):
+        request = self._checked_request(request, UploadRequest)
         parsed = _source_for_binding(self._source, raw)
         admitted = self.custody.admit_bound(request, raw)
+        return _prepared_source(self._source, parsed, admitted, self.clock)
+
+    def _prepare_resume(self, request: ResumeRequest):
+        request = self._checked_request(request, ResumeRequest)
+        facts = self.custody.observe(
+            handoff_id=request.handoff_id,
+            scope=request.scope,
+            enrolled_machine_id=request.enrolled_machine_id,
+            capture=request.payload.capture,
+        )
+        if facts is None or facts.receipt is None:
+            raise SourceContentUnavailable()
+        raw = self.custody.read_retained(request)
+        parsed = _source_for_binding(self._source, raw)
+        admitted = self.custody.revalidate_existing(
+            request, raw, admission_id=facts.receipt.admission_id
+        )
+        if (
+            admitted.receipt != facts.receipt
+            or admitted.applied is not False
+            or admitted.content_state != "retained"
+        ):
+            raise SourceStoreUnavailable()
         return _prepared_source(self._source, parsed, admitted, self.clock)
 
     def submit(self, *, request: UploadRequest, raw_source_bytes: bytes):
         return self.runtime._submit_custody_source(
             custody=self, request=request, raw_source_bytes=raw_source_bytes
         )
+
+    def resume(self, *, request: ResumeRequest):
+        return self.runtime._resume_custody_source(custody=self, request=request)
