@@ -1,6 +1,6 @@
 # Body-only receiver custody: work order and protocol proposal
 
-Status: **R1/R2 and R3.1–R3.4 library work MERGED; R3.5 read-only status work order ACCEPTED; contract merge pending.**
+Status: **R1/R2 and R3.1–R3.5 library work MERGED. Vertical-delivery plan ACCEPTED; acceptance-delta review and merge pending. No executable slice or live activation authorized.**
 On 2026-10-25 Juan
 said, “i accept, lets begin”, accepting the R1 work order reviewed at
 `66d16a65a807d5dc19b0ef8691be767f50933a83` and merged in
@@ -32,11 +32,22 @@ outside that work order.
 [R3.4 lookup-first private recovery](LEAD-CUSTODY-RECOVERY.md#acceptance-record)
 merged in PR #64 as `be63503723f1fa397aae98a7c1af1fa2d0faea18`, with the
 same tree as reviewed head `6d8ad201b52c51a95cf6bcc128c3f0845fcfe388`.
-The next accepted work order is [R3.5 read-only custody status](LEAD-CUSTODY-STATUS.md#acceptance-record).
+The completed work order is [R3.5 read-only custody status](LEAD-CUSTODY-STATUS.md#acceptance-record).
 Its canonical acceptance record binds `4fc8545f57b907e028134f9c3f700e65f8e51e51`,
 including precise result version `1.1` with existing `1.0` behavior preserved.
-Acceptance-delta review and contract merge precede the separate implementation
-PRs. Receiver activation remains outside this work order.
+Its implementation merged through PR #68 at
+`b5ce216139f8dd11f2e71746f791279181374a70`; merged tree
+`8280937757e3b6cb10c40f7d55b2b5319d233c0b` equals the reviewed tree.
+Receiver activation remains outside that completed work order.
+
+The next product lane is the accepted
+[vertical-delivery plan](LEAD-VERTICAL-DELIVERY.md#acceptance-record): an operator-selected real
+web-form notification through an isolated read-only EW instance, followed by
+a local lead-list read and automatic setup. It includes issue #66 before
+transport exposure and user-configurable stages. Acceptance covers ordering and
+direction only. Each bounded work order, protected machine authentication,
+privacy qualification and live-use authorization remain separate gates; the
+plan does not start implementation.
 
 The accepted [application policy](LEAD-SOURCE-HANDOFF.md#current-acceptance-and-work-order-status)
 remains authoritative: one business per deployment, receiver-owned raw custody,
