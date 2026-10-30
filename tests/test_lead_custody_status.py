@@ -1159,14 +1159,20 @@ def test_status_absent_capture_does_not_adopt_bound_identity(status_case, monkey
         "closed",
         "admission_id",
         "namespace_retired",
+        "receipt",
+        "content_state",
+        "unavailable_reason",
     ],
 )
 def test_status_uncustodied_checks_independently(setup, monkeypatch, field):
     args, owner, _ = setup
     runtime = PackRuntime.load(**args)
     access = reader(owner, clock=lambda: NOW)
-    intent, upload, _ = prepare(runtime, access, phase="prepared")
-    request = status(intent)
+    # The bound projection replaces content_state with "unknown". Use it to
+    # prove invalid source content is rejected before that information is lost.
+    bound = field == "content_state"
+    intent, upload, raw = prepare(runtime, access, phase="bound" if bound else "prepared")
+    request = status(intent, upload if bound else None)
     value = access.observe_status(request=request)
     changes = dict(
         handoff_id=OTHER,
@@ -1175,11 +1181,51 @@ def test_status_uncustodied_checks_independently(setup, monkeypatch, field):
         ever_custodied=0,
         closed=0,
     )
+    if field == "receipt":
+        # Keep the original never-custodied observation; introduce only a fully
+        # valid receipt obtained from the real owner after that observation.
+        access.bind_upload(upload)
+        changes["receipt"] = access.admit_bound(upload, raw).receipt
+    observation_changes = dict(
+        admission_id=OTHER,
+        namespace_retired=0,
+        content_state="retained",
+        unavailable_reason="purged",
+    )
     wrong = (
         replace(value, custody=replace(value.custody, **{field: changes[field]}))
         if field in changes
-        else replace(value, **{field: OTHER if field == "admission_id" else 0})
+        else replace(value, **{field: observation_changes[field]})
     )
     monkeypatch.setattr(access, "observe_status", lambda **kw: wrong)
     monkeypatch.setattr(runtime, "lookup_source_outcome", forbidden)
-    assert composition(runtime, access, intent).status(request=request).code == "unknown"
+    with status_only(
+        SimpleNamespace(args=args, owner=owner, runtime=runtime, access=access), monkeypatch
+    ):
+        found = composition(runtime, access, intent).status(request=request)
+    assert found.status == "unresolved" and found.code == "unknown"
+
+
+def test_status_missing_receipt_requires_retirement(status_case, monkeypatch):
+    c = status_case
+    expected = committed(c)
+    value = c.access.observe_status(request=c.request)
+    assert value.custody.ever_custodied is True and value.namespace_retired is False
+    assert (
+        value.custody.receipt is not None
+        and value.admission_id == expected.source_receipt.admission_id
+    )
+    wrong = replace(value, custody=replace(value.custody, receipt=None))
+    lookup, calls = c.runtime.lookup_source_outcome, []
+
+    def looked_up(**kwargs):
+        result = lookup(**kwargs)
+        calls.append(result)
+        return result
+
+    monkeypatch.setattr(c.access, "observe_status", lambda **kw: wrong)
+    monkeypatch.setattr(c.runtime, "lookup_source_outcome", looked_up)
+    with status_only(c, monkeypatch):
+        found = c.handoff.status(request=c.request)
+    assert calls == [expected]  # Known history must not repair inconsistent source facts.
+    assert found.status == "unresolved" and found.code == "unknown"
