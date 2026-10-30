@@ -21,6 +21,7 @@ from .source_store import (
     SourceStore,
     SourceStoreConflict,
     SourceStoreInputError,
+    SourceStoreUnavailable,
     _boundary,
 )
 
@@ -119,8 +120,17 @@ class SourceCustodyStore:
             self._store.organization_id,
         ):
             raise SourceStoreConflict()
-        with self._store._read_snapshot(expected_incarnation=self._incarnation) as db:
-            return self._store._observe_custody_status(db, request, self._clock)
+        pinned = False
+        try:
+            with self._store._read_snapshot(expected_incarnation=self._incarnation) as db:
+                pinned = True
+                return self._store._observe_custody_status(db, request, self._clock)
+        except SourceStoreConflict:
+            if pinned:
+                raise
+        # A replacement store cannot establish absence or a reference conflict.
+        # Preserve legacy readers' errors; classify only this status observation.
+        raise SourceStoreUnavailable()
 
     def _writer(self):
         if not callable(self._clock):

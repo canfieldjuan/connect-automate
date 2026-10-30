@@ -27,10 +27,14 @@ from ..automate.runtime import PackRuntime
 from ..entitlement import UuidV4
 from .content import SourceContentUnavailable
 from .custody_protocol import (
+    ResolvedStatusResult,
     ResumeRequest,
     RouteReference,
+    StatusRequest,
+    UnresolvedStatusResult,
     UploadRequest,
     canonical_request,
+    canonical_status_result,
     parse_untrusted_request,
 )
 from .custody_store import SourceCustodyStore
@@ -40,10 +44,58 @@ from .results import SourceHandoffLookup, SourceHandoffResult, SourceHandoffUnkn
 from .source import _canonical
 from .source_store import (
     CustodyObservation,
+    CustodyStatusObservation,
+    SourceStoreConflict,
     SourceStoreError,
     SourceStoreUnavailable,
     SourceStoreUncertain,
 )
+
+
+def _receipt_reference(receipt):
+    return ReceiptReference.model_validate(
+        {name: getattr(receipt, name) for name in ReceiptReference.model_fields}
+    )
+
+
+def _historical_lookup(facts, found):
+    """Pure join shared with recovery; no new clock, lifecycle or I/O prerequisite."""
+    if type(found) is not SourceHandoffLookup:
+        raise ValueError("invalid lookup value")
+    found = SourceHandoffLookup.model_validate(found, by_name=True)
+    if found.workflow_outcome != "not_found":
+        receipt = found.source_receipt
+        if (
+            facts.ever_custodied is not True
+            or found.actions
+            or (
+                receipt.host_id,
+                receipt.organization_id,
+                receipt.namespace_id,
+                receipt.event_id,
+                receipt.payload_digest,
+                receipt.recovery_deadline,
+            )
+            != (
+                facts.scope.host_id,
+                facts.scope.organization_id,
+                facts.scope.namespace_id,
+                facts.scope.event_id,
+                facts.capture.payload_digest,
+                facts.capture.recovery_deadline,
+            )
+        ):
+            raise ValueError("inconsistent historical join")
+        if facts.receipt is not None:
+            reference = _receipt_reference(facts.receipt)
+            if receipt != reference:
+                raise ValueError("inconsistent historical receipt")
+    return found
+
+
+def _encoded_status(result):
+    canonical_status_result(result)
+    return result
 
 
 @dataclass(frozen=True, repr=False)
@@ -192,41 +244,8 @@ class _CustodyHandoff:
                 event_id=facts.scope.event_id,
                 expected_payload_digest=facts.capture.payload_digest,
             )
-            if type(found) is not SourceHandoffLookup:
-                raise ValueError("invalid lookup value")
-            found = SourceHandoffLookup.model_validate(found, by_name=True)
+            found = _historical_lookup(facts, found)
             if found.workflow_outcome != "not_found":
-                receipt = found.source_receipt
-                if (
-                    facts.ever_custodied is not True
-                    or found.actions
-                    or (
-                        receipt.host_id,
-                        receipt.organization_id,
-                        receipt.namespace_id,
-                        receipt.event_id,
-                        receipt.payload_digest,
-                        receipt.recovery_deadline,
-                    )
-                    != (
-                        facts.scope.host_id,
-                        facts.scope.organization_id,
-                        facts.scope.namespace_id,
-                        facts.scope.event_id,
-                        facts.capture.payload_digest,
-                        facts.capture.recovery_deadline,
-                    )
-                ):
-                    raise ValueError("inconsistent historical join")
-                if facts.receipt is not None:
-                    reference = ReceiptReference.model_validate(
-                        {
-                            name: getattr(facts.receipt, name)
-                            for name in ReceiptReference.model_fields
-                        }
-                    )
-                    if receipt != reference:
-                        raise ValueError("inconsistent historical receipt")
                 return found
         except (SourceStoreUnavailable, SourceStoreUncertain):
             pass
@@ -245,4 +264,119 @@ class _CustodyHandoff:
         else:
             # No reused observation, refreshed fence, retry or post-failure lookup.
             return self.resume(request=request)
+        raise SourceHandoffUnknown()
+
+    def status(self, *, request: StatusRequest) -> ResolvedStatusResult | UnresolvedStatusResult:
+        """Read source availability, then independent workflow history; never resume."""
+        request = self._checked_request(request, StatusRequest)
+        code = "unknown"
+        try:
+            observation = self.custody.observe_status(request=request)
+            if observation is None:
+                return _encoded_status(
+                    UnresolvedStatusResult(
+                        schema_version="1.1",
+                        status="unresolved",
+                        handoff_id=request.handoff_id,
+                        code="not_found",
+                    )
+                )
+            if type(observation) is not CustodyStatusObservation:
+                raise ValueError("invalid status observation")
+            facts = observation.custody
+            if (
+                type(facts) is not CustodyObservation
+                or facts.handoff_id != request.handoff_id
+                or facts.scope != request.scope
+                or facts.capture != request.payload.capture
+                or type(facts.ever_custodied) is not bool
+                or type(facts.closed) is not bool
+                or type(observation.namespace_retired) is not bool
+                or (observation.admission_id is not None) != facts.ever_custodied
+            ):
+                raise ValueError("inconsistent status observation")
+            found = receipt = deadline = None
+            content, unavailable = observation.content_state, observation.unavailable_reason
+            if facts.ever_custodied is True:
+                found = _historical_lookup(
+                    facts,
+                    self.runtime.lookup_source_outcome(
+                        binding=self.route.binding,
+                        event_id=facts.scope.event_id,
+                        expected_payload_digest=facts.capture.payload_digest,
+                    ),
+                )
+                if content not in ("retained", "unavailable") or observation.namespace_retired != (
+                    unavailable == "retired"
+                ):
+                    raise ValueError("inconsistent source availability")
+                if facts.receipt is not None:
+                    receipt = _receipt_reference(facts.receipt)
+                elif observation.namespace_retired:
+                    receipt = found.source_receipt
+                if receipt is None or receipt.admission_id != observation.admission_id:
+                    raise ValueError("missing historical receipt")
+                phase = "custodied"
+                reason = (
+                    "workflow_known"
+                    if found.workflow_outcome != "not_found"
+                    else "custody_confirmed"
+                    if content == "retained"
+                    else "content_unavailable"
+                )
+            else:
+                if facts.receipt is not None or (content, unavailable) != ("not_received", None):
+                    raise ValueError("unexpected uncustodied receipt or content")
+                if facts.closed:
+                    phase, reason = "fenced_empty", "capture_cancelled"
+                elif facts.capture is not None:
+                    phase, content, reason = "upload_possible", "unknown", "pending"
+                else:
+                    phase, reason, deadline = (
+                        "prepared",
+                        "ready",
+                        observation.reservation_expires_at,
+                    )
+            return _encoded_status(
+                ResolvedStatusResult.model_validate(
+                    dict(
+                        schema_version="1.1",
+                        status="resolved",
+                        handoff_id=facts.handoff_id,
+                        scope=facts.scope,
+                        state_revision=facts.state_revision,
+                        fence_generation=facts.fence_generation,
+                        observed_at=observation.observed_at,
+                        reservation_expires_at=deadline,
+                        capture=facts.capture,
+                        capture_phase=phase,
+                        content_state=content,
+                        unavailable_reason=unavailable,
+                        workflow=found,
+                        source_receipt=receipt,
+                        reason=reason,
+                    ),
+                    by_name=True,
+                )
+            )
+        except (SourceStoreConflict, EventConflict):
+            code = "conflict"
+        except (EventBindingError, EventInputError, PackVersionError, AutomateLicenseError):
+            raise
+        except Exception:
+            pass
+        # Encode outside the original handler: no input/cause/context crosses this boundary.
+        # An unencodable conflict also falls back to the minimal unknown value.
+        for outcome in dict.fromkeys((code, "unknown")):
+            try:
+                return _encoded_status(
+                    UnresolvedStatusResult(
+                        schema_version="1.1",
+                        status="unresolved",
+                        handoff_id=request.handoff_id,
+                        code=outcome,
+                    )
+                )
+            except Exception:
+                pass
         raise SourceHandoffUnknown()
