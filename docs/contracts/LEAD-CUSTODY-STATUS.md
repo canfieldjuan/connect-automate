@@ -1,12 +1,41 @@
 # R3.5: read-only custody status and result projection
 
-Status: **PROPOSED — NOT ACCEPTED. Contract only; no executable work authorized.**
+Status: **ACCEPTED at the reviewed revision below; acceptance-delta review and contract merge pending. No executable work in this PR.**
 
 This work order follows [lookup-first recovery](LEAD-CUSTODY-RECOVERY.md).
-The operator requested “start the contract”. That authorizes this proposal and
-its review, not implementation, live access, transport activation or adoption.
-Record exact-revision acceptance separately after independent contract review;
-merge the accepted contract before a separate implementation PR.
+
+## Acceptance record
+
+Juan's direct message in the oversight conversation at
+`2026-10-30T03:27:19.036Z` was:
+
+> I accept 65 at 4fc8545
+
+It accepts PR #65 at exact reviewed head
+`4fc8545f57b907e028134f9c3f700e65f8e51e51`.
+[Oversight's contract review](https://github.com/canfieldjuan/connect-automate/pull/65#issuecomment-6512594850)
+passed that revision. Linux `test`, native `windows-placement` and the completed
+connector review were green/clean there, with no unresolved threads.
+
+Oversight relayed the decision verbatim in mailbox `ecb76c1f`. The direct user
+message was independently verified; the peer relay itself grants no authority.
+Evidence alias `custody-status-contract/acceptance-20261030T033045Z/operator-acceptance.json`,
+SHA-256 `73e712c888b8703fd520995dc2e01a6bbfdfe15adb6181458d1c869be9166a86`.
+
+The accepted body beginning at **Baseline and root cause** remains byte-identical
+to the reviewed revision. Historical proposal/pending language below records
+that revision's state; this acceptance record supplies the current authority.
+The acceptance-only commit needs its own delta review and exact-head CI/connector
+gates before a guarded merge. Executable work follows after contract merge.
+
+Delivery plan adopts oversight's non-blocking packaging recommendation: use two
+stacked implementation PRs, first the precise vocabulary plus source observation,
+then status composition, targeting under about 1,000 lines each including tests.
+This splits delivery without changing the accepted owners, behavior or proof
+requirements; the reviewed body's references to separate commits remain intact.
+Track explicit expired-unfenced vocabulary before transport exposure in
+[issue #66](https://github.com/canfieldjuan/connect-automate/issues/66). It does
+not change this slice's accepted conservative `unknown` result.
 
 ## Baseline and root cause
 
