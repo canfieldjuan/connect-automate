@@ -9,6 +9,7 @@ from .content import SourceContent
 from .custody_protocol import (
     CaptureReference,
     ScopeReference,
+    StatusRequest,
     canonical_request,
     parse_untrusted_request,
 )
@@ -108,6 +109,18 @@ class SourceCustodyStore:
         envelope = _input(_DIGEST.validate_python, envelope_sha256)
         with self._store._read_snapshot(expected_incarnation=self._incarnation) as db:
             return self._store._lookup_receipt(db, identity, event, payload, envelope)
+
+    @_boundary
+    def observe_status(self, *, request: StatusRequest):
+        """Exact status references only; time and availability belong to the source owner."""
+        request = _request(request, "status")
+        if (request.scope.host_id, request.scope.organization_id) != (
+            self._store.host_id,
+            self._store.organization_id,
+        ):
+            raise SourceStoreConflict()
+        with self._store._read_snapshot(expected_incarnation=self._incarnation) as db:
+            return self._store._observe_custody_status(db, request, self._clock)
 
     def _writer(self):
         if not callable(self._clock):

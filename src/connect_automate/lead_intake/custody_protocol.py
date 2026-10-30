@@ -12,10 +12,10 @@ import json
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import Field, TypeAdapter, model_validator
+from pydantic import BeforeValidator, Field, TypeAdapter, model_validator
 
 from ..entitlement import UuidV4
-from .receipts import ReceiptReference
+from .receipts import ReceiptReference, _decision_time
 from .results import SourceHandoffLookup
 from .source import (
     MAX_SOURCE_BYTES,
@@ -197,12 +197,13 @@ class ResolvedResult(_Closed):
             raise ValueError("prepared capture present")
         if phase in ("upload_possible", "custodied") and self.capture is None:
             raise ValueError("required capture absent")
-        if self.capture is not None and self.capture.captured_at > self.observed_at:
+        observed = datetime.fromisoformat(self.observed_at)
+        if self.capture is not None and datetime.fromisoformat(self.capture.captured_at) > observed:
             raise ValueError("capture after observation")
         if phase == "prepared":
             if self.reservation_expires_at is None:
                 raise ValueError("reservation absent")
-            if self.reservation_expires_at <= self.observed_at:
+            if datetime.fromisoformat(self.reservation_expires_at) <= observed:
                 raise ValueError("reservation not ready")
         elif self.reservation_expires_at is not None:
             raise ValueError("unexpected reservation")
@@ -275,6 +276,23 @@ _RESULT_TYPES = (ResolvedResult, UnresolvedResult)
 _RESULT = TypeAdapter(Annotated[ResolvedResult | UnresolvedResult, Field(discriminator="status")])
 
 
+class ResolvedStatusResult(ResolvedResult):
+    """Separate precise vocabulary; inherits the existing closed combination rules."""
+
+    schema_version: Literal["1.1"]
+    observed_at: Annotated[str, BeforeValidator(_decision_time)]
+
+
+class UnresolvedStatusResult(UnresolvedResult):
+    schema_version: Literal["1.1"]
+
+
+_STATUS_RESULT_TYPES = (ResolvedStatusResult, UnresolvedStatusResult)
+_STATUS_RESULT = TypeAdapter(
+    Annotated[ResolvedStatusResult | UnresolvedStatusResult, Field(discriminator="status")]
+)
+
+
 def _validate(adapter, value, limit):
     _shape(value)
     parsed = adapter.validate_python(value, by_name=isinstance(value, _Closed))
@@ -328,6 +346,15 @@ def parse_untrusted_result(raw: bytes):
 
 def canonical_result(value) -> bytes:
     return _encode(value, _RESULT, _RESULT_TYPES, MAX_RESULT_BYTES)
+
+
+def parse_untrusted_status_result(raw: bytes):
+    """Parse only result 1.1; this claim grants no authority or custody proof."""
+    return _parse(raw, _STATUS_RESULT, MAX_RESULT_BYTES)
+
+
+def canonical_status_result(value) -> bytes:
+    return _encode(value, _STATUS_RESULT, _STATUS_RESULT_TYPES, MAX_RESULT_BYTES)
 
 
 def _match_upload(upload, prepared, source, raw):

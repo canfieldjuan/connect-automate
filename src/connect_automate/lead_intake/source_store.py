@@ -209,6 +209,27 @@ class CustodyObservation:
     content_state: str
 
 
+@dataclass(frozen=True)
+class _CustodyMetadata:
+    custody: CustodyObservation
+    machine: str
+    reservation_expires_at: str
+    admission_id: str | None
+
+
+@dataclass(frozen=True)
+class CustodyStatusObservation:
+    """As-of source metadata, not a body integrity check, lease or workflow snapshot."""
+
+    custody: CustodyObservation
+    reservation_expires_at: str
+    admission_id: str | None
+    namespace_retired: bool
+    observed_at: str
+    content_state: str
+    unavailable_reason: str | None
+
+
 def _metadata_authorizer(action, first, second, _database, _trigger):
     if action == sqlite3.SQLITE_READ and first == "source_content" and second == "envelope":
         return sqlite3.SQLITE_DENY
@@ -685,6 +706,10 @@ class SourceStore:
                 self._handoff_metadata(db, ident)
 
     def _handoff_metadata(self, db, ident):
+        metadata = self._custody_metadata(db, ident)
+        return None if metadata is None else (metadata.custody, metadata.machine)
+
+    def _custody_metadata(self, db, ident):
         from .custody_protocol import CaptureReference
 
         row = db.execute("SELECT * FROM source_handoffs WHERE handoff_id=?", (ident,)).fetchone()
@@ -799,7 +824,7 @@ class SourceStore:
             retired, _ = self._lifecycle(db)
             if namespace not in retired:
                 raise SourceStoreUnavailable()
-        return CustodyObservation(
+        facts = CustodyObservation(
             handoff,
             scope,
             capture,
@@ -809,7 +834,8 @@ class SourceStore:
             bool(ever),
             receipt,
             content_state,
-        ), prepared.enrolled_machine_id
+        )
+        return _CustodyMetadata(facts, prepared.enrolled_machine_id, deadline, admission)
 
     def _observe_custody(self, db, handoff_id, scope, machine, capture):
         result = self._handoff_metadata(db, handoff_id)
@@ -821,6 +847,42 @@ class SourceStore:
         if capture is not None and facts.capture != capture:
             raise SourceStoreConflict()
         return facts
+
+    def _observe_custody_status(self, db, request, clock):
+        metadata = self._custody_metadata(db, request.handoff_id)
+        if metadata is None:
+            return None
+        facts = metadata.custody
+        if (
+            facts.scope != request.scope
+            or metadata.machine != request.enrolled_machine_id
+            or facts.capture != request.payload.capture
+        ):
+            raise SourceStoreConflict()
+        retired = facts.scope.namespace_id in self._lifecycle(db)[0]
+        try:
+            sample = clock()
+        except Exception:
+            sample = None
+        sample = self._check_clock(db, sample)
+        state, reason = facts.content_state, None
+        if facts.ever_custodied:
+            if retired:
+                reason = "retired"
+            elif state == "purged":
+                reason = "purged"
+            elif sample >= datetime.fromisoformat(facts.capture.recovery_deadline):
+                reason = "expired"
+            state = "unavailable" if reason is not None else "retained"
+        return CustodyStatusObservation(
+            facts,
+            metadata.reservation_expires_at,
+            metadata.admission_id,
+            retired,
+            _clock_text(sample),
+            state,
+            reason,
+        )
 
     def _lookup_receipt(self, db, identity, event_id, payload_digest, envelope_sha256):
         row = db.execute(
