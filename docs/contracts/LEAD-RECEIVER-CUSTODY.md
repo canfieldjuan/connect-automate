@@ -1,6 +1,6 @@
 # Body-only receiver custody: work order and protocol proposal
 
-Status: **R1/R2 and R3.1–R3.5 library work MERGED. Next: proposed vertical-delivery plan; no live activation authorized.**
+Status: **R1/R2 and R3.1–R3.5 library work MERGED. Vertical-delivery plan ACCEPTED; acceptance-delta review and merge pending. No executable slice or live activation authorized.**
 On 2026-10-25 Juan
 said, “i accept, lets begin”, accepting the R1 work order reviewed at
 `66d16a65a807d5dc19b0ef8691be767f50933a83` and merged in
@@ -40,13 +40,14 @@ Its implementation merged through PR #68 at
 `8280937757e3b6cb10c40f7d55b2b5319d233c0b` equals the reviewed tree.
 Receiver activation remains outside that completed work order.
 
-The next product lane is the proposed
-[vertical-delivery plan](LEAD-VERTICAL-DELIVERY.md): an operator-selected real
+The next product lane is the accepted
+[vertical-delivery plan](LEAD-VERTICAL-DELIVERY.md#acceptance-record): an operator-selected real
 web-form notification through an isolated read-only EW instance, followed by
 a local lead-list read and automatic setup. It includes issue #66 before
-transport exposure and user-configurable stages. Contract acceptance, protected
-machine authentication, privacy qualification and live-use authorization remain
-separate gates; the plan does not start implementation.
+transport exposure and user-configurable stages. Acceptance covers ordering and
+direction only. Each bounded work order, protected machine authentication,
+privacy qualification and live-use authorization remain separate gates; the
+plan does not start implementation.
 
 The accepted [application policy](LEAD-SOURCE-HANDOFF.md#current-acceptance-and-work-order-status)
 remains authoritative: one business per deployment, receiver-owned raw custody,

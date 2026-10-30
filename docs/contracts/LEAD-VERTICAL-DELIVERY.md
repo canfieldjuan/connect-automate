@@ -1,3 +1,37 @@
+## Acceptance record
+
+Juan's direct user message in the oversight conversation at
+`2026-10-30T20:42:51.077Z` was:
+
+> accept 69 at 8639491
+
+This accepts the plan at exact reviewed head
+`8639491e2b692c6a43efdbce42f02753b9ad8a29` in
+[PR #69](https://github.com/canfieldjuan/connect-automate/pull/69).
+[Oversight's delta contract review](https://github.com/canfieldjuan/connect-automate/pull/69#issuecomment-6531901461)
+passed that revision. The operator message was independently verified; mailbox
+`9e19d357` relayed it verbatim. The relay is not a reviewer-granted permission.
+
+The **complete accepted document** begins below at its original title and is
+byte-identical to the file at that reviewed head. Its SHA-256 is
+`893f6b4c5420f4c0d316fdbb451bde23468e13c568e2564e6f810fde3fce67d7`.
+Its historical proposal/pending-acceptance wording is superseded by this record.
+Evidence alias `lead-vertical-contract/acceptance-20261030T2101/operator-acceptance.json`,
+SHA-256 `6bffbe79c6d36c640a225f68424aa3465e031cfb1c19bde8ea1d97598ca67a8f`.
+
+Acceptance covers ordering and direction only. Each slice V1a through V3 needs
+its own accepted bounded work order; V1a is the expired-unfenced vocabulary for
+issue #66. This commit does not start any executable slice. Gmail discovery,
+OAuth, real-message access, receiver activation and live use remain unauthorized.
+The eventual V1e run also requires Juan to select a recent message and perform
+OAuth himself. Native authority and qualification gates remain unchanged.
+
+Before a guarded non-squash merge, this acceptance-only delta needs oversight
+PASS, a clean connector review and green CI at its new head, reconciled findings,
+no unresolved review threads or changes requested, and clean local/remote parity.
+
+---
+
 # Lead delivery: first real notification, local list, automatic setup
 
 Status: **PROPOSED PLAN. Contract only; not accepted for implementation or live use.**
