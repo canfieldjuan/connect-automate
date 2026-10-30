@@ -11,7 +11,10 @@ receiver and canonical leads. No parallel implementation is started here.
 ## Direction and acceptance boundary
 
 The operator directions relayed in `b5c362f1`, `fdcf8b70`, `5ffcbd47`,
-`c92fe544`, and correction `042f4eca` establish the following plan requirements:
+`c92fe544`, and correction `042f4eca` establish the following plan requirements.
+Later decisions `37ad85bf` (corrected by `2f0e8aec`) and `30aba361` settle
+proof-evidence retention, Lead Intake ownership and the default stage labels;
+they do not accept this entire technical revision:
 
 - Use a real Gmail **web-form notification selected by Juan**, not an arbitrary
   customer email. Agents must not search the inbox to select it.
@@ -123,6 +126,12 @@ owns authentication and enforcement. Each owner exposes APIs; sharing a SQLite
 deployment does not permit cross-owner SQL. EOM and the shared AI runtime are
 untouched. This deterministic template path needs no inference or model download.
 
+**Operator ownership decision:** Juan said "lead intake not atlas" (relayed in
+`30aba361`). Lead Intake is the lead system. This plan does not route leads to,
+feed or integrate with the Atlas funnel. It changes nothing in Atlas, EOM,
+eom-timetracker or eom-connect-provider and does not replace their existing
+business workflows.
+
 ### First vertical delivery
 
 **Selection and isolation.** Juan supplies exact Gmail message IDs or applies a
@@ -150,6 +159,18 @@ handwritten crypto. No such verifier is established in the inspected EW path;
 its owner/dependency/retained authentication evidence need a separate EW work order.
 Historical key loss is a typed refusal, never permission to trust a spoofable
 header. Do not render HTML, load remote images, follow links or execute content.
+
+The EW-owned DKIM verifier fetches the signing selector's public key by DNS at
+verification time. This is explicit network egress to the configured DNS resolver,
+in addition to Gmail retrieval; the selector/domain query discloses that lookup,
+not the message body or submitted customer fields. The EW work order must bound
+DNS timeouts, response sizes and failures. It cannot use an email-supplied key or
+silently substitute a historical key. If a delivery-time key has been replaced or
+removed and the current selector cannot verify the signature, refuse the message.
+Juan should select a **recent lead**; recency is guidance, never proof of validity.
+The private proof records the provider-reported delivery time, verification time,
+selector/domain, verifier version and verification result. No DNS or Gmail call
+is authorized by this contract draft.
 
 The selected template determines a closed versioned field schema and a real
 MIME/HTML or structured label-value parser at the Lead Intake owner. Unknown or
@@ -250,8 +271,10 @@ requires its own accepted schema/implementation slice before the receiver is exp
 
 ## Later lead list and configurable stages
 
-**Proposed default for acceptance:** New, In progress, Closed. These are starter
-labels, not a claim about Juan's existing stages. Each user has a non-empty ordered
+**Accepted default stage labels:** New, In progress, Closed. Juan said
+"defaults for stages are fine", relayed in `30aba361`. These are the shipped
+defaults; users retain the ability to add, rename, reorder and remove stages
+under the rules below. Each user has a non-empty ordered
 stage set with stable UUID IDs, owner and organization scope, schema version and
 revision. Labels are bounded user data. Stage IDs are unique by ID (not merely
 unique whole objects); enforce that cross-item rule in one owner validator. The
@@ -300,6 +323,9 @@ silently become a shipping manual step.
 | Runtime binaries, dependencies, model assets if another feature needs them | Shared package installer and shared AI runtime owner | Signed/pinned assets, resumable verified downloads, offline/error behavior; no second model runtime or lead-specific model installation. This form path uses no model. |
 | Private encrypted roots, service principal and OS keystore | Package installer | Native Linux/Windows access/encryption checks, denied unauthorized reads, upgrade/uninstall behavior; never infer protection from a private filename. |
 | Immutable organization/host/user scope and provider identity | Connect first-launch host | Single deployment scope, atomic restart-safe initialization, no NULL/global fallback; qualification provisioning remains test-only until this slice passes. |
+| First-admin bootstrap under verified deployment-owner control | Installer plus protected Connect first-launch host | Verify the deployment owner's authority and bind that owner's verified native identity to the initial employee/admin record. Installer privilege, a claimed owner ID or the first local caller is not owner proof. Test an unrelated local user, repeated/concurrent initialization, restart and attempted takeover; no self-enrollment or reinitialization fallback. |
+| Owner sign-in and short-lived host-issued session | Protected host's native identity/session adapter at first use | Verify native identity, map it to the enrolled employee, immutable organization and current role, then issue a host session and enforce assigned record access. Prove lock/logout/expiry/role revocation and checks after store waits; reject claimed webview identities and shared-account ambiguity. Session acquisition is a normal sign-in flow, not manual enrollment or token copying. |
+| Admin authorization of the chosen sender/rule/route delegation | Protected host after the enrolled admin's authenticated configuration choice | Fresh native verification and audience/operation/payload-bound one-use proof authorize publication of the exact scoped machine grant. Host/keystore code performs publication without user commands. Prove unauthorized publication fails, exact rule/version/mailbox/route/retention binding, replay and revocation/commit ordering; never infer a grant from possession of a machine key or installer privileges. |
 | Source signing key and machine credential | Protected host using OS keystore | Keys generated without operator copy/paste; scoped grants, rotation/revocation and crash recovery. Agents never handle secret material. |
 | Pack signature trust, no-action pack and fixed route binding | Installer plus Connect host | Verified pack install, fixed binding/digest, fail-closed downgrade/replacement; no bypass of entitlement or trust in fixtures used for real data. |
 | Receiver activation and private registry | Connect host lifecycle | Exclusive ownership, restart identity and current result authorization, unavailable/quota handling; reuse registry/job transport. |
@@ -314,33 +340,64 @@ or require users to copy keys. The zero-touch slice must remove each test-only
 provisioning step before any shipping claim. Preserve business configuration
 controls; zero-touch does not mean unconfigurable.
 
+These human-authority steps preserve
+[accepted Decision C](LEAD-SOURCE-HANDOFF.md#decision-c-local-admin-and-user-roles-with-delegated-background-authority),
+whose acceptance is recorded at
+[the policy acceptance record](LEAD-SOURCE-HANDOFF.md#current-acceptance-and-work-order-status).
+Admin and user roles and individual enrollment must be supported from first
+adoption; adding further employees is an optional authorized business setting. Automatic setup
+must not turn the installer, any local user or a background machine into an admin,
+skip sign-in, or delegate a sender/rule/route without admin authorization.
+
+**UNKNOWN / activation blockers:** the inspected library does not establish a
+qualified verified-owner bootstrap, native sign-in/session adapter or admin
+delegation-publication flow. Their exact native mechanisms and evidence must be
+pinned before activation. V1e cannot authorize its machine principal until the
+bootstrap and admin delegation are proven; V2 cannot expose personal records
+until sign-in/session and record-access enforcement are proven. If any supported
+platform cannot automate provisioning while preserving these guarantees, bring
+that specific platform/mechanism blocker to Juan. Do not offer self-enrollment,
+shared-account identity, pretrusted fixture authority or manual key copying as
+an alternative. Test-only provisioning still has to exercise the real authority
+checks and be removed by V3 before shipping.
+
 ## Private proof and retention
 
 No real-message access occurs under this plan. Before a real run, pin the selected
 IDs/template, isolated profile identity, authenticated source/receiver versions,
-encrypted evidence location and retention approval. The private evidence root
-is outside repositories/worktrees under the operator's private corpus area;
+encrypted evidence location and the retention decision below. The private evidence
+root is outside repositories/worktrees under the operator's private corpus area;
 directories are mode 700 and files mode 600, with equivalent native ACL proof.
 No real content, addresses, names, headers, message IDs or low-entropy field hashes
 in public repos/issues/CI/oversight mail. Publish only safe aliases, counts and
 whole evidence-manifest hashes; reviewers of public PRs see synthetic fixtures.
 
-Carry forward the parent policy's proposed ceilings: raw source at seven days
-after original capture and metadata at ninety days after original admission.
-This plan does not claim those retention mechanisms are implemented or change
-their acceptance history. For the **isolated real-message proof**, propose a
-stricter evidence deadline: delete private raw content, extracted test records
-and private before/after receipts within forty-eight hours after review, and no
-later than seven days after capture. Preserve only a non-personal proof summary.
-No raw backups, repo copies, ordinary caches, crash dumps, external tracing or
-CI artifacts. The isolated owners may store only the explicitly approved private
-proof state; EW never persists an intake retry body.
+**Operator retention decision:** Juan directed "keep until reviewed" in the
+oversight conversation, relayed in `37ad85bf` and clarified by `2f0e8aec`.
+Keep the planned private proof set, including raw material needed for review,
+receipts, before/after mailbox records, extracted test records and proof summary,
+in the private evidence root until review is complete. There is **no pre-review
+deadline** and no advance-expiry exception. The earlier evidence-expiry proposal
+is withdrawn. This settles the evidence-retention decision only; all selection,
+OAuth, authentication, qualification and exact-revision acceptance gates remain.
 
-The evidence deadline needs Juan's explicit advance permission to expire real
-evidence even if review is unfinished; this is a proposed narrow exception to the
-standing preserve-until-review instruction. Without that permission, do not start
-the real-data run. Cleanup uses owner APIs, includes WAL/temp/export inventory and
-an observed post-deletion check, then the isolated grant is revoked by Juan.
+The accepted product policy remains independent: receiver custody raw source
+expires seven days after original capture during the proof, and its metadata
+policy remains ninety days after original admission. Evidence retention neither
+extends a receiver deadline nor revives an expired admission. Expiry is product
+behavior under test; the original message remains in Juan's Gmail. This plan
+does not claim the still-pending production metadata-retention mechanism exists.
+No evidence goes into public repos, ordinary backups/caches, crash dumps,
+external tracing or CI artifacts. EW never persists an intake retry body.
+
+Record review completion in a private receipt naming the reviewed code revisions,
+evidence-manifest aliases and digests, required reviewer verdicts, disposition of
+every finding and completion timestamp. Pending or unresolved review does not
+complete this receipt or trigger cleanup. After recorded completion, delete the
+private proof set through each owner's APIs, inventory WAL/temp/export copies,
+and perform an observed post-deletion check. Keep only a non-personal cleanup
+receipt identifying the proof alias, review completion and deletion result; no
+customer fields or message identifiers. Then Juan revokes the isolated grant.
 Encrypted-volume disposal/deletion does not imply physical secure erasure on SSDs.
 Existing immutable workflow metadata needs owner-supported retention or a
 separately approved disposable-deployment teardown; do not drop triggers or edit
@@ -357,10 +414,10 @@ coverage from its first push, and carries its own rollback and evidence packet.
 | --- | --- | --- |
 | V0: this cross-app plan, lead-intake | Source inventory, ownership, departures, privacy and setup map; operator acceptance of exact revision. Message/template and machine verifier still unresolved. | G0; docs only. |
 | V1a: expired-unfenced, CA | Accepted issue #66 versioned contract and owner implementation; boundary, clock, race and legacy-version parity tests. | G0/G3; capability remains disabled; old private versions retained. |
-| V1b: machine control and activation, CA/Connect owner | Accepted machine-proof schema and verifier, durable scoped replay/revocation, authenticated result reads, stable installation identity and thin v2 provider using existing owners. Synthetic native tests first. | G1/G3/G6 prerequisite; disable new capability, preserve custody/history. No production host adoption. |
+| V1b: machine control and activation, CA/Connect owner | Accepted machine-proof schema/verifier, verified-owner bootstrap, native admin session and exact admin-delegated grant; durable replay/revocation, authenticated result reads, stable installation identity and thin v2 provider. Synthetic native tests first. | G1/G3/G6 prerequisite; disable new capability, preserve custody/history. No production host adoption. |
 | V1c: selected template and source representation, lead-intake + EW | After separately authorized selected-message discovery, exact synthetic template/closed schema, DKIM owner and versioned lossless source amendment. Structural extraction and canonical idempotent lead record include stage-set references from inception. Preserve all old source/auth tests. | G0/G2; disable new source version/template; never reinterpret or erase old records. |
 | V1d: EW body handoff, EW session | Existing source/queue extended to unfollowed body-only input, prepare-before-fetch, no body spool, reference recovery, capture-cutoff removal and unchanged attachment paths. Source/transport auth and limits proven before real data. | G1/G3/G6; disable lead rule, keep reconciliation references. |
-| V1e: isolated real-lead proof, joint owner evidence | Juan-selected read-only Gmail input through actual EW queue/receiver, no-action workflow and one canonical lead; authenticated status readback, restart/replay and before/after mailbox evidence. No fake success and no real data in CI. | G1/G2/G3/G6 qualification only; stop isolated instance, preserve/expire evidence only under accepted policy. No production readiness claim. |
+| V1e: isolated real-lead proof, joint owner evidence | Juan-selected read-only Gmail input through actual EW queue/receiver, no-action workflow and one canonical lead; authenticated status readback, restart/replay and before/after mailbox evidence. No fake success and no real data in CI. | G1/G2/G3/G6 qualification only; stop isolated instance, retain evidence until recorded review completion, then qualified cleanup. No production readiness claim. |
 | V2: lead list, Lead Intake | Closed read contract, record access, consistent scoped rows/counts, configured stages and bounded outputs. No display or edit UI. | G2/G6; disable read capability, retain canonical records. |
 | V3: zero-touch, package/Connect/EW owners | Replace every proof-only provisioning step with verified install/first-run ownership; upgrade/restart/uninstall, offline/download and native privacy evidence. | G6/G7 before adoption; disable activation or restore qualified installation, never reset lead identities. |
 
@@ -375,6 +432,10 @@ commits, separate-process races, crash before/after custody and lost response.
 Prove reference-only recovery does not reread Gmail or double-create a lead.
 Probe each new guard independently, including valid/bad/partial/boundary inputs
 and schema defaults; remove each guard to show the intended assertion catches it.
+Prove unverified-owner enrollment, forged sessions and unauthorized delegation
+are refused, including both revocation/commit orders and initialization races.
+Exercise DKIM DNS/key absence, changed selector keys and timeouts alongside a
+valid recent signed notification; record delivery/verification time separately.
 Prove mailbox writes, outbound contact, action dispatch and unauthorized personal
 reads are absent through exercised negative tests, not assertions of intent.
 Native Windows and Linux evidence are mandatory; no real-message fixture in CI.
@@ -391,6 +452,7 @@ tests are not rerun solely for this prose change.
 **NOT DONE:** exact-revision operator acceptance; selected-message discovery
 authorization and actual template; precise machine authentication/activation
 contract; versioned notification and expired-status schemas; private proof
-retention/encryption/cleanup qualification; all executable vertical, lead-list and
-automatic-setup work. None of these gates is satisfied by this plan or by a green
-documentation PR. Stop at contract review; do not begin implementation or live use.
+encryption/cleanup qualification (retention direction is settled); all executable
+vertical, lead-list and automatic-setup work. None of these gates is satisfied
+by this plan or by a green documentation PR. Stop at contract review; do not
+begin implementation or live use.
