@@ -1,6 +1,6 @@
 # Body-only receiver custody: work order and protocol proposal
 
-Status: **R1/R2 and R3.1/R3.2/R3.3 library work MERGED; R3.4 lookup-first recovery work order ACCEPTED; contract merge pending.**
+Status: **R1/R2 and R3.1–R3.4 library work MERGED; R3.5 read-only status work order PROPOSED, NOT ACCEPTED.**
 On 2026-10-25 Juan
 said, “i accept, lets begin”, accepting the R1 work order reviewed at
 `66d16a65a807d5dc19b0ef8691be767f50933a83` and merged in
@@ -30,9 +30,12 @@ the same tree. Its separate implementation merged in PR #62 as
 outside that work order.
 
 [R3.4 lookup-first private recovery](LEAD-CUSTODY-RECOVERY.md#acceptance-record)
-is the next accepted work order. Its canonical acceptance record binds the
-reviewed revision. The acceptance-only contract must pass its gates and merge
-before executable work begins in a separate PR.
+merged in PR #64 as `be63503723f1fa397aae98a7c1af1fa2d0faea18`, with the
+same tree as reviewed head `6d8ad201b52c51a95cf6bcc128c3f0845fcfe388`.
+The next proposed work order is [R3.5 read-only custody status](LEAD-CUSTODY-STATUS.md).
+It explicitly proposes precise result version `1.1` while preserving existing
+`1.0` behavior. Its independent review and exact-revision acceptance are pending;
+no executable work or receiver activation is authorized by this navigation note.
 
 The accepted [application policy](LEAD-SOURCE-HANDOFF.md#current-acceptance-and-work-order-status)
 remains authoritative: one business per deployment, receiver-owned raw custody,
