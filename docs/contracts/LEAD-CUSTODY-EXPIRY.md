@@ -1,3 +1,41 @@
+# V1a implementation verification record
+
+Status: **IMPLEMENTED IN THE PRIVATE LIBRARY; review and native-platform CI
+pending. No transport or installed-product qualification is claimed.**
+
+The accepted work order merged in
+`3e30b2b36c043a9ca92a18b82a25688256b61b3d`. Its complete acceptance record and
+reviewed body remain unchanged below. Vocabulary was committed separately as
+`e139c97cc023925245fa04cc3a2ef6ef83b915a0`; the composition/proof commit follows
+in this implementation PR.
+
+The opt-in `status_v1_2` shares the legacy status path and represents an expired,
+open, unbound reservation as `expired_unfenced`. It does not establish a fence
+or permit an effect. Legacy status remains `1.1`, with unchanged schemas and
+existing test definitions. Source, writer, authentication and clock owners are
+unchanged. No downstream workaround or default-version change was added.
+
+Local verification used the existing real SQLite owners and spawned-process
+harness. The combined protocol/status/process run reported
+`1237 passed in 123.11s (0:02:03)`; Ruff reported `All checks passed!`.
+The declared missing-codec and missing-entry-point regressions failed before
+implementation and passed afterward. Independent mutations exercised expiry,
+size, strict boolean, admission-presence and handoff-identity checks. No mutation
+coverage is claimed for equivalent predicates or the whole guard inventory.
+
+Evidence alias `lead-custody-expiry-implementation/legacy-and-new-after.txt`,
+SHA-256 `bdf799fcb4ecfe727ee26cc5c376da03494c0431ddbf8c6f97247590b98225f2`.
+The shared-path legacy AST comparison is recorded in
+`lead-custody-expiry-implementation/composition-parity.json`, SHA-256
+`052e43fa907e03a0e9296dec56aca1ecc267e75ebe62b43b43b451908d0edf06`.
+
+**NOT DONE:** exact-head Linux/Windows CI, oversight and connector review,
+reconciliation and guarded implementation merge remain. Issue #66 stays open
+until those gates pass and the implementation lands. The accepted exclusions
+and separate future receiver/authentication work remain in force.
+
+---
+
 # V1a acceptance record
 
 Status: **ACCEPTED at the exact reviewed revision below. Acceptance-delta review

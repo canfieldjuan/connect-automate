@@ -11,6 +11,7 @@ import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Literal
 
 from pydantic import TypeAdapter
 
@@ -27,14 +28,19 @@ from ..automate.runtime import PackRuntime
 from ..entitlement import UuidV4
 from .content import SourceContentUnavailable
 from .custody_protocol import (
+    ExpiredUnfencedStatusResultV12,
     ResolvedStatusResult,
+    ResolvedStatusResultV12,
     ResumeRequest,
     RouteReference,
     StatusRequest,
     UnresolvedStatusResult,
+    UnresolvedStatusResultV12,
     UploadRequest,
+    _reservation_elapsed,
     canonical_request,
     canonical_status_result,
+    canonical_status_result_v1_2,
     parse_untrusted_request,
 )
 from .custody_store import SourceCustodyStore
@@ -95,6 +101,11 @@ def _historical_lookup(facts, found):
 
 def _encoded_status(result):
     canonical_status_result(result)
+    return result
+
+
+def _encoded_status_v1_2(result):
+    canonical_status_result_v1_2(result)
     return result
 
 
@@ -268,14 +279,27 @@ class _CustodyHandoff:
 
     def status(self, *, request: StatusRequest) -> ResolvedStatusResult | UnresolvedStatusResult:
         """Read source availability, then independent workflow history; never resume."""
+        return self._status(request=request, version="1.1")
+
+    def status_v1_2(
+        self, *, request: StatusRequest
+    ) -> ResolvedStatusResultV12 | ExpiredUnfencedStatusResultV12 | UnresolvedStatusResultV12:
+        """Opt-in expired-unfenced projection; does not settle or authorize retries."""
+        return self._status(request=request, version="1.2")
+
+    def _status(self, *, request: StatusRequest, version: Literal["1.1", "1.2"]):
         request = self._checked_request(request, StatusRequest)
+        resolved_type, unresolved_type, encode = {
+            "1.1": (ResolvedStatusResult, UnresolvedStatusResult, _encoded_status),
+            "1.2": (ResolvedStatusResultV12, UnresolvedStatusResultV12, _encoded_status_v1_2),
+        }[version]
         code = "unknown"
         try:
             observation = self.custody.observe_status(request=request)
             if observation is None:
-                return _encoded_status(
-                    UnresolvedStatusResult(
-                        schema_version="1.1",
+                return encode(
+                    unresolved_type(
+                        schema_version=version,
                         status="unresolved",
                         handoff_id=request.handoff_id,
                         code="not_found",
@@ -337,10 +361,13 @@ class _CustodyHandoff:
                         "ready",
                         observation.reservation_expires_at,
                     )
-            return _encoded_status(
-                ResolvedStatusResult.model_validate(
+                    if version == "1.2" and _reservation_elapsed(deadline, observation.observed_at):
+                        phase, reason = "expired_unfenced", "settlement_required"
+                        resolved_type = ExpiredUnfencedStatusResultV12
+            return encode(
+                resolved_type.model_validate(
                     dict(
-                        schema_version="1.1",
+                        schema_version=version,
                         status="resolved",
                         handoff_id=facts.handoff_id,
                         scope=facts.scope,
@@ -369,9 +396,9 @@ class _CustodyHandoff:
         # An unencodable conflict also falls back to the minimal unknown value.
         for outcome in dict.fromkeys((code, "unknown")):
             try:
-                return _encoded_status(
-                    UnresolvedStatusResult(
-                        schema_version="1.1",
+                return encode(
+                    unresolved_type(
+                        schema_version=version,
                         status="unresolved",
                         handoff_id=request.handoff_id,
                         code=outcome,

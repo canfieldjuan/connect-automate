@@ -1441,3 +1441,253 @@ def test_status_missing_receipt_requires_retirement(status_case, monkeypatch):
         found = c.handoff.status(request=c.request)
     assert calls == [expected]  # Known history must not repair inconsistent source facts.
     assert found.status == "unresolved" and found.code == "unknown"
+
+
+@pytest.fixture
+def v12_unbound_case(setup):
+    args, owner, _ = setup
+    runtime = PackRuntime.load(**args)
+    access = reader(owner, clock=lambda: NOW)
+    intent, upload, raw = prepare(runtime, access, phase="prepared")
+    access._clock = lambda: datetime.fromisoformat(RESERVATION)
+    return SimpleNamespace(
+        args=args, owner=owner, runtime=runtime, access=access,
+        intent=intent, upload=upload, raw=raw,
+        request=status(intent, generation=2147483647),
+        handoff=composition(runtime, access, intent),
+    )
+
+
+def test_v12_status_expired(v12_unbound_case, monkeypatch):
+    c = v12_unbound_case
+    monkeypatch.setattr(c.runtime, "lookup_source_outcome", forbidden)
+    with status_only(c, monkeypatch):
+        found = c.handoff.status_v1_2(request=c.request)
+        assert c.handoff.status(request=c.request).code == "unknown"
+    assert type(found) is cp.ExpiredUnfencedStatusResultV12
+    assert found.fence_generation == 1 and found.state_revision == 1
+    assert found.reservation_expires_at == RESERVATION
+    assert found.workflow is found.capture is found.source_receipt is None
+
+
+@pytest.mark.parametrize("phase", ["missing", "prepared", "bound", "closed", "closed-bound"])
+@pytest.mark.parametrize("offset", [-1, 0, 1])
+def test_v12_status_precedence_and_legacy_parity(setup, monkeypatch, phase, offset):
+    args, owner, _ = setup
+    runtime = PackRuntime.load(**args)
+    access = reader(owner, clock=lambda: NOW)
+    intent, upload, _ = prepare(runtime, access, phase="bound" if "bound" in phase else phase)
+    if phase.startswith("closed"):
+        access.close_admission(managed_operation(intent, "settle"))
+    request = status(intent, upload if "bound" in phase else None, 2147483647)
+    sample = datetime.fromisoformat(RESERVATION) + timedelta(microseconds=offset)
+    access._clock = lambda: sample
+    c = SimpleNamespace(args=args, owner=owner, runtime=runtime, access=access)
+    handoff = composition(runtime, access, intent)
+    monkeypatch.setattr(runtime, "lookup_source_outcome", forbidden)
+    with status_only(c, monkeypatch):
+        new, old = handoff.status_v1_2(request=request), handoff.status(request=request)
+    assert new.schema_version == "1.2" and old.schema_version == "1.1"
+    if phase == "prepared" and offset >= 0:
+        assert old.code == "unknown"
+        assert type(new) is cp.ExpiredUnfencedStatusResultV12
+        assert new.observed_at == sample.isoformat(timespec="microseconds").replace("+00:00", "Z")
+        assert new.reservation_expires_at == RESERVATION
+        assert new.fence_generation == new.state_revision == 1
+    else:
+        assert {**new.model_dump(by_alias=True), "schema_version": "1.1"} == old.model_dump(
+            by_alias=True
+        )
+
+
+@pytest.mark.parametrize("outcome", ["not_found", "accepted", "no_match"])
+@pytest.mark.parametrize("lifecycle", ["none", "purged", "retired", "cleaned", "expired"])
+def test_v12_status_custodied_parity(status_case, monkeypatch, outcome, lifecycle):
+    c = status_case
+    if outcome != "not_found":
+        committed(c, outcome)
+    content = SourceContent(c.owner, clock=lambda: NOW)
+    if lifecycle == "purged":
+        content.purge_message(c.intent.payload.source, cutoff=NOW)
+    elif lifecycle == "retired":
+        content.retire_namespace(c.intent.scope.namespace_id)
+    elif lifecycle == "cleaned":
+        cleaned(c)
+    elif lifecycle == "expired":
+        c.access._clock = lambda: datetime.fromisoformat(c.upload.payload.capture.recovery_deadline)
+    with status_only(c, monkeypatch):
+        old = c.handoff.status(request=c.request)
+        new = c.handoff.status_v1_2(request=c.request)
+    assert {**new.model_dump(by_alias=True), "schema_version": "1.1"} == old.model_dump(
+        by_alias=True
+    )
+    if lifecycle == "cleaned" and outcome == "not_found":
+        assert new.code == "unknown"  # Neither owner retains a receipt to prove custody.
+    else:
+        assert new.status == "resolved", new
+        assert new.capture_phase == "custodied"
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("closed", 0), ("ever_custodied", 0), ("namespace_retired", 0),
+        ("admission_id", OTHER), ("handoff_id", OTHER),
+        ("content_state", "retained"), ("unavailable_reason", "purged"),
+        ("reservation_expires_at", None), ("reservation_expires_at", "invalid"),
+        ("observed_at", "2026-10-18T12:31:00Z"),
+        ("state_revision", False), ("fence_generation", False),
+    ],
+    ids=[str(i) for i in range(12)],
+)
+def test_v12_expired_observation_guards(v12_unbound_case, monkeypatch, field, value):
+    c = v12_unbound_case
+    facts = c.access.observe_status(request=c.request)
+    wrong = (
+        replace(facts, custody=replace(facts.custody, **{field: value}))
+        if field in ("closed", "ever_custodied", "handoff_id", "state_revision", "fence_generation")
+        else replace(facts, **{field: value})
+    )
+    monkeypatch.setattr(c.access, "observe_status", lambda **kw: wrong)
+    calls = []
+
+    def denied(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("effect attempted")
+
+    with status_only(c, monkeypatch):
+        for name in ("close_admission", "bind_upload", "admit_bound", "read_retained"):
+            monkeypatch.setattr(c.access, name, denied)
+        monkeypatch.setattr(c.runtime, "lookup_source_outcome", denied)
+        found = c.handoff.status_v1_2(request=c.request)
+    assert found.code == "unknown" and found.schema_version == "1.2"
+    assert calls == []
+
+
+@pytest.mark.parametrize("field", ["host_id", "organization_id", "namespace_id", "route_digest"])
+def test_v12_request_scope_before_read(v12_unbound_case, monkeypatch, field):
+    c = v12_unbound_case
+    value = "b" * 64 if field == "route_digest" else OTHER
+    bad = c.request.model_copy(
+        update={"scope": c.request.scope.model_copy(update={field: value})}
+    )
+    calls = []
+    monkeypatch.setattr(c.access, "observe_status", lambda **kw: calls.append(kw))
+    with pytest.raises(EventBindingError):
+        c.handoff.status_v1_2(request=bad)
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "mode", ["event", "machine", "capture", "store", "bad-clock", "clock-floor"]
+)
+def test_v12_refusals_do_not_establish_absence(v12_unbound_case, monkeypatch, mode):
+    c = v12_unbound_case
+    request = c.request
+    expected = "unknown"
+    if mode == "event":
+        request = request.model_copy(
+            update={"scope": request.scope.model_copy(update={"event_id": OTHER})}
+        )
+        expected = "conflict"
+    elif mode == "machine":
+        with pytest.raises(EventBindingError):
+            c.handoff.status_v1_2(request=request.model_copy(update={"enrolled_machine_id": OTHER}))
+        return
+    elif mode == "capture":
+        c.access._clock = lambda: NOW
+        c.access.bind_upload(c.upload)
+        c.access._clock = lambda: datetime.fromisoformat(RESERVATION)
+        expected = "conflict"
+    elif mode == "store":
+        def unavailable(**kw):
+            raise SourceStoreUnavailable()
+
+        monkeypatch.setattr(c.owner, "_read_snapshot", unavailable)
+    elif mode == "bad-clock":
+        c.access._clock = lambda: NOW.replace(tzinfo=None)
+    else:
+        c.access._clock = lambda: NOW - timedelta(microseconds=1)
+    with status_only(c, monkeypatch):
+        found = c.handoff.status_v1_2(request=request)
+    assert found.code == expected
+
+
+def test_v12_clock_observation_is_not_a_persisted_fence(v12_unbound_case, monkeypatch):
+    c = v12_unbound_case
+    with status_only(c, monkeypatch):
+        assert c.handoff.status_v1_2(request=c.request).capture_phase == "expired_unfenced"
+        c.access._clock = lambda: NOW
+        assert c.handoff.status_v1_2(request=c.request).capture_phase == "prepared"
+        c.access._clock = lambda: datetime.fromisoformat(RESERVATION) + timedelta(days=1)
+        assert c.handoff.status_v1_2(request=c.request).capture_phase == "expired_unfenced"
+    assert c.access.observe_status(request=c.request).custody.closed is False
+
+
+def test_v12_settlement_is_separate_and_replay_safe(v12_unbound_case, monkeypatch):
+    from connect_automate.lead_intake.auth import SourceAuthenticationError
+    from connect_automate.lead_intake.source_store import SourceStoreError
+
+    c = v12_unbound_case
+    with status_only(c, monkeypatch):
+        observed = c.handoff.status_v1_2(request=c.request)
+    before = snapshot(c.owner)
+    stale = managed_operation(c.intent, "settle", generation=observed.fence_generation + 1)
+    with pytest.raises(SourceAuthenticationError):
+        c.access.close_admission(stale)
+    assert snapshot(c.owner) == before
+    close = managed_operation(c.intent, "settle", generation=observed.fence_generation)
+    closed = c.access.close_admission(close)
+    assert closed.closed is True and closed.fence_generation > observed.fence_generation
+    before = snapshot(c.owner)
+    assert c.access.close_admission(close) == closed
+    assert snapshot(c.owner) == before
+    stale = close.model_copy(update={"control_id": str(uuid4()), "job_id": str(uuid4())})
+    with pytest.raises(SourceStoreError):
+        c.access.close_admission(stale)
+    with status_only(c, monkeypatch):
+        found = c.handoff.status_v1_2(request=c.request)
+    assert found.capture_phase == "fenced_empty"
+    assert found.fence_generation == closed.fence_generation
+    assert snapshot(c.owner) == before
+
+
+@pytest.mark.parametrize("all_results", [False, True])
+def test_v12_encoding_failure_preserves_fixed_unknown(v12_unbound_case, monkeypatch, all_results):
+    from connect_automate.lead_intake import custody_handoff as owner
+
+    c = v12_unbound_case
+    original = owner._encoded_status_v1_2
+    calls = []
+
+    def encode(value):
+        calls.append((value.schema_version, value.status))
+        if all_results or value.status == "resolved":
+            raise ValueError("SYNTHETIC-PRIVATE")
+        return original(value)
+
+    monkeypatch.setattr(owner, "_encoded_status_v1_2", encode)
+    with status_only(c, monkeypatch):
+        if all_results:
+            with pytest.raises(SourceHandoffUnknown) as caught:
+                c.handoff.status_v1_2(request=c.request)
+            assert caught.value.__cause__ is caught.value.__context__ is None
+            assert "SYNTHETIC-PRIVATE" not in str(caught.value)
+        else:
+            assert c.handoff.status_v1_2(request=c.request).code == "unknown"
+    assert calls == [("1.2", "resolved"), ("1.2", "unresolved")]
+
+
+def test_v12_revoked_history_does_not_authorize_an_effect(status_case, monkeypatch):
+    from connect_automate.lead_intake.auth import SourceAuthenticationError
+
+    c = status_case
+    committed(c)
+    c.owner.publish_authority(next_snapshot(key_grants=[]), expected_generation=1)
+    with status_only(c, monkeypatch):
+        found = c.handoff.status_v1_2(request=c.request)
+    assert found.capture_phase == "custodied" and found.reason == "workflow_known"
+    before = snapshot(c.owner), rows(c.args["store"])
+    with pytest.raises(SourceAuthenticationError):
+        c.access.admit_bound(c.upload, c.raw)
+    assert (snapshot(c.owner), rows(c.args["store"])) == before
