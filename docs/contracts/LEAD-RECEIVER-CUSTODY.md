@@ -1,6 +1,6 @@
 # Body-only receiver custody: work order and protocol proposal
 
-Status: **R1/R2 and R3.1–R3.5 library work MERGED. Vertical-delivery plan ACCEPTED; acceptance-delta review and merge pending. No executable slice or live activation authorized.**
+Status: **R1/R2 and R3.1–R3.5 library work MERGED. Vertical-delivery plan ACCEPTED and MERGED. V1a work order ACCEPTED; acceptance-delta review and contract merge pending. No executable work before those gates; no live activation authorized.**
 On 2026-10-25 Juan
 said, “i accept, lets begin”, accepting the R1 work order reviewed at
 `66d16a65a807d5dc19b0ef8691be767f50933a83` and merged in
@@ -48,6 +48,12 @@ transport exposure and user-configurable stages. Acceptance covers ordering and
 direction only. Each bounded work order, protected machine authentication,
 privacy qualification and live-use authorization remain separate gates; the
 plan does not start implementation.
+
+The plan merged as `de23b6e055b090f7fe02ac8cf10633571fc7d3c6`.
+Its first bounded work order is [V1a: expired-unfenced custody status](LEAD-CUSTODY-EXPIRY.md)
+for issue #66. Its [acceptance record](LEAD-CUSTODY-EXPIRY.md#v1a-acceptance-record)
+binds the exact reviewed revision. Legacy status versions remain unchanged;
+implementation follows the accepted contract merge, in a separate bounded PR.
 
 The accepted [application policy](LEAD-SOURCE-HANDOFF.md#current-acceptance-and-work-order-status)
 remains authoritative: one business per deployment, receiver-owned raw custody,
