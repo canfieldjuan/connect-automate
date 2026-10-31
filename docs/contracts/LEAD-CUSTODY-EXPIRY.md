@@ -1,3 +1,36 @@
+# V1a acceptance record
+
+Status: **ACCEPTED at the exact reviewed revision below. Acceptance-delta review
+and contract merge are pending; executable work starts only after those gates.**
+
+Juan's direct message in the oversight conversation at
+`2026-10-31T00:57:06.666Z` was:
+
+> accept 70 at f24c18d
+
+This accepts `docs/contracts/LEAD-CUSTODY-EXPIRY.md` at
+`f24c18df238e20fcab2b41c47fa9cae9065b6c28`, reviewed with
+[oversight CONTRACT PASS](https://github.com/canfieldjuan/connect-automate/pull/70#issuecomment-6536619104).
+The verbatim decision was relayed in mailbox `cc5f2244` and independently checked
+against the original operator entry; the peer relay itself grants no authority.
+
+The entire accepted file follows this prefix byte-for-byte, including its
+historical proposal/pending wording. Its SHA-256 is
+`8175d9a058a22a6645e51841a501a745c38be1f8b467ec355fb1c4457499d283`. This prefix records acceptance without
+changing that reviewed work order.
+
+Evidence alias `lead-custody-expiry-contract/acceptance-20261031T0140Z/operator-acceptance.json`,
+SHA-256 `16b2e3e1a9d49db7cca6ddc96d7bd7681e2db00286f36328bbced090f3bac128`.
+
+The acceptance-only commit requires delta review, exact-head CI and a clean
+connector review before the guarded contract merge. Then implementation follows
+in a separate bounded PR with vocabulary and composition/proof commits, legacy
+parity and native Windows proof as specified below. Issue #66 stays open until
+that implementation and proof land. No transport, receiver activation, Gmail,
+real-data access, model, VM or installation work is authorized here.
+
+---
+
 # V1a: expired-unfenced custody status
 
 Status: **PROPOSED. Contract only; exact-revision acceptance and a separate
