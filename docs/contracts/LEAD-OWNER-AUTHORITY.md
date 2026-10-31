@@ -1,7 +1,8 @@
 # V1b.1: owner bootstrap and native admin qualification
 
-Status: **PROPOSED, CONTRACT ONLY. B0 selects the licensing issuer for owner
-bootstrap; claim lifecycle and native mechanism/run pins remain unresolved.
+Status: **PROPOSED, CONTRACT ONLY. Licensing issuer and one first-launch online
+consumption call selected by relayed operator decisions. Claim lifecycle/interface
+and native mechanism/run pins remain unresolved.
 Not ready for executable acceptance. Stop for oversight review and
 Juan's exact-revision decision; no implementation or native run is authorized.**
 
@@ -90,8 +91,12 @@ The existing concrete issuer lives in `connect-contracts/tools/entitlement_issue
 its schema/fixtures and the CA consumer would need separately accepted changes.
 The inspected `local-connect-licensing` proposal names a release-session owner
 at `docs/contracts/LICENCE-SERVICE.md:3-16` and preserves entitlement v1 at
-`:46-51`. Those are unverified ownership/service claims requiring coordination,
-not authority to change that repository or evidence of a running API. No
+`:46-51`. It already proposes online issuance at first launch (`:26-29`) and
+retains hand-signed offline licences through the existing issuer (`:35-36`).
+The selected first-launch consumption call fits that proposed activation point;
+the proposal is neither accepted here nor evidence that the service exists.
+Those ownership/service claims require coordination, not authority to change
+that repository or evidence of a running API. No
 cross-repository code, dependency/pin or production issuing change is made here.
 
 Retain these existing proof inputs and their limits:
@@ -131,6 +136,20 @@ chain, with no second signing system or cloud identity service. This record
 attributes the decision to that relay; it is not a new acceptance of this revision
 or permission to operate the issuer, native accounts or a VM.
 
+**B0-I connectivity decision, limited scope.** Oversight separately
+[relayed Juan's answer](https://github.com/canfieldjuan/connect-automate/pull/72#issuecomment-6546300612)
+to whether one online check at first launch is acceptable, on 2026-10-31:
+
+> yes to both
+
+That answer also covered an unrelated question. The relay attributes only this
+licensing decision here: **one authoritative call to the licensing owner at first
+launch to consume the claim, with a clear typed refusal if the service is
+unavailable. Lead operations gain no continuing licensing dependency.** This
+does not accept `LICENCE-SERVICE.md`, authorize service/issuer changes, or accept
+this contract revision. B1/B2 and exact-revision acceptance stay open. The relay
+does not authorize code, native/VM/account work or key access.
+
 **Trust limit:** the issuer authorizes the named business deployment. The first
 valid holder who completes native authentication consumes the authorization;
 the issuer has not preidentified that human. A leaked authorization could be
@@ -154,19 +173,61 @@ The licensing owner must explicitly authorize which trusted issuer keys may
 issue this purpose; not every valid signed pack/license is a bootstrap claim.
 No private signing key belongs in the app or this qualification session.
 
-The closed schema must bind claim/version/purpose, issuer/key identity, linked
-entitlement identity, immutable organization, installation/host identity and its
-protected key binding, unique claim identity, issuance/not-before/expiry and
-revocation/reissue generation. Installation identity needs proof of possession
-from the protected host, not a caller-supplied UUID. The issuer controls the
-business-to-installation assignment; arbitrary setup text cannot mint it.
-Native-person identity is added only by a verified consumption request, bound to
-a stable operation identity and digest of the exact initialization payload.
-Replays must match claim, installation, organization, native principal, operation
-and payload. Changed bindings are conflicts. Schema-expressible constraints
+**Issued claim:** its closed schema binds claim/version/purpose, issuer/key
+identity, linked entitlement identity, immutable organization/business, unique
+claim identity, issuance/not-before/expiry and revocation/reissue generation.
+It does not name an installation, host key or native person that may not yet
+exist. Purchase-time and hand-signed issuance cannot require a prior host-key
+handshake or extra user setup. The issuer authorizes the business; arbitrary
+setup text cannot change that business.
+
+**Consumption operation:** at first launch the protected host supplies its
+installation/host identity and proves possession of its protected key, alongside
+the freshly verified native-person binding, stable operation identity and exact
+initialization payload digest. The licensing owner atomically binds the issued
+claim to that installation/key and opaque native/payload commitment in the same
+consumption operation. The signed receipt and durable consumed state preserve
+those bindings. A caller-supplied UUID alone is not installation proof.
+Before consumption another eligible holder may win the claim, as disclosed
+above. After consumption a copied claim from another installation/key or person
+must fail, not rebind. Exact replay must match all consumed bindings; changed
+bindings are conflicts. Schema-expressible constraints
 belong in closed models/schema; semantic checks have one owner, no parallel regex.
 Exact wire schemas, numeric bounds and approved key-purpose policy remain
 acceptance inputs, not permissive implementation defaults.
+
+**C2 correction:** my revision `06087b110736b69d41ebfdc53bf2acc8cfbe3a4f`
+incorrectly put installation/key binding in the issued claim. Its origin was
+this claim-boundary section. Separating issue-time fields from consumption-time
+bindings removes the impossible pre-existing-key requirement; it does not relax
+binding after consumption or add a pre-activation handshake.
+
+### Hand-signed offline licences and typed refusal
+
+Hand-signed offline licences remain valid under the unchanged entitlement-v1
+rules. **Given only such a licence, owner bootstrap returns
+`OWNER_AUTHORIZATION_REQUIRED`: the licence does not provide the companion owner
+claim.** This is an explicit blocker for that input class, not an invalid-license
+result. Keep the licence and its existing behavior unchanged; do not create an
+admin, fall back to a local consumed flag or silently convert the licence.
+
+A valid companion claim, if separately issued for that business/entitlement,
+still requires the same authoritative first-launch online consumption call.
+There is no disconnected bootstrap route in this proposal. If that call cannot
+produce a verified authoritative outcome, return `LICENSING_UNAVAILABLE` and
+publish no owner/admin authority. If consumption may have happened before the
+response was lost, preserve the bound pending operation and explicitly report
+its unresolved status; unavailable is not evidence that nothing was consumed.
+Recovery replays that same operation, never a replacement claim or owner.
+
+Do not assume the licensing service already supports companion claims for
+hand-signed licences: qualifying that issuance path is part of B0-I and requires
+its own accepted licensing change. No claim means `OWNER_AUTHORIZATION_REQUIRED`;
+a claim with unavailable online consumption means `LICENSING_UNAVAILABLE`.
+These outcomes derive from verified inputs and availability, not a guessed
+offline label or issuer-key naming convention. **C3 correction:** the same prior
+revision that introduced C2 omitted this licence class. These explicit outcomes
+close that contract gap without claiming disconnected bootstrap support exists.
 
 ### One-time consumption, revocation and reissue
 
@@ -174,10 +235,11 @@ acceptance inputs, not permissive implementation defaults.
 with the licensing owner; the protected local host owns the resulting employee/admin
 state. A signed file plus a local consumed flag alone cannot prove one-use after
 rollback, restore or reinstallation, or that a remote revocation is current.
-No such lifecycle/status interface exists in the inspected issuer. A new
-licensing interface and its availability/retention costs must be qualified and
-accepted separately; do not silently treat the proposed online licensing service
-as implemented or impose a new network dependency through this document.
+No such lifecycle/status interface exists in the inspected issuer. The relayed
+decision accepts the first-launch online dependency and typed unavailable
+refusal. The licensing interface, retention and recovery behavior still need
+qualification and separate acceptance; the proposed online service is not
+thereby implemented or authorized for changes.
 
 Required semantics for that interface are a durable, serialized claim transition:
 an eligible claim may be consumed once, revoked, expired or superseded. Exact
@@ -194,7 +256,10 @@ consumption, then commit the verified receipt, owner/admin mapping and minimal
 audit in its own transaction. It must recover a lost response from the same
 authoritative operation. Do not claim a transaction across issuer and host.
 After an ambiguous consumption result, retain pending state and reconcile that
-operation; never try a new owner or claim automatically. Recheck native identity
+operation; never try a new owner or claim automatically. The ordinary path uses
+the accepted first-launch consumption call. Recovery may replay only that same
+unresolved operation with the same bindings; it adds no periodic status polling
+or licensing call on lead operations. Recheck native identity
 and validity after waits before local publication; a consumed claim with interrupted
 local completion remains reserved to its original binding, not newly available.
 The issuer receives only the necessary business/installation references and an
@@ -202,17 +267,18 @@ opaque commitment to the local consumption binding, never native credentials,
 account names or lead content. Pin retention and recovery of that commitment in
 the licensing work order; it must not become an employee directory.
 
-**BLOCKER B0-I — issuer interface and freshness:** pin how the existing licensing
-owner provides current consumption/revocation state, authenticates installation
+**BLOCKER B0-I — issuer interface and freshness, connectivity decided:** pin how
+the licensing owner provides current consumption/revocation state, authenticates installation
 and recovery requests, proves resistance to rollback and delivers a bound receipt.
 The authorization and path for revoke/reissue must be independent of possession
-of the leaked claim. If reaching authoritative state requires a licensing network
-call, disclose and obtain acceptance of that dependency before implementation;
-local lead operations must not gain a continuous licensing-status dependency.
-Stale, unavailable or unverifiable state refuses bootstrap with an explicit
-unavailable result. No disconnected client may claim instant remote revocation.
+of the leaked claim. The first-launch authoritative online consumption call and
+typed unavailable refusal are selected; no continuing licensing dependency is
+added to lead operations. Stale, unavailable or unverifiable state refuses
+bootstrap with `LICENSING_UNAVAILABLE`. No disconnected client may claim instant
+remote revocation.
 License renewal/expiry must not erase or reset the established owner; existing
-feature gating remains separate. B0's trust-source choice is settled; B0-I is not.
+feature gating remains separate. Trust-source and first-launch connectivity
+choices are settled; B0-I's concrete interface and qualification are not.
 
 This mechanism is **PROPOSED and unqualified**. No employee, grant or session may
 be created on the strength of this prose. An unrelated administrator without a
@@ -242,7 +308,7 @@ does not bless those candidates by repetition or claim they were rerun.
 
 | Owner | Required boundary in this qualification | Excluded responsibility |
 | --- | --- | --- |
-| Licensing/release owner, using existing issuer trust chain | Authorize business/installation binding; issue companion claim; own authoritative consumption, revoke/reissue and bound receipts under B0-I | Native employee authentication, lead data, granting ownership from installer privilege or a new identity cloud service |
+| Licensing/release owner, using existing issuer trust chain | Issue a business-scoped companion claim; bind installation/key proof and opaque native/payload commitment at consumption; own revoke/reissue and bound receipts under B0-I | Native employee authentication, lead data, granting ownership from installer privilege or a new identity cloud service |
 | Existing Connect/Automate protected host seam | Own installation identity, immutable org scope, employee enrollment/role, bootstrap consumption, host sessions and authority versions | Source/custody/workflow SQL or a second scheduler/lead store |
 | Native adapter under that host | Verify current caller/person/session and perform fresh native authentication using pinned mechanisms | Trusting webview JSON, an account name/PID alone, a copied result or a transport bearer |
 | Existing policy evaluator | Evaluate the existing closed human-operation catalog using host-acquired facts | Becoming a native credential verifier or accepting a machine as an employee |
@@ -322,8 +388,9 @@ authority. This draft authorizes none on Juan's workstation or any other host.
 
 | Required proof | Decisive assertions; evidence to retain |
 | --- | --- |
-| Owner authority | Valid scoped issuer claim plus fresh native holder succeeds; unrelated employee/admin/installer without that claim cannot self-enroll. Ordinary license, wrong-purpose/key, forged, missing, revoked, expired and wrong-installation/org/key-binding inputs fail without authority writes. Test actual signature/provenance verification with disposable issuer keys, not a pretrusted boolean. A valid leaked claim can be won by another eligible holder before consumption/revocation: preserve that disclosed trust limit. |
-| Claim lifecycle | Both consumption/revocation orders, atomic supersession/reissue, claim copied to another installation, restored local state, competing native holders and unavailable/stale status. Same operation resumes after issuer or host crash/lost response; changed principal/payload fails. Already consumed claims cannot create replacement admins. Compromise recovery requires independent licensing authority. Pin and exercise the real B0-I mechanism before claiming one-use or current revocation. |
+| Owner authority | An issued business-scoped claim needs no pre-existing installation/key. A valid consumption request with fresh native holder and actual host-key proof succeeds; unrelated employee/admin/installer without the claim cannot self-enroll. Wrong-purpose/issuer-key, forged, missing, revoked, expired, wrong-organization or invalid host-key proof fails without authority writes. Test actual provenance verification with disposable issuer keys, not a pretrusted boolean. A leaked unconsumed claim can be won by another eligible holder: preserve that trust limit. |
+| Claim lifecycle | Both consumption/revocation orders, atomic supersession/reissue, competing initial installations, and copied consumed claim replay from a different installation/key/person. Exact consumed bindings are immutable; restored local state cannot rebind them. Same operation resumes after issuer or host crash/lost response; changed principal/payload fails. Already consumed claims cannot create replacement admins. Compromise recovery requires independent licensing authority. Pin and exercise the real B0-I mechanism before claiming one-use or current revocation. |
+| Offline/availability and dependency boundary | A valid hand-signed entitlement alone returns `OWNER_AUTHORIZATION_REQUIRED` without admin writes or invalidating the licence. A valid companion claim with disconnected, unavailable, stale or unverifiable consumption returns `LICENSING_UNAVAILABLE`; an ambiguous response retains the same pending operation. Prove the normal first-launch path uses one authoritative consumption call and has no prior host-key handshake. After bootstrap, lead operations add no licensing-status calls. Existing v1 feature checks remain unchanged. |
 | Native identity | Real caller/person/session binding; claimed actor, inherited/transferred handle, sender change, process exit/reuse, account reuse and shared-account ambiguity cannot impersonate the owner. Fresh sign-in is independent of channel identity. |
 | Bootstrap linearization | Separate native processes, exact barriers, both winner orders, repeated initialization, SQL fault between writes and forced exit before/after commit. Same authenticated replay recovers the same identity; conflicts never overwrite it. |
 | Session lifecycle | Locked/unlocked/unknown, logout, expiry, disable/role change and restart; revocation during a busy wait and before release. Copied handles/results, false/zero/default windows and concurrent renewals fail according to pinned rules. |
@@ -342,10 +409,11 @@ outcomes as well as successes; do not count a missing test environment as a pass
 
 Acceptance sequence:
 
-- B0 trust source selected through the relayed operator decision above; B0-I
+- B0 trust source and first-launch online dependency selected through the relayed
+  operator decisions above; B0-I
   issuer mechanism, B1 native mechanisms and B2 run pins closed in a revised
   contract. Agree the licensing-side owner/work order and preserve unchanged v1
-  behavior. Report any activation/connectivity or recovery tradeoff before
+  behavior. Report any additional activation/connectivity or recovery tradeoff before
   acceptance; do not silently add manual key copying or self-enrollment.
 - Oversight review of the exact revision, explicit operator acceptance of that
   bounded work/run order, and contract CI/connector/merge gates. Docs acceptance
@@ -391,7 +459,8 @@ prerequisite of V1b, not V1c template discovery or another custody expansion.
 Cold-audit checks: ordering against the accepted plan; source citations at the
 pinned merge; prior evidence hashes; owner/native trust separation; first-admin
 decision attributed to oversight's operator relay; entitlement reuse and strict
-v1 compatibility; claim lifecycle's new dependency stated honestly; no changed
+v1 compatibility; issue-time/consumption-time bindings separated, offline-licence
+outcomes explicit and first-launch dependency limited to the actual decision; no changed
 accepted text or executable files.
 Run documentation scope/link/citation/whitespace checks only. Do not rerun code
 tests or represent historical primitive/custody results as native sign-in proof.

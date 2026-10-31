@@ -1,6 +1,6 @@
 # Body-only receiver custody: work order and protocol proposal
 
-Status: **R1/R2 and R3.1–R3.5 library work MERGED. Vertical-delivery plan ACCEPTED and MERGED. V1a implementation MERGED; issue #66 closed. V1b.1 owner-bootstrap/native-admin qualification is PROPOSED, contract only. Licensing issuer selected as the bootstrap trust source; claim lifecycle and native/run pins still block executable acceptance. No live activation authorized.**
+Status: **R1/R2 and R3.1–R3.5 library work MERGED. Vertical-delivery plan ACCEPTED and MERGED. V1a implementation MERGED; issue #66 closed. V1b.1 owner-bootstrap/native-admin qualification is PROPOSED, contract only. Licensing issuer and one first-launch online consumption call selected; claim lifecycle/interface and native/run pins still block executable acceptance. No live activation authorized.**
 On 2026-10-25 Juan
 said, “i accept, lets begin”, accepting the R1 work order reviewed at
 `66d16a65a807d5dc19b0ef8691be767f50933a83` and merged in
@@ -59,10 +59,13 @@ private library behavior only, not a receiver or caller authority.
 The plan's next dependency is V1b machine control and activation. Its proposed
 first bounded work order is [V1b.1: owner bootstrap and native admin qualification](LEAD-OWNER-AUTHORITY.md).
 It records the relayed decision to use the existing licensing issuer for owner
-bootstrap. The new claim lifecycle/issuer interface and native mechanism/run pins
-remain explicit blockers; an ordinary entitlement or fixture authority cannot
-bypass them. Review and exact-revision acceptance precede separately authorized
-work; no issuer change or native execution is authorized.
+bootstrap, and the limited acceptance of one authoritative first-launch online
+consumption call with typed unavailable refusal. Installation/key/native binding
+happens at consumption. A hand-signed licence alone needs an owner claim; no
+disconnected bootstrap or continuing licensing dependency for lead operations
+is introduced. The new claim lifecycle/issuer interface and native mechanism/run
+pins remain explicit blockers. Review and exact-revision acceptance precede
+separately authorized work; no issuer change or native execution is authorized.
 
 The accepted [application policy](LEAD-SOURCE-HANDOFF.md#current-acceptance-and-work-order-status)
 remains authoritative: one business per deployment, receiver-owned raw custody,
