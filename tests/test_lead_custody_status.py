@@ -62,6 +62,218 @@ def precise(value=None):
     return value
 
 
+def expired_v12():
+    value = precise()
+    value.update(
+        schema_version="1.2",
+        capture_phase="expired_unfenced",
+        reason="settlement_required",
+        observed_at=value["reservation_expires_at"].replace("Z", ".000000Z"),
+    )
+    return value
+
+
+def test_v12_expired_round_trip():
+    data = expired_v12()
+    parsed = cp.parse_untrusted_status_result_v1_2(wire(data))
+    assert type(parsed) is cp.ExpiredUnfencedStatusResultV12
+    assert cp.canonical_status_result_v1_2(parsed) == wire(data)
+
+
+@pytest.mark.parametrize("offset", [-1, 0, 1])
+def test_v12_expired_chronology(offset):
+    data = expired_v12()
+    stamp = datetime.fromisoformat(data["reservation_expires_at"]) + timedelta(microseconds=offset)
+    data["observed_at"] = stamp.isoformat(timespec="microseconds").replace("+00:00", "Z")
+    if offset < 0:
+        with pytest.raises(ValueError, match="reservation not expired"):
+            cp.ExpiredUnfencedStatusResultV12.model_validate(data)
+        assert_input_free_refusal(lambda: cp.parse_untrusted_status_result_v1_2(wire(data)))
+    else:
+        assert cp.canonical_status_result_v1_2(
+            cp.parse_untrusted_status_result_v1_2(wire(data))
+        ) == wire(data)
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        result,
+        lambda: result("upload_possible", "unknown", reason="pending"),
+        lambda: result("fenced_empty", reason="capture_cancelled"),
+        known,
+        unresolved,
+    ],
+    ids=["prepared", "bound", "fenced", "custodied", "unresolved"],
+)
+def test_v12_ordinary_parity_and_closed_codecs(factory):
+    old = factory()
+    old = precise(old) if old["status"] == "resolved" else {**old, "schema_version": "1.1"}
+    legacy = cp.parse_untrusted_status_result(wire(old))
+    new = {**old, "schema_version": "1.2"}
+    parsed = cp.parse_untrusted_status_result_v1_2(wire(new))
+    assert {**parsed.model_dump(by_alias=True), "schema_version": "1.1"} == legacy.model_dump(
+        by_alias=True
+    )
+    assert cp.canonical_status_result_v1_2(parsed) == wire(new)
+    for call in (
+        lambda: cp.parse_untrusted_status_result(wire(new)),
+        lambda: cp.parse_untrusted_result(wire(new)),
+        lambda: cp.parse_untrusted_status_result_v1_2(wire(old)),
+        lambda: cp.canonical_status_result_v1_2(legacy),
+        lambda: cp.canonical_status_result(parsed),
+        lambda: cp.canonical_result(parsed),
+    ):
+        assert_input_free_refusal(call)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("capture", capture()),
+        ("workflow", known()["workflow"]),
+        ("source_receipt", known()["source_receipt"]),
+        ("unavailable_reason", "expired"),
+        ("content_state", "unknown"),
+        ("reason", "capture_cancelled"),
+        ("capture_phase", "prepared"),
+        ("reservation_expires_at", None),
+        ("reservation_expires_at", "2026-10-18T12:31:00.000000Z"),
+        ("observed_at", "2026-10-18T12:31:00Z"),
+        ("observed_at", "2026-10-18T12:31:00.000000"),
+        ("extra", "SENSITIVE"),
+    ],
+    ids=[str(i) for i in range(12)],
+)
+def test_v12_expired_independent_fields(field, value):
+    data = {**expired_v12(), field: value}
+    with pytest.raises(ValueError):
+        cp.ExpiredUnfencedStatusResultV12.model_validate(data)
+    assert_input_free_refusal(lambda: cp.parse_untrusted_status_result_v1_2(wire(data)))
+    model = cp.parse_untrusted_status_result_v1_2(wire(expired_v12()))
+    assert_input_free_refusal(
+        lambda: cp.canonical_status_result_v1_2(model.model_copy(update={field: value}))
+    )
+
+
+def test_v12_expired_schema_and_required_keys():
+    schema = cp.ExpiredUnfencedStatusResultV12.model_json_schema()
+    data = expired_v12()
+    assert set(schema["required"]) == set(data)
+    assert schema["additionalProperties"] is False
+    for name in ("capture", "workflow", "source_receipt", "unavailable_reason"):
+        assert schema["properties"][name]["type"] == "null"
+    for name in ("schema_version", "capture_phase", "content_state", "reason"):
+        assert schema["properties"][name]["const"] == data[name]
+    for key in data:
+        missing = {name: value for name, value in data.items() if name != key}
+        assert_input_free_refusal(
+            lambda missing=missing: cp.parse_untrusted_status_result_v1_2(wire(missing))
+        )
+    for key in data["scope"]:
+        missing = {**data, "scope": {k: v for k, v in data["scope"].items() if k != key}}
+        assert_input_free_refusal(
+            lambda missing=missing: cp.parse_untrusted_status_result_v1_2(wire(missing))
+        )
+    extra = {**data, "scope": {**data["scope"], "extra": "SENSITIVE"}}
+    assert_input_free_refusal(lambda: cp.parse_untrusted_status_result_v1_2(wire(extra)))
+
+
+@pytest.mark.parametrize("field", ["state_revision", "fence_generation"])
+@pytest.mark.parametrize("value", [0, False, "", -1, "1", 1.0, 2147483648, None])
+def test_v12_expired_revision_refusals(field, value):
+    data = {**expired_v12(), field: value}
+    assert_input_free_refusal(lambda: cp.parse_untrusted_status_result_v1_2(wire(data)))
+
+
+@pytest.mark.parametrize("value", [1, 2147483647])
+def test_v12_expired_valid_revisions(value):
+    data = {**expired_v12(), "state_revision": value, "fence_generation": value}
+    assert cp.canonical_status_result_v1_2(
+        cp.parse_untrusted_status_result_v1_2(wire(data))
+    ) == wire(data)
+
+
+@pytest.mark.parametrize("kind", ["expired", "ordinary", "unresolved"])
+def test_v12_bytes_versions_and_revalidation(monkeypatch, kind):
+    data = (
+        expired_v12()
+        if kind == "expired"
+        else {**precise(known()), "schema_version": "1.2"}
+        if kind == "ordinary"
+        else {**unresolved(), "schema_version": "1.2"}
+    )
+    raw = wire(data)
+    parsed = cp.parse_untrusted_status_result_v1_2(raw)
+    for size in (len(raw), cp.MAX_RESULT_BYTES - 1, cp.MAX_RESULT_BYTES):
+        assert cp.canonical_status_result_v1_2(
+            cp.parse_untrusted_status_result_v1_2(raw + b" " * (size - len(raw)))
+        ) == raw
+    for bad in (b"", b"\xff", raw + b" " * cp.MAX_RESULT_BYTES, bytearray(raw), None, False, 0, ""):
+        assert_input_free_refusal(lambda bad=bad: cp.parse_untrusted_status_result_v1_2(bad))
+    assert_input_free_refusal(
+        lambda: cp.parse_untrusted_status_result_v1_2(b'{"schema_version":"1.2",' + raw[1:])
+    )
+    for version in ("1.0", "1.1", "2.0", 1.2, False, None, ""):
+        assert_input_free_refusal(
+            lambda version=version: cp.parse_untrusted_status_result_v1_2(
+                wire({**data, "schema_version": version})
+            )
+        )
+    for bad in (
+        data,
+        None,
+        type(parsed).model_construct(),
+        parsed.model_copy(update={"handoff_id": 0}),
+    ):
+        assert_input_free_refusal(lambda bad=bad: cp.canonical_status_result_v1_2(bad))
+    monkeypatch.setattr(cp, "MAX_RESULT_BYTES", len(raw))
+    assert cp.canonical_status_result_v1_2(parsed) == raw
+    monkeypatch.setattr(cp, "MAX_RESULT_BYTES", len(raw) - 1)
+    assert_input_free_refusal(lambda: cp.canonical_status_result_v1_2(parsed))
+    if kind != "unresolved":
+        with pytest.raises(ValueError, match="result byte limit"):
+            type(parsed).model_validate(data)
+
+
+def test_v12_pure_codec_in_fresh_process(tmp_path):
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    script = '''
+import sys, json, importlib, builtins, io, os, socket, sqlite3, subprocess
+from connect_automate.lead_intake import source, receipts, results
+data = json.load(sys.stdin)
+def deny(*args, **kwargs):
+    raise AssertionError("unexpected application IO")
+builtins.open = io.open = os.open = deny
+socket.socket = sqlite3.connect = subprocess.Popen = deny
+cp = importlib.import_module("connect_automate.lead_intake.custody_protocol")
+parsed = cp.parse_untrusted_status_result_v1_2(json.dumps(data).encode())
+assert parsed.capture_phase == "expired_unfenced"
+cp.canonical_status_result_v1_2(parsed)
+assert "connect_automate.lead_intake.source_store" not in sys.modules
+print("pure v12 codec passed")
+'''
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        input=wire(expired_v12()).decode(),
+        text=True,
+        capture_output=True,
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src"),
+            "PYTHONDONTWRITEBYTECODE": "1",
+        },
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert completed.stdout.strip() == "pure v12 codec passed"
+    assert list(tmp_path.iterdir()) == []
+
+
 def status(prepared, upload=None, generation=1):
     cap = upload.payload.capture.model_dump() if upload else None
     return managed_operation(prepared, "status", cap, generation)
