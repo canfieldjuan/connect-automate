@@ -1,6 +1,6 @@
 # Body-only receiver custody: work order and protocol proposal
 
-Status: **R1/R2 and R3.1–R3.5 library work MERGED. Vertical-delivery plan ACCEPTED and MERGED. V1a work order ACCEPTED; acceptance-delta review and contract merge pending. No executable work before those gates; no live activation authorized.**
+Status: **R1/R2 and R3.1–R3.5 library work MERGED. Vertical-delivery plan ACCEPTED and MERGED. V1a implementation MERGED; issue #66 closed. V1b.1 owner-bootstrap/native-admin qualification is PROPOSED, contract only; unresolved authority and native pins block executable acceptance. No live activation authorized.**
 On 2026-10-25 Juan
 said, “i accept, lets begin”, accepting the R1 work order reviewed at
 `66d16a65a807d5dc19b0ef8691be767f50933a83` and merged in
@@ -50,10 +50,17 @@ privacy qualification and live-use authorization remain separate gates; the
 plan does not start implementation.
 
 The plan merged as `de23b6e055b090f7fe02ac8cf10633571fc7d3c6`.
-Its first bounded work order is [V1a: expired-unfenced custody status](LEAD-CUSTODY-EXPIRY.md)
-for issue #66. Its [acceptance record](LEAD-CUSTODY-EXPIRY.md#v1a-acceptance-record)
-binds the exact reviewed revision. Legacy status versions remain unchanged;
-implementation follows the accepted contract merge, in a separate bounded PR.
+Its first bounded work order, [V1a: expired-unfenced custody status](LEAD-CUSTODY-EXPIRY.md),
+completed in [PR #71](https://github.com/canfieldjuan/connect-automate/pull/71) as
+`c44091fe038223bcd43f5a86da07c5548569095e`; issue #66 closed under its accepted
+completion procedure. Legacy status versions remain unchanged. This qualifies
+private library behavior only, not a receiver or caller authority.
+
+The plan's next dependency is V1b machine control and activation. Its proposed
+first bounded work order is [V1b.1: owner bootstrap and native admin qualification](LEAD-OWNER-AUTHORITY.md).
+It carries the unresolved first-admin trust source and native mechanism/run pins
+explicitly; no fixture authority, self-enrollment or implementation may bypass
+them. Review and exact-revision acceptance precede separately authorized work.
 
 The accepted [application policy](LEAD-SOURCE-HANDOFF.md#current-acceptance-and-work-order-status)
 remains authoritative: one business per deployment, receiver-owned raw custody,
