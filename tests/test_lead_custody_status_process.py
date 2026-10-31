@@ -5,16 +5,18 @@ import os
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import asdict
+from datetime import datetime
 
 import pytest
 import test_lead_custody_status_process as this_lane
+import test_lead_joined_recovery as joined
 from test_lead_custody_composition import composition, forbidden
 from test_lead_custody_composition_recovery import _managed_child
 from test_lead_custody_composition_recovery import make_managed_case as make_managed_case
-from test_lead_custody_races import CRASH, finish, managed_packet, managed_start
+from test_lead_custody_races import CRASH, finish, managed_packet, managed_start, ordered_managed
 from test_lead_custody_resume_recovery import _resume_child
 from test_lead_custody_status import status
-from test_lead_custody_store import reader, snapshot
+from test_lead_custody_store import RESERVATION, managed_operation, reader, snapshot
 from test_lead_joined_recovery import open_runtime, read_trace
 from test_lead_source_auth import NOW
 from test_lead_source_store import private_root as private_root
@@ -422,4 +424,195 @@ def test_composed_sql_failure_is_not_absence(composed_case, point):
         pass
     (found,) = [v for k, v in messages if k == "result"]
     assert found["code"] == "unknown" and "SYNTHETIC-PRIVATE" not in repr(messages)
+    assert (snapshot(owner), rows(workflow)) == before
+
+
+def v12_child(root, packet, channel, pause, release, fault):
+    """Reuse the real snapshot harness, selecting only the new method and clock."""
+    from connect_automate.lead_intake.custody_handoff import _CustodyHandoff
+
+    original_reader = reader
+
+    def configured_reader(*args, **kwargs):
+        kwargs["clock"] = lambda: datetime.fromisoformat(packet["v12_clock"])
+        return original_reader(*args, **kwargs)
+
+    # These bridges live only in this fresh child. No result/store is simulated.
+    this_lane.reader = configured_reader
+    _CustodyHandoff.status = _CustodyHandoff.status_v1_2
+    composed_child(root, packet, channel, pause, release, fault)
+
+
+@pytest.fixture
+def v12_process_case(tmp_path, monkeypatch):
+    import json
+
+    from test_lead_custody_composition import prepare
+
+    case = joined.make_case.__wrapped__(tmp_path)()
+    runtime, owner, _, workflow = open_runtime(case)
+    access = reader(owner, clock=lambda: NOW)
+    intent, upload, raw = prepare(runtime, access, json.loads(case["raw"]), phase="prepared")
+    case.update(
+        incarnation=owner.read_incarnation(),
+        prepare=canonical_request(intent),
+        upload=canonical_request(upload),
+        settle=canonical_request(managed_operation(intent, "settle")),
+        request=canonical_request(status(intent)),
+        raw=raw,
+        v12_clock=RESERVATION,
+    )
+    monkeypatch.setattr(this_lane, "child", v12_child)
+    return case, owner, workflow
+
+
+@pytest.mark.parametrize("action", ["bind", "admit", "close"])
+@pytest.mark.parametrize("point", ["source-before", "source-after", "source-released", "response"])
+def test_v12_native_snapshot_writer_orders(v12_process_case, action, point):
+    case, owner, workflow = v12_process_case
+    intent, upload = (parse_untrusted_request(case[k]) for k in ("prepare", "upload"))
+    access = reader(owner, clock=lambda: NOW)
+    if action == "admit":
+        access.bind_upload(upload)
+        case["request"] = canonical_request(status(intent, upload))
+    request = parse_untrusted_request(case["request"])
+    old = access.observe_status(request=request).custody
+    with reading(case["source_root"], composed_refs(case), point) as (channel, release, messages):
+        while read_trace(channel, messages) != ("paused", point):
+            assert messages[-1][0] not in ("error", "result")
+        # The writer samples NOW, before expiry. The source reader samples the
+        # deadline in its own pinned snapshot: no late-upload permission is added.
+        write(case["source_root"], case, action)
+        after = snapshot(owner), rows(workflow)
+        current = access.observe(
+            handoff_id=intent.handoff_id,
+            scope=intent.scope,
+            enrolled_machine_id=intent.enrolled_machine_id,
+        )
+        release.set()
+    (found,) = [value for key, value in messages if key == "result"]
+    assert found["schema_version"] == "1.2"
+    fresh = point == "source-before"
+    if fresh and action == "bind":
+        assert found["code"] == "conflict"  # Absent capture cannot adopt the new binding.
+    else:
+        expected = current if fresh else old
+        phase = (
+            {"admit": "custodied", "close": "fenced_empty"}[action]
+            if fresh else "upload_possible" if action == "admit" else "expired_unfenced"
+        )
+        assert found["capture_phase"] == phase
+        assert found["fence_generation"] == expected.fence_generation
+        assert found["state_revision"] == expected.state_revision
+        assert found["capture"] == (
+            expected.capture.model_dump() if expected.capture is not None else None
+        )
+    assert (snapshot(owner), rows(workflow)) == after
+    with reading(case["source_root"], composed_refs(case)) as (_, _, replay):
+        pass
+    (latest,) = [value for key, value in replay if key == "result"]
+    if action == "bind":
+        assert latest["code"] == "conflict"
+    else:
+        assert latest["capture_phase"] == {"admit": "custodied", "close": "fenced_empty"}[action]
+        assert latest["fence_generation"] == current.fence_generation
+        assert latest["state_revision"] == current.state_revision
+    assert (snapshot(owner), rows(workflow)) == after
+    print(dict(action=action, point=point, result=found, replay=latest))
+
+
+@pytest.mark.parametrize("point", ["source-before", "source-after", "source-released", "response"])
+def test_v12_native_status_crash_and_lost_response(v12_process_case, point):
+    case, owner, workflow = v12_process_case
+    before = snapshot(owner), rows(workflow)
+    with reading(case["source_root"], composed_refs(case), point, "crash") as (_, _, messages):
+        pass
+    assert ("checkpoint", point) in messages
+    assert not any(key == "result" for key, _ in messages)
+    assert (snapshot(owner), rows(workflow)) == before
+    with reading(case["source_root"], composed_refs(case)) as (_, _, replay):
+        pass
+    (found,) = [value for key, value in replay if key == "result"]
+    assert found["capture_phase"] == "expired_unfenced"
+    assert found["source_receipt"] is found["workflow"] is None
+    assert (snapshot(owner), rows(workflow)) == before
+
+
+@pytest.mark.parametrize("point", ["source-before", "source-after", "source-released"])
+def test_v12_native_sql_failure_is_unknown(v12_process_case, point):
+    case, owner, workflow = v12_process_case
+    before = snapshot(owner), rows(workflow)
+    with reading(case["source_root"], composed_refs(case), point, "sql") as (_, _, messages):
+        pass
+    (found,) = [value for key, value in messages if key == "result"]
+    assert found["schema_version"] == "1.2" and found["code"] == "unknown"
+    assert "SYNTHETIC-PRIVATE" not in repr(messages)
+    assert (snapshot(owner), rows(workflow)) == before
+
+
+@pytest.mark.parametrize("point", ["before-commit", "after-commit"])
+def test_v12_native_settlement_crash_replay(v12_process_case, point):
+    case, owner, workflow = v12_process_case
+    with reading(case["source_root"], composed_refs(case)) as (_, _, initial):
+        pass
+    (observed,) = [value for key, value in initial if key == "result"]
+    assert observed["capture_phase"] == "expired_unfenced"
+    before = snapshot(owner), rows(workflow)
+    process, channel = managed_start(
+        multiprocessing.get_context("spawn"), case["source_root"], case, "close",
+        target=point, fault="crash", now=RESERVATION,
+    )
+    messages = []
+    finish(process, channel, messages, crashed=True)
+    assert ("checkpoint", point) in messages
+    after = snapshot(owner), rows(workflow)
+    if point == "before-commit":
+        assert after == before
+    else:
+        assert after[0] != before[0] and after[1] == before[1]
+    with reading(case["source_root"], composed_refs(case)) as (_, _, reopened):
+        pass
+    (found,) = [value for key, value in reopened if key == "result"]
+    assert found["capture_phase"] == (
+        "expired_unfenced" if point == "before-commit" else "fenced_empty"
+    )
+    assert (snapshot(owner), rows(workflow)) == after
+    # Replay the same explicit settlement; no status result triggers the writer.
+    process, channel = managed_start(
+        multiprocessing.get_context("spawn"), case["source_root"], case, "close", now=RESERVATION
+    )
+    completed = []
+    finish(process, channel, completed)
+    assert ("result", "close") in completed
+    with reading(case["source_root"], composed_refs(case)) as (_, _, replay):
+        pass
+    (latest,) = [value for key, value in replay if key == "result"]
+    assert latest["capture_phase"] == "fenced_empty"
+    assert latest["fence_generation"] > observed["fence_generation"]
+    if point == "after-commit":
+        assert (snapshot(owner), rows(workflow)) == after
+
+
+@pytest.mark.parametrize("first,second", [("close", "admit"), ("admit", "close")])
+def test_v12_native_admission_settlement_orders(v12_process_case, first, second):
+    case, owner, workflow = v12_process_case
+    intent, upload = (parse_untrusted_request(case[k]) for k in ("prepare", "upload"))
+    reader(owner, clock=lambda: NOW).bind_upload(upload)
+    case["request"] = canonical_request(status(intent, upload))
+    case["settle"] = canonical_request(
+        managed_operation(intent, "settle", upload.payload.capture.model_dump())
+    )
+    m1, m2 = ordered_managed(case["source_root"], case, first, second)
+    assert ("result", first) in m1 and not any(k == "error" for k, _ in m1)
+    errors = [value for key, value in m2 if key == "error"]
+    assert bool(errors) == (first == "close"), (m1, m2)
+    if errors:
+        assert errors[0][0] == "SourceAuthenticationError" and errors[0][2:] == (True, True)
+    before = snapshot(owner), rows(workflow)
+    with reading(case["source_root"], composed_refs(case)) as (_, _, messages):
+        pass
+    (found,) = [value for key, value in messages if key == "result"]
+    assert found["capture_phase"] == ("fenced_empty" if first == "close" else "custodied")
+    assert (found["source_receipt"] is None) == (first == "close")
+    assert found["fence_generation"] == 2
     assert (snapshot(owner), rows(workflow)) == before

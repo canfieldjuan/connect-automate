@@ -165,6 +165,17 @@ class UnresolvedResult(_Closed):
     code: Literal["unknown", "not_found", "refused", "conflict"]
 
 
+def _result_size(value):
+    if len(_canonical(value.model_dump(by_alias=True))) > MAX_RESULT_BYTES:
+        raise ValueError("result byte limit")
+    return value
+
+
+def _reservation_elapsed(deadline: str, observed_at: str) -> bool:
+    """Compare parsed timestamps; the owning model validates their field formats."""
+    return datetime.fromisoformat(deadline) <= datetime.fromisoformat(observed_at)
+
+
 class ResolvedResult(_Closed):
     schema_version: Literal["1.0"]
     status: Literal["resolved"]
@@ -267,9 +278,7 @@ class ResolvedResult(_Closed):
 
     @model_validator(mode="after")
     def _size(self):
-        if len(_canonical(self.model_dump(by_alias=True))) > MAX_RESULT_BYTES:
-            raise ValueError("result byte limit")
-        return self
+        return _result_size(self)
 
 
 _RESULT_TYPES = (ResolvedResult, UnresolvedResult)
@@ -290,6 +299,59 @@ class UnresolvedStatusResult(UnresolvedResult):
 _STATUS_RESULT_TYPES = (ResolvedStatusResult, UnresolvedStatusResult)
 _STATUS_RESULT = TypeAdapter(
     Annotated[ResolvedStatusResult | UnresolvedStatusResult, Field(discriminator="status")]
+)
+
+
+class ResolvedStatusResultV12(ResolvedStatusResult):
+    """Existing resolved phases with an explicitly selected result version."""
+
+    schema_version: Literal["1.2"]
+
+
+class ExpiredUnfencedStatusResultV12(_Closed):
+    """An expired source snapshot, never a fence or authorization for an effect."""
+
+    schema_version: Literal["1.2"]
+    status: Literal["resolved"]
+    handoff_id: UuidV4
+    scope: ScopeReference
+    state_revision: Revision
+    fence_generation: Revision
+    observed_at: Annotated[str, BeforeValidator(_decision_time)]
+    reservation_expires_at: Instant
+    capture: None
+    capture_phase: Literal["expired_unfenced"]
+    content_state: Literal["not_received"]
+    unavailable_reason: None
+    workflow: None
+    source_receipt: None
+    reason: Literal["settlement_required"]
+
+    @model_validator(mode="after")
+    def _expired_reservation(self):
+        if not _reservation_elapsed(self.reservation_expires_at, self.observed_at):
+            raise ValueError("reservation not expired")
+        return self
+
+    @model_validator(mode="after")
+    def _size(self):
+        return _result_size(self)
+
+
+class UnresolvedStatusResultV12(UnresolvedStatusResult):
+    schema_version: Literal["1.2"]
+
+
+_STATUS_RESULT_V12_TYPES = (
+    ResolvedStatusResultV12,
+    ExpiredUnfencedStatusResultV12,
+    UnresolvedStatusResultV12,
+)
+_RESOLVED_STATUS_V12 = Annotated[
+    ResolvedStatusResultV12 | ExpiredUnfencedStatusResultV12, Field(discriminator="capture_phase")
+]
+_STATUS_RESULT_V12 = TypeAdapter(
+    Annotated[_RESOLVED_STATUS_V12 | UnresolvedStatusResultV12, Field(discriminator="status")]
 )
 
 
@@ -355,6 +417,15 @@ def parse_untrusted_status_result(raw: bytes):
 
 def canonical_status_result(value) -> bytes:
     return _encode(value, _STATUS_RESULT, _STATUS_RESULT_TYPES, MAX_RESULT_BYTES)
+
+
+def parse_untrusted_status_result_v1_2(raw: bytes):
+    """Parse only result 1.2; expiry remains an untrusted, read-only claim."""
+    return _parse(raw, _STATUS_RESULT_V12, MAX_RESULT_BYTES)
+
+
+def canonical_status_result_v1_2(value) -> bytes:
+    return _encode(value, _STATUS_RESULT_V12, _STATUS_RESULT_V12_TYPES, MAX_RESULT_BYTES)
 
 
 def _match_upload(upload, prepared, source, raw):
