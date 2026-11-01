@@ -320,13 +320,51 @@ order; this Markdown defines their conformance obligations, not generated code.
 
 | Type | Closed required fields and constraints |
 | --- | --- |
-| `ActivationManifest` payload | `version` const `owner-bootstrap/1`; `purpose` const `owner-bootstrap-activation`; `origin` HTTPS origin parsed as a URI, no userinfo/path/query/fragment, port 443 outside the isolated test build; `claim_key_ids`, `receipt_key_ids` arrays of 1..16 unique bounded key identifiers, all present in the installed keyring; `issued_at`, `expires_at` fixed UTC, ordered validity at most 2592000 seconds. Signed envelope must use an installed release-authority key, not an arbitrary pack key. No active manifest means unavailable. |
+| `ActivationManifest` payload | `version` const `owner-bootstrap/1`; `purpose` const `owner-bootstrap-activation`; `origin` canonical ASCII HTTPS origin, JSON Schema minLength 1/maxLength 255, parsed as a URI with an A-label DNS host or bracketed IPv6; no userinfo/path/query/fragment, control characters, escaped host or Unicode, port 443 outside the isolated test build; `claim_key_ids`, `receipt_key_ids` arrays of 1..16 unique bounded key identifiers, all present in the installed keyring; `issued_at`, `expires_at` fixed UTC, ordered validity at most 2592000 seconds. Signed envelope must use an installed release-authority key, not an arbitrary pack key. No active manifest means unavailable. |
 | `OwnerClaim` payload | `version` const `owner-bootstrap/1`; `purpose` const `owner-bootstrap`; `claim_id`, `organization_id`, `entitlement_id` UUIDv4; `generation` integer 1..2147483647; `issued_at`, `not_before`, `expires_at` UTC `YYYY-MM-DDTHH:MM:SSZ`. Enforce `issued_at <= not_before < expires_at`, at most 86400 seconds of validity starting at first-launch activation issuance, never purchase. No installation, host key or native identity at issuance. |
-| Signed envelope | `version` const `owner-bootstrap/1`; `key_id` ASCII identifier matching `[a-z0-9][a-z0-9._-]{0,63}`; `payload_base64url` canonical unpadded base64url 1..2048 chars; `signature_base64url` canonical encoding of 64 bytes. Payload must satisfy its purpose-specific schema. `key_id` must be permitted for this purpose in the trusted activation manifest. |
+| Signed envelope | `version` const `owner-bootstrap/1`; `key_id` ASCII identifier matching `[a-z0-9][a-z0-9._-]{0,63}`; `payload_base64url` canonical unpadded base64url with minLength 1 and the expected type's maximum from the wire-budget table below; `signature_base64url` canonical encoding of 64 bytes. Payload must satisfy its purpose-specific schema. `key_id` must be permitted for this purpose in the trusted activation manifest. |
 | `ConsumeBinding` | `version` const `owner-bootstrap/1`; `operation_id`, `installation_id`, `host_id`, `organization_id`, `claim_id`, `entitlement_id` UUIDv4; `generation` as claim; `claim_sha256`, `principal_commitment`, `initialization_sha256` lowercase hexadecimal SHA-256; `installation_public_key` canonical base64url of 32 Ed25519 public bytes. No native account name, password or lead data. |
 | `ConsumeRequest` | `version` const `owner-bootstrap/1`, `owner_claim` signed envelope, `binding` ConsumeBinding, `attempt_id` UUIDv4, `requested_at` fixed UTC timestamp, `installation_signature` canonical base64url of 64 bytes. No extra app, billing or document fields. |
 | `ConsumedReceipt` payload | `version` const `owner-bootstrap/1`; `purpose` const `owner-bootstrap-receipt`; `state` const `CONSUMED`; `receipt_id` UUIDv4; `binding` exact ConsumeBinding; `consumed_at` fixed UTC timestamp. Wrap in the signed envelope above. |
 | Refusal | `version` const `owner-bootstrap/1`; `code` enum `OWNER_AUTHORIZATION_INVALID`, `OWNER_AUTHORIZATION_EXPIRED`, `OWNER_AUTHORIZATION_REVOKED`, `OWNER_BINDING_CONFLICT`, `OWNER_CLOCK_SKEW`, `LICENSING_UNAVAILABLE`; `operation_id` UUIDv4; `completion` enum `NOT_COMMITTED` or `UNKNOWN`. Do not return free-form upstream text, claim bytes or account data. Never treat an unsigned refusal as proof of non-consumption after a timeout. |
+
+**Single wire-budget owner:** the following table supplies every envelope
+schema's maximum payload string length, pre-decode byte limit and total canonical
+envelope limit. It replaces the former global payload cap; endpoint and IPC
+consumers reference this table, not a second copied cap. The enclosing trusted
+operation selects the expected type before reading/decoding; an attacker cannot
+select a larger budget by supplying a payload purpose. Use closed per-type schema
+branches with those `maxLength` constraints, then the same named bounded decoder
+and native URI parser; no parallel regex-based size/URI checker.
+
+| Expected signed type | Decoded canonical payload bytes, max | Unpadded base64url characters, max | Complete canonical signed-envelope bytes, max |
+| --- | ---: | ---: | ---: |
+| `ActivationManifest` | 3072 | 4096 | 4608 |
+| `OwnerClaim` or `ConsumedReceipt` | 1536 | 2048 | 2560 |
+
+A 3072-byte payload encodes to at most 4096 unpadded base64url characters;
+1536 bytes encodes to at most 2048. The largest envelope overhead is 241 bytes
+with the declared constant version, 64-character key ID and fixed signature
+encoding: 4096 + 241 fits 4608, and 2048 + 241 fits 2560. Check enclosing byte
+limits before parsing, encoded length before decoding, then decoded size, schema,
+canonical form and signature. Never truncate or fall back to a larger type.
+The consume endpoint keeps its existing request/response budgets, which fit the
+smaller claim/receipt envelopes. The activation manifest's envelope budget applies
+only within normal activation; this is not a new manifest fetch or a change to
+legacy licence wire limits. Reject it in a consume-response/ordinary IPC slot;
+it must not silently inherit that slot's smaller response cap.
+
+All schema-permitted manifest fields are now finite. With both arrays at 16
+unique 64-character IDs, a valid 255-character ASCII origin and fixed-width
+maximal timestamps, the canonical manifest is 2590 bytes, its base64url payload
+3454 characters and its complete envelope 3695 bytes. The maximum-shape owner
+claim is 353/471/712 bytes/characters/envelope bytes and consumed receipt is
+899/1199/1440 respectively. Thus every permitted field combination is representable
+within its type budget; no need to reduce the allowed key counts or lengths.
+These are synthetic documentation byte calculations with placeholder strings,
+not signing/key work or conformance/runtime tests. Oversight's correction
+`463c587a` distinguishes its sample from the connector's sample; neither sample's
+exact origin length is used as the general bound.
 
 The prefixes are `local-connect.owner-activation.v1`,
 `local-connect.owner-claim.v1`, `local-connect.owner-consume.v1`,
@@ -389,7 +427,8 @@ issuer backup starts `RECOVERY_LOCKED` until ledger continuity is proven against
 its durable journal; it must not resume issuance from a rollback that revives a
 claim. This recovery behavior requires issuer-side qualification, not CA SQL.
 
-**Bounds and outcomes:** request 8192 bytes, response 4096 bytes, decompression
+**Bounds and outcomes for the consume endpoint:** request 8192 bytes, response
+4096 bytes (including its bounded receipt envelope above), decompression
 and redirects disabled. TLS server verification mandatory; qualification TLS
 trust cannot be enabled in a production build. Connect timeout 3 seconds, total
 call deadline 10 seconds, no automatic retry or hidden refresh/health call. One
@@ -746,6 +785,20 @@ activation renewal. Clock fixtures use -61/-60/-59/0/+59/+60/+61 seconds for bot
 new consumption and pending-receipt lookup: only the out-of-window cases return
 `OWNER_CLOCK_SKEW`/`NOT_COMMITTED`, no ledger writes, prior ambiguity retained;
 clock correction and a fresh signed attempt recover the same operation/binding.
+
+Manifest-size fixtures derive from B0-I's single wire-budget table. Include
+both arrays at maximum cardinality and ID length with a valid maximum-length
+origin and maximum envelope key ID; assert that payload, encoding and envelope
+all fit and preserve exact bytes. Add origin length 256 (otherwise valid URI),
+an array with 17 distinct IDs, and a 65-character ID as independent max+1 schema
+negatives. Exercise each type's encoded/decoded/envelope boundary plus one with
+untrusted over-limit input; assert the intended early cap rejects before signature
+or model admission, without truncation. Do not invent a schema-valid payload at
+the aggregate cap when the field-derived maximum is smaller: record that size
+as unreachable for a valid model. A manifest over the smaller claim/receipt cap
+must succeed only in the manifest context; supplying it as a claim or consume
+receipt must refuse. Keep the ordinary consume/IPC response caps unchanged.
+These are required future fixtures, not a new harness or test execution here.
 
 Instrument exact barriers at native validation, issuer lookup/transition/commit,
 local pending/receipt/admin/audit writes, local commit and result release. For
