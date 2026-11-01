@@ -1,8 +1,11 @@
 # V1b.1: owner bootstrap and native admin qualification
 
 Status: **PROPOSED, CONTRACT ONLY. B0-I licensing interface, B1 native mechanisms
-and B2 disposable qualification plan are specified below for review. They are not
-implemented or qualified. Licensing-side acceptance, oversight of this revision,
+and B2 qualification plan (Linux VM, Windows 11 dev-drive boot, one Windows 10
+VM) are specified below for review. PR72 acceptance is ON HOLD at Juan's direction. Windows ships in the
+first release; local passwords, Microsoft accounts and Windows Hello are required
+qualification coverage, not exclusions. They are not implemented or qualified.
+Licensing-side acceptance, oversight of this revision,
 Juan's exact-revision acceptance, harness freeze and separate run authorization
 remain gates. No implementation, native run or merge is authorized by this draft.**
 
@@ -24,8 +27,10 @@ SHA-256 `44607d94124910e11f891b75b576eadfc1837c3aca3f1900601ab8f153527147`.
 
 **Proposed bounded next outcome:** qualify how the protected local host verifies
 the deployment owner, bootstraps that owner's initial admin record and obtains
-a native admin session. Use synthetic identities on separately authorized
-disposable native environments. Deliver a reproducible feasibility packet and
+a native admin session. Use synthetic identities in the unchanged Linux VM lane
+and dedicated test accounts on Juan's Windows 11 dev-drive boot plus one
+Windows 10 VM, only on his explicit go. Deliver a reproducible feasibility packet
+and
 the precise subsequent enforcement work order, not a receiver or another pure
 eligibility model. An unproven prerequisite is a typed blocker, not a fixture
 grant that permits the next step.
@@ -486,21 +491,38 @@ attacker replacing the protected host/trust anchor; pin that computing boundary.
 
 **PROPOSED selection, not native proof.** Qualify local, distinct computer accounts
 on Ubuntu 24.04 LTS x86-64 with GNOME 46/Wayland, systemd 255, and PolicyKit1;
-and Windows 11 24H2 x64 (build family 26100), local password accounts. This is a
-bounded qualification target, not a statement that those guests exist or a
-support claim for other desktops, remote/domain/Entra/Hello-only accounts, shared
-native credentials or Windows legacy builds. Patched package/build identities
-are frozen in the run manifest, never silently upgraded during a run. New native
+and two separately required Windows targets: Juan's Windows 11 dev-drive boot
+on his own PC, and one Windows 10 22H2 x64 VM (build family 19045; see
+[Microsoft release information](https://learn.microsoft.com/en-us/windows/release-health/release-information)). Juan directly
+confirmed "Windows 11 PC plus Windows 10 VM" after clarifying that the dev drive
+has the Windows 11 installation. Earlier relays about two native Windows boots
+are superseded. No machine, disk or installed build was inspected in this work.
+Freeze the actual Windows 11 edition/build only during his later authorized
+preflight. Windows 11 24H2 x64 (build family 26100) remains the API reference
+baseline, not permission to upgrade/reimage his box. If a target's APIs/build
+cannot satisfy the profile, return `WINDOWS_PLATFORM_BLOCKED` and bring the
+blocker to Juan; no VM may substitute for the Windows 11 native proof.
+Windows is a first-release gate, including local password accounts, Microsoft
+accounts and Windows Hello on dedicated test identities. These modes cannot be
+silently excluded or deferred behind Linux release. Remote/domain/Entra accounts,
+shared native credentials and other legacy-build support remain outside this lane.
+This is a coverage commitment and qualification target, not a claim of proven
+support. Patched package/build identities are frozen in the run manifest, never
+silently upgraded during a run. New native
 helper code is qualification-only C17 plus the locked CA Python 3.13 environment;
-Windows helper uses Windows SDK 10.0.26100.0, Linux uses distribution GCC 13 and
+Windows helper uses Windows SDK 10.0.26100.0 with explicit Windows 10/11 runtime
+capability gates; SDK availability does not prove an API runs on Windows 10.
+Linux uses distribution GCC 13 and
 libpolkit-gobject-1/libsystemd headers. No new production dependency is adopted.
 
 Ubuntu's package catalog documents the chosen
 [GNOME 46 family](https://packages.ubuntu.com/noble/gnome-shell) and
 [systemd 255 family](https://packages.ubuntu.com/noble/systemd).
 These references verify available API families, not an installed guest's build.
-The package revision, executable hashes and OS image digest are frozen only after
-harness preparation, before requesting run approval. A mismatch stops the run;
+The Linux package revision, executable hashes and OS image digest are frozen
+after harness preparation; Windows records only the exact build and approved test
+artifacts/settings, without imaging or reading Juan's disk. All precede run
+approval. A mismatch stops the run;
 qualifying a different platform requires an explicit contract revision.
 
 **Linux boundary:** a root-owned system service exposes a filesystem Unix
@@ -574,9 +596,13 @@ and the [GNOME 46 ScreenSaver interface](https://github.com/GNOME/gnome-shell/bl
 These APIs supply the proposed mechanism; their availability does not pass the
 fresh-prompt, current-account or lock-spoof tests.
 
-**Windows boundary:** LocalSystem qualification service, private authority path
-`%ProgramData%\LocalConnect\Authority`, protected DACL allowing only SYSTEM and
-the service SID. Explicit local-only named pipe, `PIPE_REJECT_REMOTE_CLIENTS`,
+**Windows boundary:** on Juan's real box use only a separately named LocalSystem
+qualification service and `%ProgramData%\LocalConnect\Qualification\<run-id>\Authority`,
+with protected DACL allowing only SYSTEM and that service SID. Never open the
+production authority directory or an existing deployment store. The run namespace
+must be new and collision-checked within the approved parent, not found by scanning
+user profiles. Service privileges do not authorize reading Juan's files.
+Explicit local-only named pipe, `PIPE_REJECT_REMOTE_CLIENTS`,
 `FILE_FLAG_FIRST_PIPE_INSTANCE`, bounded message frames and explicit DACL; never
 default Everyone/anonymous access. Each message must successfully impersonate its
 client, open that thread token and inspect TokenUser SID, TokenSessionId and
@@ -587,20 +613,86 @@ query failure must never substitute the service token. See
 [pipe ACLs](https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-security-and-access-rights)
 and [last-message impersonation](https://learn.microsoft.com/en-us/windows/win32/api/namedpipeapi/nf-namedpipeapi-impersonatenamedpipeclient).
 
-A trusted desktop broker uses native `CredUIPromptForWindowsCredentialsW` with
-`CREDUIWIN_SECURE_PROMPT`, no generic/save/admin-enumeration flags, then the
-protected verifier uses `LogonUserW(LOGON32_LOGON_INTERACTIVE)` to authenticate.
-The prompt itself is NOT authentication. Compare verified TokenUser SID to the
-per-request pipe identity; the new authentication token's LUID is not the original
-interactive logon's LUID. Bind the latter from the verified caller token and
-recheck it separately. No account-name equality shortcut. Broker credential
-buffers traverse only the authenticated local channel to the protected verifier,
-are never persisted/logged/dumped, and are zeroed/freed using native APIs on all
-paths. Pin broker binary/ACL and prove request/credential swap denial. Synthetic
-password entry is operator-controlled on the secure desktop; agents never see
-or record it. This password-account qualification does not claim Hello support.
-See [CredUI and buffer handling](https://learn.microsoft.com/en-us/windows/win32/api/wincred/nf-wincred-creduipromptforwindowscredentialsw)
-and [LogonUserW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-logonuserw).
+### Windows account modes and independently verifiable proof
+
+The protected service verifies each mode itself, in addition to the per-request
+caller token/SID/LUID/session/channel checks above. Desktop UI success, an email
+address, a browser session, a credential-provider label or a copied broker result
+is never sufficient. These are proposed verifier requirements, not proof that an
+API or mode already works on Juan's box. The closed local outcome vocabulary
+extends the existing host outcomes with
+`WINDOWS_PLATFORM_BLOCKED`, `WINDOWS_SAFETY_BLOCKED`,
+`NATIVE_PASSWORD_VERIFIER_UNAVAILABLE`, `NATIVE_MICROSOFT_ACCOUNT_VERIFIER_UNAVAILABLE`
+and `NATIVE_HELLO_VERIFIER_UNAVAILABLE`. Each publishes no authority and makes no
+licensing consume call. Do not add these to the licensing server's refusal enum.
+These blockers fail required qualification; they are not successful support.
+
+| Mode | Protected-service verification mechanism | Typed blocker and no-fallback rule |
+| --- | --- | --- |
+| Local password | The trusted desktop broker invokes `CredUIPromptForWindowsCredentialsW` with `CREDUIWIN_SECURE_PROMPT`, no generic/save/admin-enumeration flags. Juan enters the test account password. The protected service calls `LogonUserW(LOGON32_LOGON_INTERACTIVE)` and compares the returned TokenUser SID to the authenticated requesting SID. It separately checks the original interactive LUID/session; the newly authenticated token's LUID is not the original logon's LUID. | `NATIVE_PASSWORD_VERIFIER_UNAVAILABLE` for absent/unsupported provider/API; `NATIVE_AUTH_DENIED` for rejected authentication or wrong SID. No username-equality, service-token or cached-dialog fallback. |
+| Microsoft-account password | Use the Windows account credential provider for the dedicated test Microsoft account, followed by protected-service OS/LSA authentication through `LogonUserW` with that provider's account/domain representation and exact returned-SID comparison. Success must be an actual Windows-issued authentication token for the current requesting account, not cloud email equality. This verifies a local Windows logon, not an independent claim of current cloud-account status. | `NATIVE_MICROSOFT_ACCOUNT_VERIFIER_UNAVAILABLE` if the target provider cannot yield a verifiable matching token, including unsupported/passwordless configurations. Documentation for `LogonUserW` does not itself promise Microsoft-account coverage; the real native case must prove it. Do not map this identity to a local test user or add a browser/OAuth fallback. Passwordless Microsoft-account/Hello coverage uses the Hello row and must be qualified separately. |
+| Windows Hello (PIN/biometric, including Microsoft-account-backed Windows sign-in) | The service issues a fresh single-use challenge; a supported, trusted interactive WinRT broker calls `KeyCredential.RequestSignAsync`. The service cryptographically verifies the response with the RSA public key (imported from `RetrievePublicKey(X509SubjectPublicKeyInfo)`) already enrolled in protected custody for the exact native SID/machine/app. Microsoft's documented KeyCredential proof is RSA/SHA-256 with PKCS#1 signature verification; it is separate from the licensing Ed25519 format. Check exact challenge bytes, service incarnation, operation, SID, account generation, session/channel and freshness before consuming the challenge once. | `NATIVE_HELLO_VERIFIER_UNAVAILABLE` when the broker/API, trusted key-to-SID enrollment, attestation/trust policy or signature verification is missing/unqualified; `NATIVE_AUTH_DENIED` for replay, wrong key/SID/challenge or rejected verification. A client-supplied public key, UserConsentVerifier `Verified`, a pipe token alone or a password fallback cannot pass this mode. |
+
+**Hello trust remains an explicit blocker until proved:** `RetrievePublicKey`
+returns a public key and `GetAttestationAsync` can supply key attestation; neither
+by itself establishes our trusted SID/application enrollment. The Microsoft
+pattern assumes an authenticated registration step. This codebase has no proven
+protected enrollment/attestation verifier for this seam. An operator-approved,
+separately reviewed enrollment must bind an application-specific test credential
+to the already authenticated native SID, machine and trusted broker identity,
+validate the chosen attestation/trust policy, and prevent replacing an existing
+binding. A passwordless first-use case that cannot establish that trust returns
+`NATIVE_HELLO_VERIFIER_UNAVAILABLE`; do not bootstrap a key merely because it signed
+its own registration. Whether a secure passwordless enrollment can meet this
+boundary is UNKNOWN and blocks that required release case. No new cloud identity
+service or automatic attestation-provider request is authorized to bypass it.
+
+The proposed Hello challenge is a closed local message: version const
+`native-hello/1`, fresh 32-byte nonce, UUID operation/machine/service-incarnation,
+stable native-SID binding, account generation, current session/channel commitment,
+issued monotonic time and expiry at the existing fresh-verification deadline.
+Canonicalize using the existing bounded JSON pattern; verify RSA/SHA-256 PKCS#1
+against the protected enrolled public key, not the client's choice of algorithm.
+Record and consume the challenge under the host owner; replays after success,
+restart, lock or identity change deny. Do not export a PIN, biometric template,
+private key or Windows token as a licensing payload. Do not claim a signature
+alone proves a fresh Hello gesture. The qualified key/provider policy must require
+that gesture for this exact challenge; unattended or cached signing that bypasses
+it is a failed proof and `NATIVE_HELLO_VERIFIER_UNAVAILABLE`, even if the RSA
+signature is valid. Missing trusted enrollment/attestation is the same blocker.
+`UserPrefersPassword`, cancellation or a request for unsupported Hello proof
+cannot silently switch this mode to LogonUser; return the closed denied/unavailable
+outcome and keep the required Hello case blocked. Challenge/broker/proof frames
+stay within B1's existing IPC limits; oversize or
+unsupported representations return the typed blocker, without increasing caps.
+
+A qualification broker that needs WinRT app identity must have its supported
+package/process context pinned and separately approved. A C17 helper alone is not
+assumed to support every WinRT UI API; proposed additional path
+`qualification/owner_authority/windows_hello_broker.cpp` uses the selected Windows
+SDK/C++/WinRT projection only after its own implementation authority. Missing app
+identity or blocked package policy is `NATIVE_HELLO_VERIFIER_UNAVAILABLE`; no global
+developer-mode, trust-store or sideload-policy change is authorized here.
+
+For password modes, broker credential buffers traverse only the authenticated
+local channel to the protected verifier, are never persisted/logged/dumped and
+are zeroed/freed with native APIs on every path. Juan types every password/PIN
+and performs biometric gestures through native UI; agents never collect, type,
+record or replay them. Cancel/lock/focus or identity change denies the operation.
+
+Primary API evidence (not native qualification):
+[LogonUserW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-logonuserw),
+[CredUI](https://learn.microsoft.com/en-us/windows/win32/api/wincred/nf-wincred-creduipromptforwindowscredentialsw),
+[Hello challenge/verification model](https://learn.microsoft.com/en-us/windows/apps/develop/security/windows-hello),
+[RequestSignAsync](https://learn.microsoft.com/en-us/uwp/api/windows.security.credentials.keycredential.requestsignasync?view=winrt-26100),
+[RetrievePublicKey](https://learn.microsoft.com/en-us/uwp/api/windows.security.credentials.keycredential.retrievepublickey?view=winrt-26100),
+[GetAttestationAsync](https://learn.microsoft.com/en-us/uwp/api/windows.security.credentials.keycredential.getattestationasync?view=winrt-26100),
+and [UserConsentVerifier result API](https://learn.microsoft.com/en-us/windows/win32/api/userconsentverifierinterop/nf-userconsentverifierinterop-iuserconsentverifierinterop-requestverificationforwindowasync).
+The last supplies an application result, not this service's independent proof,
+and its documented Windows build minimum is 22000: it cannot be assumed on the
+Windows 10 target. The KeyCredential route must be qualified independently on
+both OS versions in its approved app context. Missing API/context/proof on either
+version produces the named typed blocker; Windows 11 success does not pass 10.
 
 Require `WTSQuerySessionInformationW(WTSSessionInfoEx)` for that token's session:
 active and `WTS_SESSIONSTATE_UNLOCK` only; lock, disconnect, unknown or API failure
@@ -713,7 +805,7 @@ response bounds and owner death. That proposed gate is not implemented here.
 
 ## Proof matrix and executable acceptance gates
 
-### B2: disposable qualification work order and freeze protocol
+### B2: platform qualification work order and freeze protocol
 
 **Contract pin, no run authorization.** Prepare the harness in a separately
 accepted implementation PR after review of this revision. Proposed owned paths
@@ -725,10 +817,9 @@ retained Linux credential probe as the regression reference. It is not a new
 workflow engine or production issuer. CI may test synthetic wire/ledger cases;
 native desktop/account proof has its own run authorization.
 
-**Environments:** two new disposable VM overlays, one per selected target above,
+**Linux environment (unchanged VM lane):** one new disposable Linux VM overlay,
 cloned from operator-approved, shut-down images. Do not use a live employee desktop,
-reset an existing VM password, inspect existing accounts or assume prior Windows
-access. Each guest contains synthetic principals `li_owner`, `li_other` and
+reset an existing VM password, inspect existing accounts or assume access to any existing installation. Each guest contains synthetic principals `li_owner`, `li_other` and
 `li_admin_test` (an unrelated administrator), plus its protected service. Guest
 local console only, no shared clipboard/folders, no mail/database/cloud secrets,
 no bridged NIC or production registry; default-deny guest egress. The licensing
@@ -738,13 +829,143 @@ before account/service setup; setup and teardown are limited to these overlays.
 If an image or the operator's native-password entry is unavailable, record STOP;
 no host change, password recovery or Linux mock substitution.
 
+**Windows 11 environment: Juan's physical dev-drive boot, later, only on his go.**
+Treat it as the main workstation with live apps and model storage to preserve;
+that reported layout is not a new disk observation or a spare machine to reimage. No remote-agent takeover, background
+scheduling or automated execution is authorized by this document. Do not connect,
+inspect Windows accounts/build,
+provision or run even preflight now. Windows is in the first release; a missing
+mode proof is a release blocker, not permission to ship only Linux or relabel a
+Hello/MS-account case as local-password success.
+Before any authorized Windows preflight, Juan identifies the current test boot
+and its boot-volume alias, and physically disconnects or otherwise makes the
+Linux boot disk and other non-test data disks inaccessible for the Windows proof.
+The reviewed
+manifest pins that isolation and only the specifically named boot/test-volume
+identities; the harness must not enumerate drives or probe other disks. If that
+isolation cannot be established without touching them, return
+`WINDOWS_SAFETY_BLOCKED` and stop for Juan. No mounting, unlocking, imaging,
+indexing, reading, writing, cleaning or recovery of the other disks is permitted.
+No reboot/boot-order change, partition/bootloader edit, BitLocker operation or
+cross-boot cleanup is automated. Juan switches boots himself under a separate go.
+Use a distinct run ID, dedicated accounts and resource/cleanup ledger for the
+Windows 11 boot and Windows 10 guest; a path spelling alone does not prove the
+intended boot volume. Juan first saves/quiesces his Linux work and chooses when
+to boot Windows; this PC cannot keep running Linux coding jobs during that boot.
+Agents must not stop his live apps/sessions or assume concurrent Linux access.
+Prepare/review all artifacts before that switch; pause dependent Linux work until
+he returns. Missing safe scheduling or disk isolation is `WINDOWS_SAFETY_BLOCKED`.
+Models on the Windows boot disk stay outside all test roots; no discovery, loads,
+GPU benchmarks, downloads, model-service restarts or cleanup of that storage.
+
+**Windows 10 environment: one VM, separate authority, no substitution.** Use a
+single operator-approved Windows 10 22H2 x64 image and disposable overlay, dedicated
+synthetic local/Microsoft/Hello-capable test identities, no shared host drives,
+clipboard or production registry, and scoped fixture network access. Freeze the
+image/hypervisor/OS/API/broker identities and exact setup/run/teardown plan before
+requesting go. No VM is created, booted or inspected now. Follow the same
+per-mode service-verification, user-entered credentials, no-personal-data and
+no-fallback rules; lack of a required Hello/TPM/provider capability is a typed
+release blocker, not a waived Windows 10 case. State any virtual hardware need
+before run approval; do not weaken attestation or borrow Juan's host credentials.
+Teardown removes only that named VM overlay and its guest-created resources,
+never the Windows 11 dev drive, Linux disk or existing VM. A native Windows 11
+result and a Windows 10 VM result must both pass; neither substitutes for the other.
+
+**Real-machine safeguard owner:** the frozen Windows run manifest must name a
+new run-scoped test directory, service, broker/app identity, dedicated test-account
+SIDs and any test-only firewall/IPC resources. Proposed aliases are
+`LocalConnectOwnerQualification-<run-id>` and
+`%ProgramData%\LocalConnect\Qualification\<run-id>`. Juan separately creates or
+approves dedicated local, Microsoft-account and Hello-capable test identities;
+never use, enumerate or change his everyday account or existing credentials.
+Linking a test Microsoft account and establishing its native Hello setup are
+Juan-controlled actions under separate go, not account work authorized now.
+Existing personal Hello/TPM registrations, sign-in methods, recovery material,
+BitLocker, cloud sync/OneDrive and application settings must not be reset, cleared
+or changed. No new cloud accounts, purchases, identity-service registrations or
+machine-wide authentication/network policy changes without their own named plan.
+
+The reviewed file-I/O boundary allows only the manifest's new test root and the
+dedicated test fixture profiles, plus exact OS/API/runtime dependencies required
+by the reviewed binaries. Do not list drives, recursively enumerate profiles,
+scan/import existing documents, read Juan's files, browser/credential stores,
+mail, production databases, history or general event logs. Service privileges do
+not broaden that allowlist. Keep file operations out of the privileged auth path;
+any fixture I/O worker must enforce the parsed root/handle allowlist and reject
+reparse/symlink/alternate-volume escapes before reading. Unknown path/resource
+requests STOP. Exercise denial only with operator-approved synthetic sentinels,
+never a real personal file. Retain an operation audit of allowed/denied test
+resource aliases; no private path/content capture and no full-disk inventory.
+If the implementation cannot enforce that boundary, use `WINDOWS_SAFETY_BLOCKED`
+and stop before the real-machine run.
+
+The issuer fixture stays loopback-only with ephemeral test trust, separate from
+production licensing/authority configuration. Restrict network rules to named
+test binaries/resources; do not disconnect the PC or change global firewall
+settings. Only Juan-approved OS identity-provider traffic for dedicated Microsoft
+account setup/authentication is an explicit exception; it is not permission for
+an application OAuth/browser login or cloud data transfer. If native verification
+needs another dependency, record its typed blocker for review first. Capture
+only sanitized case/status evidence; no screenshots/recordings of credential UI,
+keystrokes, biometrics, private keys, memory dumps or personal account identifiers.
+Juan controls password/PIN entry and sees the exact next operation before go.
+
+**Evidence handoff across boots:** before any Windows go, Juan chooses a new,
+empty, dedicated evidence-exchange directory on an approved removable device or
+other specifically approved shared destination, with privacy ACLs and a recorded
+alias/path. It must be reachable from the relevant boot or have a user-controlled
+sanitized export step. Do not assume the Linux evidence root stays mounted or
+available from Windows, or use the model directory as a share. Only sanitized
+run receipts/manifests cross that boundary; no test credentials, keys, private
+files, raw account IDs or broad drive copy. Record exported artifact hashes on
+Windows, and verify those hashes on return to Linux before independent review.
+No test/controller work continues from Linux while this PC boots Windows. If the
+exchange destination, access controls or return path is unapproved/unavailable,
+record STOP before the run rather than mounting or scanning another disk.
+
+**Named Windows 11 cleanup, separately approved and limited to created resources:**
+
+- `W1_QUIESCE`: stop test admission, reconcile/preserve test-only pending receipts
+  and collect sanitized evidence. Do not touch any production pending operation.
+- `W2_STOP_SERVICE`: stop only `LocalConnectOwnerQualification-<run-id>` after
+  confirming its recorded service identity and binary hash; no wildcard stop.
+- `W3_REMOVE_BROKER_CREDENTIAL`: in each dedicated test profile, remove only the
+  recorded app-specific test credential using [KeyCredentialManager.DeleteAsync](https://learn.microsoft.com/en-us/uwp/api/windows.security.credentials.keycredentialmanager.deleteasync?view=winrt-26100)
+  for its exact recorded name if it was created by this run. Juan authorizes any
+  native UI gesture. Never clear Windows Hello/NGC, the TPM or existing keys.
+- `W4_REMOVE_REGISTRATION`: remove only the run-created service/broker registration
+  and precisely named per-test rules; restore only settings this run changed from
+  its explicit before-receipt. Leave pre-existing registrations/rules untouched.
+- `W5_REMOVE_TEST_ACCOUNTS`: Juan approves the exact dedicated test SIDs/profile
+  paths and signs those test sessions out; delete only run-created local users
+  and test profiles under the approved cleanup scope. No everyday-account changes,
+  Microsoft-account cloud deletion, credential-manager clearing or password reset.
+- `W6_REMOVE_TEST_ROOT`: after evidence is copied to its approved private destination
+  and reviewed, remove only the recorded run root, rejecting reparse points and
+  verifying ownership/run marker. Preserve durable evidence until Juan approves
+  its later deletion. No directory wildcard or machine reset.
+- `W7_VERIFY_CLEANUP`: query only the recorded test resource names and synthetic
+  sentinel state; report removed/retained/blocked for each. An unexpected resource
+  or cleanup failure STOPs for Juan, not broader scanning or repair.
+
+Each cleanup step has exact argv/resource identities and boot-volume binding in
+the frozen manifest, Juan's explicit cleanup go and a result receipt. Before
+every step, confirm the operator-selected current boot/test volume and named
+resource marker; a different boot or volume stops cleanup without touching it.
+Cancelling a run stops further
+actions and retains evidence; it does not authorize automatic cleanup outside
+that list. No step is executable under this contract-only work order.
+
 **Freeze-before-run sequence:**
 
 1. Review/accept this contract, then separately authorize building the bounded
    harness. Independently review its exact commit and wire/negative fixtures.
 2. Create a secret-free `run.json` in durable evidence with full contract/harness
-   commits, executable/fixture/policy hashes, base-image SHA-256 and overlay IDs,
-   OS build/kernel, GNOME/systemd/polkit/PAM and compiler/SDK package revisions,
+   commits, executable/fixture/policy hashes, Linux base-image SHA-256/overlay ID,
+   Windows 11 operator-approved machine/boot-volume alias/build and named test-resource/
+   cleanup allowlists (no host disk imaging or personal inventory), Windows 10
+   image/hypervisor/overlay identities, OS build/kernel, GNOME/systemd/polkit/PAM and compiler/SDK package revisions,
    locked Python dependency digest, service/principal aliases, trust policy,
    isolation/network policy, exact setup/run/teardown argv and evidence paths.
    These observed content hashes cannot truthfully be invented before the files
@@ -753,24 +974,36 @@ no host change, password recovery or Linux mock substitution.
 3. Send that frozen manifest and bounded setup/run/teardown scope for oversight
    and Juan's explicit native-run authorization. This review-only revision does
    not authorize provisioning or generating passwords/keys now.
-4. On the approved fresh overlays, freeze image/package state and execute only
-   the reviewed entrypoints. Controller interface is pinned as
+4. On the approved Linux overlay, Windows 10 overlay or Juan's Windows 11 boot,
+   freeze only the authorized platform/test state and execute the reviewed entrypoints solely
+   after Juan's explicit go for that platform/run. No go is inferred from contract
+   acceptance, CI, review or an earlier run. Controller interface is pinned as
    `controller.py preflight --manifest <run.json>`,
    `controller.py run --manifest <run.json> --platform linux|windows`, and
    `controller.py collect --manifest <run.json>`. `<run.json>` resolves to one
    approved absolute path in the receipt; no shell interpolation or guessed path.
-   Preflight validates every frozen hash, guest identity and deny-egress rule
-   before any native setup. A mismatch produces STOP without executing the run.
-5. Collect/review before teardown. Remove only the specifically authorized test
-   overlays and service/accounts inside them; preserve durable evidence. Operator
-   approval of teardown names the exact overlays, never a wildcard or host path.
+   Preflight validates frozen hashes, Linux/Windows 10 guest identities or the
+   approved Windows 11 machine/test identities, allowlisted resources and scoped network rules before
+   native setup, and itself requires Juan's go. A mismatch produces STOP without executing the run.
+5. Collect/review before teardown. Linux removes only its specifically approved
+   overlay and guest service/accounts, as before. Windows 10 removes only its
+   expressly approved guest overlay/resources. Windows 11 uses only W1 through W7
+   above on Juan's separate cleanup go. Preserve evidence; no wildcard, reset,
+   broad repair or Windows image rollback is authorized.
 
 **Finite cases and verdicts:** the FIRST Linux native case is B1's socket-replacement
 and fake-user-bus gate, including initial connect and reconnect while the real
 desktop stays locked. Failure is sent to Juan and stops dependent work before
 any normal bootstrap/consumption or the remaining Linux matrix. Then, only if
 that gate is not defeated, execute every proof-matrix row below on each platform.
-Ordinary lifecycle and boundary fixtures use the same public synthetic identities. Test min-1/min/max/max+1 for every declared bound, false/zero/empty/
+Ordinary lifecycle and boundary fixtures use the same public synthetic identities.
+On each Windows target, run the full native matrix for local password, Microsoft-account
+password and Windows Hello/PIN-biometric modes on dedicated test accounts. Include
+wrong-SID credentials, unsupported/passwordless provider, missing or swapped Hello
+enrollment/attestation, fake Verified result, replay/wrong-key/challenge signature,
+lock/logout/disconnect, account disablement/recreation and cancellation. A required
+mode returning its typed blocker is STOP for that release case, not PASS.
+Only successful service-side proof qualifies it; no mode is skipped or downgraded. Test min-1/min/max/max+1 for every declared bound, false/zero/empty/
 unknown enum, mixed valid-invalid and individually isolated corruptions. Required
 negative cases include ordinary/offline licence without claim; invalid signature,
 wrong purpose/org; simultaneous initial installations; revoked/expired claim;
@@ -811,9 +1044,10 @@ no publication while denied, and no hidden licensing call during subsequent
 synthetic host operations. Barrier/test interfaces exist only in the harness.
 No lead/custody read or live workflow is exercised to prove this profile.
 
-Case deadline 180 seconds, platform budget 3600 seconds, at most one guest test
-at a time. A watchdog timeout preserves evidence and fails that case; no unbounded
-retry. Overall result PASS only if every mandatory case on both native targets
+Case deadline 180 seconds, platform budget 3600 seconds, at most one platform
+case at a time. Windows runs only while Juan is present and approving its actions. A separate
+per-target budget applies; no Windows 10/11 result is merged into a single pass. A watchdog timeout preserves evidence and fails that case; no unbounded
+retry. Overall result PASS only if every mandatory case on all required platform targets
 passes with assertions and no unreviewed environment drift. FAIL for an observed
 invariant violation; STOP for missing access/approval/environment; neither counts
 as pass. No automatic rerun after a security or data-integrity failure: reproduce,
@@ -824,9 +1058,11 @@ harness/adapter delta. No production adoption follows a green packet.
 barrier/commit receipts, deny-egress counters, fixture/adapter digests and a
 SHA-256 manifest outside worktrees under
 `~/Desktop/codex-evidence/connect-automate/lead-owner-authority-qualification/<run-id>/`.
-Directories 0700/files 0600 on the evidence owner, equivalent guest ACLs. Result
+Directories 0700/files 0600 on the evidence owner, equivalent Linux guest and
+Windows dedicated-test/evidence ACLs. Result
 schema is closed: contract/harness/run IDs, case/platform, outcome PASS/FAIL/STOP,
-expected and actual code, assertion IDs, public synthetic fixture digest, monotonic
+expected and actual code (including Windows typed blockers), assertion IDs,
+public synthetic fixture digest, monotonic
 duration and artifact hashes. Never capture credential dialogs/keystrokes, private
 keys, native account names beyond fixture aliases, raw source content or memory
 dumps. Synthetic fixture envelopes may be retained; secrets may not. Keep packets
@@ -844,7 +1080,7 @@ later executable freeze are a distinct execution gate, not an unspecified plan.
 | Session lifecycle | Locked/unlocked/unknown, logout, expiry, disable/role change and restart; revocation during a busy wait and before release. Copied handles/results, false/zero/default windows and concurrent renewals fail according to pinned rules. |
 | Isolation and secrets | Actual unrelated employee cannot directly read/replace authority, keystore or source paths, including indirect restore/reparse/symlink access. Encryption and backup protection are separate proofs, not inferred from ACLs. No raw credential in diagnostics or evidence. |
 | No effects / parity | Existing entitlement-v1/policy/source/custody/runtime schemas and tests unchanged; no production issuance, Connect registration, provider discovery, source authority publication, body read, Gmail, workflow dispatch or lead creation. Only an expressly authorized disposable B0-I harness may exercise claim lifecycle; deny all unapproved external calls. Assert denied calls, not just an empty result. |
-| Two-platform qualification | Native Linux and Windows result packets use the same invariants and retain platform-specific blockers. Linux mocks do not pass Windows; a green existing Windows custody suite does not prove the new native boundary. |
+| Required platform qualification | Linux uses its unchanged VM lane; Windows 11 uses Juan's dev-drive boot and Windows 10 22H2 uses one VM. Each Windows target has dedicated local/Microsoft/Hello cases and explicit go. Per-target/per-mode results retain blockers, safety and cleanup receipts. Both Windows targets gate the first release; no Linux/mock/hosted-CI substitution, silent exclusion or weaker fallback. |
 
 Each new security guard needs otherwise-valid independent negative fixtures,
 valid/invalid/partial/falsy/boundary probes and a deliberate fault that the
@@ -898,7 +1134,8 @@ the shared AI inference runtime. No new workflow engine, polling/dispatch servic
 public API or cloud identity dependency. No parallel EW or shared-runtime work.
 
 Rollback of this proposal is a documentation revert. A future qualification must
-have an accepted disposable-environment teardown plan. Do not reset a protected
+have accepted Linux/Windows-10 overlay teardown and named Windows-11 real-machine
+cleanup plans. Do not reset a protected
 identity, alter current stores or remove retained proof to make a run repeatable.
 For future executable authority, disabling exposure must preserve identity and
 audit/replay state; its recovery/rollback is a separate acceptance input.
@@ -917,13 +1154,14 @@ Run documentation scope/link/citation/whitespace checks only. Do not rerun code
 tests or represent historical primitive/custody results as native sign-in proof.
 
 **DONE for contract preparation:** B0-I wire/ownership/recovery/retention profile,
-B1 native API and platform selection, and B2 bounded disposable harness/freeze/run
-plan are specified for independent review. They are proposals, not tested behavior.
+B1 native API and platform selection, and B2 Linux-VM/Windows-11-native/Windows-10-VM freeze/run
+plan are specified for independent review. PR72 acceptance is on hold for this
+Windows real-machine and account-mode revision. These are proposals, not tested behavior.
 
 **NOT DONE for execution:** licensing-side acceptance/implementation and signed
 endpoint publication, oversight/connector review of this revision, Juan's
 exact-revision acceptance, separately authorized harness implementation and
 hash-frozen native run, qualification, integrated enforcement and later V1b
-activation. Linux lock resistance may fail qualification and remains an explicit
-safety gate. Publish the documentation-only revision and stop for review; no
+activation. Linux lock resistance and Windows account/Hello proof may fail qualification;
+their typed blockers and the real-machine safeguards are explicit release gates. Publish the documentation-only revision and stop for review; no
 merge, production claim or executable authority is implied.

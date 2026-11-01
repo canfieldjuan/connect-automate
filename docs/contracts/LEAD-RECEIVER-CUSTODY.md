@@ -64,8 +64,13 @@ consumption call with typed unavailable refusal. Installation/key/native binding
 happens at consumption. A hand-signed licence alone needs an owner claim; no
 disconnected bootstrap or continuing licensing dependency for lead operations
 is introduced. The work order now pins the licensing wire/recovery interface,
-Linux/Windows native APIs and a disposable harness/freeze/run sequence. These are
-reviewable proposals; licensing acceptance, implementation, exact harness/image
+Linux/Windows native APIs and a qualification freeze/run sequence. Windows is in
+the first release; Windows 11 proof uses Juan's dev-drive boot and Windows 10
+22H2 uses one VM, later, with dedicated test
+accounts, protected-service verification for local/Microsoft/Hello modes, named
+cleanup and his explicit go. Unverifiable modes are typed release blockers with
+no weaker fallback; Linux keeps its VM lane. PR72 acceptance is on hold for this
+revision. These are reviewable proposals; licensing acceptance, implementation, exact harness/image
 hashes, native proof and separate run authority remain gates. Review and
 exact-revision acceptance precede separately authorized work; no issuer change,
 merge or native execution is authorized.
