@@ -1,10 +1,10 @@
 # V1b.1: owner bootstrap and native admin qualification
 
-Status: **PROPOSED, CONTRACT ONLY. Licensing issuer and one first-launch online
-consumption call selected by relayed operator decisions. Claim lifecycle/interface
-and native mechanism/run pins remain unresolved.
-Not ready for executable acceptance. Stop for oversight review and
-Juan's exact-revision decision; no implementation or native run is authorized.**
+Status: **PROPOSED, CONTRACT ONLY. B0-I licensing interface, B1 native mechanisms
+and B2 disposable qualification plan are specified below for review. They are not
+implemented or qualified. Licensing-side acceptance, oversight of this revision,
+Juan's exact-revision acceptance, harness freeze and separate run authorization
+remain gates. No implementation, native run or merge is authorized by this draft.**
 
 ## Ordering, completed work and bounded outcome
 
@@ -193,8 +193,8 @@ above. After consumption a copied claim from another installation/key or person
 must fail, not rebind. Exact replay must match all consumed bindings; changed
 bindings are conflicts. Schema-expressible constraints
 belong in closed models/schema; semantic checks have one owner, no parallel regex.
-Exact wire schemas, numeric bounds and approved key-purpose policy remain
-acceptance inputs, not permissive implementation defaults.
+The wire vocabulary, bounds and key-purpose policy are pinned in the B0-I
+profile below. They require review and conformance fixtures before adoption.
 
 **C2 correction:** my revision `06087b110736b69d41ebfdc53bf2acc8cfbe3a4f`
 incorrectly put installation/key binding in the issued claim. Its origin was
@@ -267,18 +267,143 @@ opaque commitment to the local consumption binding, never native credentials,
 account names or lead content. Pin retention and recovery of that commitment in
 the licensing work order; it must not become an employee directory.
 
-**BLOCKER B0-I — issuer interface and freshness, connectivity decided:** pin how
-the licensing owner provides current consumption/revocation state, authenticates installation
-and recovery requests, proves resistance to rollback and delivers a bound receipt.
-The authorization and path for revoke/reissue must be independent of possession
-of the leaked claim. The first-launch authoritative online consumption call and
-typed unavailable refusal are selected; no continuing licensing dependency is
-added to lead operations. Stale, unavailable or unverifiable state refuses
-bootstrap with `LICENSING_UNAVAILABLE`. No disconnected client may claim instant
-remote revocation.
-License renewal/expiry must not erase or reset the established owner; existing
-feature gating remains separate. Trust-source and first-launch connectivity
-choices are settled; B0-I's concrete interface and qualification are not.
+### B0-I: licensing interface profile, version `owner-bootstrap/1`
+
+**PROPOSED contract pin, not implemented API.** The licensing/release owner owns
+this profile and its claim ledger; CA owns the client and local authority store.
+It is a new bounded addition to the licensing proposal, not an acceptance or
+implementation of `LICENCE-SERVICE.md`. No app accesses the issuer database.
+
+**Endpoint:** `POST /v1/owner-bootstrap/consume`, HTTPS, no redirects, cookies,
+query parameters or browser invocation. Resolve the single allowed origin and
+claim/receipt key-purpose allowlist from a release-signed activation manifest
+installed through normal activation. Verify it with the existing installed trust
+chain; do not accept an origin/key from email, request JSON or environment
+variables. No production origin or service existence is asserted here. Production
+adoption requires the licensing owner to publish the signed endpoint/key manifest
+and pass this profile; absent configuration returns `LICENSING_UNAVAILABLE`.
+The disposable harness uses only its own loopback TLS origin and ephemeral CA.
+
+**Encoding owner:** closed JSON Schema 2020-12 models, every listed field required,
+`additionalProperties: false` at every object, no null/default/coercion, duplicate
+members or non-finite numbers. Payload fields are ASCII identifiers, bounded
+integers and fixed UTC strings. Canonical bytes are UTF-8 JSON with sorted keys,
+compact separators, no NaN; reject any alternate signed encoding. This preserves
+the bounded canonicalization pattern at `LI/source.py:206-210`, not its source
+schema/preimage. Use existing Ed25519 `CA/entitlement.py:402-418`; do not duplicate
+crypto or import lead/source business models into licensing. Sign domain prefix
+plus canonical payload; domain prefixes are the ASCII strings below followed by
+a NUL byte. New strict models and fixtures belong to a later licensing/CA work
+order; this Markdown defines their conformance obligations, not generated code.
+
+| Type | Closed required fields and constraints |
+| --- | --- |
+| `ActivationManifest` payload | `version` const `owner-bootstrap/1`; `purpose` const `owner-bootstrap-activation`; `origin` HTTPS origin parsed as a URI, no userinfo/path/query/fragment, port 443 outside the isolated test build; `claim_key_ids`, `receipt_key_ids` arrays of 1..16 unique bounded key identifiers, all present in the installed keyring; `issued_at`, `expires_at` fixed UTC, ordered validity at most 2592000 seconds. Signed envelope must use an installed release-authority key, not an arbitrary pack key. No active manifest means unavailable. |
+| `OwnerClaim` payload | `version` const `owner-bootstrap/1`; `purpose` const `owner-bootstrap`; `claim_id`, `organization_id`, `entitlement_id` UUIDv4; `generation` integer 1..2147483647; `issued_at`, `not_before`, `expires_at` UTC `YYYY-MM-DDTHH:MM:SSZ`. Enforce `issued_at <= not_before < expires_at`, at most 86400 seconds of validity. No installation, host key or native identity at issuance. |
+| Signed envelope | `version` const `owner-bootstrap/1`; `key_id` ASCII identifier matching `[a-z0-9][a-z0-9._-]{0,63}`; `payload_base64url` canonical unpadded base64url 1..2048 chars; `signature_base64url` canonical encoding of 64 bytes. Payload must satisfy its purpose-specific schema. `key_id` must be permitted for this purpose in the trusted activation manifest. |
+| `ConsumeBinding` | `version` const `owner-bootstrap/1`; `operation_id`, `installation_id`, `host_id`, `organization_id`, `claim_id`, `entitlement_id` UUIDv4; `generation` as claim; `claim_sha256`, `principal_commitment`, `initialization_sha256` lowercase hexadecimal SHA-256; `installation_public_key` canonical base64url of 32 Ed25519 public bytes. No native account name, password or lead data. |
+| `ConsumeRequest` | `version` const `owner-bootstrap/1`, `owner_claim` signed envelope, `binding` ConsumeBinding, `attempt_id` UUIDv4, `requested_at` fixed UTC timestamp, `installation_signature` canonical base64url of 64 bytes. No extra app, billing or document fields. |
+| `ConsumedReceipt` payload | `version` const `owner-bootstrap/1`; `purpose` const `owner-bootstrap-receipt`; `state` const `CONSUMED`; `receipt_id` UUIDv4; `binding` exact ConsumeBinding; `consumed_at` fixed UTC timestamp. Wrap in the signed envelope above. |
+| Refusal | `version` const `owner-bootstrap/1`; `code` enum `OWNER_AUTHORIZATION_INVALID`, `OWNER_AUTHORIZATION_EXPIRED`, `OWNER_AUTHORIZATION_REVOKED`, `OWNER_BINDING_CONFLICT`, `LICENSING_UNAVAILABLE`; `operation_id` UUIDv4; `completion` enum `NOT_COMMITTED` or `UNKNOWN`. Do not return free-form upstream text, claim bytes or account data. Never treat an unsigned refusal as proof of non-consumption after a timeout. |
+
+The prefixes are `local-connect.owner-activation.v1`,
+`local-connect.owner-claim.v1`, `local-connect.owner-consume.v1`,
+`local-connect.owner-receipt.v1`. Claim digest
+hashes the complete canonical signed claim envelope. The installation signs the
+canonical object containing `version`, `binding`, `attempt_id`, `requested_at`
+with the consume prefix. Each explicit recovery uses a fresh attempt/time and
+signature over the same durable binding; a stored receipt or copied unsigned
+result cannot replace proof verification. Require request time within 60 seconds
+of issuer UTC on every attempt, including receipt lookup. This proves a recently
+signed request, not that a captured signed request cannot be forwarded within
+that window: such forwarding may only return the same bound receipt, never alter
+or create a second owner. No prior online challenge is needed. The claim binds
+the business; the first valid consumption binds the installation/key. The issuer never receives the local principal record:
+`principal_commitment` is SHA-256 of a fresh 32-byte local salt plus canonical
+stable native-principal record; the salt and native fields remain in protected
+host custody. This closed record is `platform` (linux/windows), `machine_id`
+(immutable protected deployment UUID), `principal_id` (Linux integer UID or
+Windows SID parsed by the native SID API), and `account_generation` (positive
+host authority revision). It excludes PID/session/incarnation, which change on
+restart. Current process/session facts are verified afresh during every recovery;
+they cannot change the stable principal or initialization digest. Linux account
+directory changes invalidate sessions and advance authority generation; recreated
+UIDs cannot inherit an earlier mapping. Windows recreated accounts have new SIDs.
+The qualification must exercise this invalidation rather than assume name reuse
+is safe. The local initialization digest covers immutable deployment/org, native binding,
+initial role `admin`, operation and commitment. Salt/key/operation are durable
+before sending and cannot change on recovery. An attempt with a different key,
+missing signature or stale proof cannot recover a receipt; possession of a
+returned receipt is never sufficient to publish local authority.
+
+**Issuer transaction and replay:** verify envelope/purpose, request shape,
+current attempt time and installation signature before any ledger lookup.
+The single request validator compares binding claim/org/entitlement/generation
+and claim digest against the verified signed claim; no independently valid but
+mismatched pair may reach the ledger. In one durable writer transaction, serialize by
+`claim_id` with a unique claim row and unique operation identity. Exact consumed
+binding returns the stored signed receipt even after claim expiry; changed
+operation, installation/key, principal/payload or business fails with
+`OWNER_BINDING_CONFLICT`. Replay still verifies possession; a copied result is
+not authentication. For a new consumption, check active generation, unreplaced,
+unrevoked/unexpired claim, then atomically store consumed binding and signed receipt before responding. A revoke
+or reissue uses the same claim lock and generation check. No cache-as-authority,
+check-then-insert race or receipt generated only after commit. Database failure
+must roll back both rows; a crash after commit replays the stored receipt.
+
+Revocation before consume wins; consume before revocation keeps the existing
+owner. Reissue an unconsumed claim only in the same transaction that supersedes
+its prior generation. Post-consumption recovery cannot elect another owner.
+Revoke/reissue is a licensing-admin operation authenticated through that owner's
+separately approved provisioning channel, never by possession of the leaked
+claim. No public revoke/reissue endpoint is added to the CA client. A restored
+issuer backup starts `RECOVERY_LOCKED` until ledger continuity is proven against
+its durable journal; it must not resume issuance from a rollback that revives a
+claim. This recovery behavior requires issuer-side qualification, not CA SQL.
+
+**Bounds and outcomes:** request 8192 bytes, response 4096 bytes, decompression
+and redirects disabled. TLS server verification mandatory; qualification TLS
+trust cannot be enabled in a production build. Connect timeout 3 seconds, total
+call deadline 10 seconds, no automatic retry or hidden refresh/health call. One
+normal first-launch consumption operation; user-initiated recovery may replay
+only that frozen operation with a new authenticated attempt. Network silence
+after dispatch is `UNKNOWN`, never a definite rollback. Existing licence checks remain separate and unchanged.
+
+| Outcome | Result and permitted next action |
+| --- | --- |
+| Verified `CONSUMED` receipt | Verify issuer purpose/key/signature, exact binding and consumed_at within the signed claim validity interval, then recheck fresh native identity/state and claim validity before local commit. Persist receipt and owner/admin/audit atomically. A receipt alone never creates authority for a different local person. |
+| `OWNER_AUTHORIZATION_REQUIRED` | No companion claim, including a hand-signed licence alone. Licence remains valid; no bootstrap request or admin write. |
+| `OWNER_AUTHORIZATION_INVALID`, `OWNER_AUTHORIZATION_EXPIRED`, `OWNER_AUTHORIZATION_REVOKED`, `OWNER_BINDING_CONFLICT` | Deterministic refusal; no admin publication. Do not substitute another person/claim automatically. |
+| `LICENSING_UNAVAILABLE` | Missing endpoint, TLS/transport/timeout, stale/unverifiable response or unavailable service. Preserve any pending operation with completion `UNKNOWN` if dispatch could have occurred. Tell the user first-launch setup could not complete; offer only explicit recovery of that operation. |
+| `BOOTSTRAP_BUSY`, `NATIVE_AUTH_UNAVAILABLE`, `NATIVE_AUTH_DENIED`, `NATIVE_SESSION_INACTIVE`, `AUTHORITY_CORRUPT` | Local-only closed outcomes. No licensing call until native proof is valid and no owner authority on refusal. Shared credentials are unsupported; do not pretend to detect them from a username. |
+
+The issuer may use HTTP 200 for a consumed receipt, 400 for malformed requests,
+403 for an invalid/revoked claim, 409 for binding conflict, 410 for expired new
+consumption, 503 for unavailable/recovery-locked state. HTTP success is not
+consumption proof without the bound signed receipt. Oversize/partial/mixed or
+unknown-version replies fail closed. Replays after expiry may recover evidence,
+but expired native proof or claim never permits local publication; retain the
+consumed binding for explicitly authorized recovery rather than freeing it.
+
+**Protected storage/retention:** CA owns an authority-only SQLite database under
+its protected service directory: deployment identity, pending binding/salt,
+consumed receipt, employee/native mapping and minimal audit. Use one writer
+transaction and unique deployment/claim/operation constraints; never write source,
+custody or runtime tables. Private installation keys stay in service-only custody,
+not the SQLite file or employee config. Keep unresolved intent until reconciled;
+keep consumed identity/receipt and replay tombstone for deployment lifetime.
+Issuer retains full expired, unconsumed claims for 7 days, minimal consumed/revoked
+claim digest/binding/receipt for deployment lifetime, then 90 days after explicit
+retirement. No reuse of retired claim/org/install identities. These proposed
+retention additions need licensing acceptance; they do not settle that service's
+other retention questions. Backups preserve the same ACL/encryption owner and
+replay continuity. No secure-erasure or encryption qualification is claimed.
+
+**Review pin versus proof:** B0-I's interface is specified by this section. The
+licensing service, signed endpoint manifest, key-purpose publication, transaction
+and recovery implementation remain unimplemented/unqualified dependencies. This
+contract does not authorize changing or accepting that separate service. Lead
+operations acquire no continuing network dependency from owner bootstrap.
 
 This mechanism is **PROPOSED and unqualified**. No employee, grant or session may
 be created on the strength of this prose. An unrelated administrator without a
@@ -288,23 +413,135 @@ attacker replacing the protected host/trust anchor; pin that computing boundary.
 
 ## Native mechanism pins and protected ownership
 
-**BLOCKER B1 — native feasibility:** before executable acceptance, identify exact
-supported Linux desktop/distribution and Windows versions, service principal,
-local authentication broker, verified per-request caller binding, fresh sign-in
-and current interactive-session/lock APIs. Pin the API/library versions, approved
-local authentication configuration, IPC framing/ACL policy and public upstream
-references. Do not choose an API solely because it reports an account name.
-Individual employees need distinct verified native principals. Refuse mapping
-one principal to multiple employees. People sharing the same native credentials
-are not distinguishable by that credential; shared-account use is unsupported,
-not something these tests may claim to detect automatically.
+### B1: selected native qualification profile
 
-The existing [protected-read feasibility inventory](LEAD-PROTECTED-READ.md#platform-feasibility-evidence-versus-proposal)
-names candidate native primitives and their unresolved limits. It is a proposal,
-not an accepted native adapter. In particular its same-account credential proof
-does not establish employee identity, and its Linux lock-state question and
-Windows sign-in/session binding remain qualification obligations. This contract
-does not bless those candidates by repetition or claim they were rerun.
+**PROPOSED selection, not native proof.** Qualify local, distinct computer accounts
+on Ubuntu 24.04 LTS x86-64 with GNOME 46/Wayland, systemd 255, and PolicyKit1;
+and Windows 11 24H2 x64 (build family 26100), local password accounts. This is a
+bounded qualification target, not a statement that those guests exist or a
+support claim for other desktops, remote/domain/Entra/Hello-only accounts, shared
+native credentials or Windows legacy builds. Patched package/build identities
+are frozen in the run manifest, never silently upgraded during a run. New native
+helper code is qualification-only C17 plus the locked CA Python 3.13 environment;
+Windows helper uses Windows SDK 10.0.26100.0, Linux uses distribution GCC 13 and
+libpolkit-gobject-1/libsystemd headers. No new production dependency is adopted.
+
+Ubuntu's package catalog documents the chosen
+[GNOME 46 family](https://packages.ubuntu.com/noble/gnome-shell) and
+[systemd 255 family](https://packages.ubuntu.com/noble/systemd).
+These references verify available API families, not an installed guest's build.
+The package revision, executable hashes and OS image digest are frozen only after
+harness preparation, before requesting run approval. A mismatch stops the run;
+qualifying a different platform requires an explicit contract revision.
+
+**Linux boundary:** a root-owned system service exposes a filesystem Unix
+`SOCK_SEQPACKET` endpoint under `/run/local-connect-authority/`; directory root
+owned, group limited to the disposable test employees, socket 0660. State under
+`/var/lib/local-connect-authority/` is root-only, directory 0700/files 0600;
+no employee-group access to data/keys. Privileged helper root ownership is part
+of the TCB; normal app clients run as employees, never root. Reuse the retained
+SCM_CREDENTIALS probe. Receive bounded frames with `SO_PASSCRED`; reject missing,
+extra/truncated ancillary data, FD passing, identity changes and oversized frames.
+Use kernel sender PID/UID plus held process identity/start time, not JSON identity
+or connection-time credentials alone; prove exit/PID-reuse and passed-handle cases.
+
+Resolve sender to `org.freedesktop.login1` session via `GetSessionByPID`, requiring
+matching UID, local `seat0`, active graphical session, expected boot/session
+identity and unlocked state. Subscribe to session/lock/seat changes and reread at
+admission, after waits and before commit/release. `LockedHint` alone is NOT trusted:
+the systemd interface permits `SetLockedHint`. On the selected GNOME desktop also
+query the genuine session's `org.gnome.ScreenSaver.GetActive`; lost owner, shell
+restart or inconsistent/unknown state denies and invalidates the host session.
+A non-root employee must not be able to clear or spoof these observations into
+an unlocked result while the actual desktop is locked. The explicit attack on
+`SetLockedHint(false)`, ScreenSaver calls, user-bus name replacement and transferred
+handles is a mandatory native gate. If it succeeds, this Linux mechanism FAILS;
+no release, weaker fallback or claim that a second hint proves isolation. Report
+the first defeated observation owner and revise that boundary before proceeding.
+
+Fresh sign-in uses system-bus `org.freedesktop.PolicyKit1.Authority.CheckAuthorization`
+for root-installed action `org.localconnect.owner-authenticate`. Policy pins:
+`allow_any=no`, `allow_inactive=no`, `allow_active=auth_self`; no `*_keep`, implicit
+YES or admin substitution. Subject is the kernel-bound process UID/start identity.
+Before user interaction require a challenge, not already-authorized YES; then
+allow interaction only for the explicit sign-in request through GNOME's native
+agent and require successful non-retained authorization. Root-owned policy/rule
+hashes and PAM account-disable behavior are frozen and tested. No app password
+entry or subprocess `pkexec`/shell escape. Account, session and process are
+rechecked after the dialog; a supplied policy-success Boolean is never accepted.
+See [PolicyKit1 API](https://polkit.pages.freedesktop.org/polkit/eggdbus-interface-org.freedesktop.PolicyKit1.Authority.html),
+[auth_self/retention semantics](https://polkit.pages.freedesktop.org/polkit/polkit.8.html),
+[systemd 255 session API](https://www.freedesktop.org/software/systemd/man/255/org.freedesktop.login1.html),
+and the [GNOME 46 ScreenSaver interface](https://github.com/GNOME/gnome-shell/blob/46.0/data/dbus-interfaces/org.gnome.ScreenSaver.xml).
+These APIs supply the proposed mechanism; their availability does not pass the
+fresh-prompt, current-account or lock-spoof tests.
+
+**Windows boundary:** LocalSystem qualification service, private authority path
+`%ProgramData%\LocalConnect\Authority`, protected DACL allowing only SYSTEM and
+the service SID. Explicit local-only named pipe, `PIPE_REJECT_REMOTE_CLIENTS`,
+`FILE_FLAG_FIRST_PIPE_INSTANCE`, bounded message frames and explicit DACL; never
+default Everyone/anonymous access. Each message must successfully impersonate its
+client, open that thread token and inspect TokenUser SID, TokenSessionId and
+TokenStatistics AuthenticationId; fail closed if impersonation or reversion fails.
+Client uses dynamic security context tracking; pipe PID/process creation identity,
+SID, logon LUID, session, channel and host incarnation bind the request. A token
+query failure must never substitute the service token. See
+[pipe ACLs](https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-security-and-access-rights)
+and [last-message impersonation](https://learn.microsoft.com/en-us/windows/win32/api/namedpipeapi/nf-namedpipeapi-impersonatenamedpipeclient).
+
+A trusted desktop broker uses native `CredUIPromptForWindowsCredentialsW` with
+`CREDUIWIN_SECURE_PROMPT`, no generic/save/admin-enumeration flags, then the
+protected verifier uses `LogonUserW(LOGON32_LOGON_INTERACTIVE)` to authenticate.
+The prompt itself is NOT authentication. Compare verified TokenUser SID to the
+per-request pipe identity; the new authentication token's LUID is not the original
+interactive logon's LUID. Bind the latter from the verified caller token and
+recheck it separately. No account-name equality shortcut. Broker credential
+buffers traverse only the authenticated local channel to the protected verifier,
+are never persisted/logged/dumped, and are zeroed/freed using native APIs on all
+paths. Pin broker binary/ACL and prove request/credential swap denial. Synthetic
+password entry is operator-controlled on the secure desktop; agents never see
+or record it. This password-account qualification does not claim Hello support.
+See [CredUI and buffer handling](https://learn.microsoft.com/en-us/windows/win32/api/wincred/nf-wincred-creduipromptforwindowscredentialsw)
+and [LogonUserW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-logonuserw).
+
+Require `WTSQuerySessionInformationW(WTSSessionInfoEx)` for that token's session:
+active and `WTS_SESSIONSTATE_UNLOCK` only; lock, disconnect, unknown or API failure
+denies. Subscribe to WTS session notifications and reread after every wait and
+before commit/release. Check local account enablement at those checkpoints.
+Per-request impersonation plus fresh sign-in plus current interactive-session
+state are separate checks. Prove inherited/duplicated pipe handles and context
+changes; if the selected APIs cannot distinguish a transferred authority, fail
+qualification instead of claiming an unchanged connection PID proves the sender.
+See [WTS flags and legacy-build caveat](https://learn.microsoft.com/en-us/windows/win32/api/wtsapi32/ns-wtsapi32-wtsinfoex_level1_w).
+
+**Shared host limits:** an individual principal maps to one employee only.
+Privileged OS/root replacement is outside the trusted-computing boundary; an
+ordinary unrelated employee or an unelevated administrator must fail supported
+bootstrap APIs without the valid scoped claim. Sharing credentials is unsupported,
+not automatically detectable. Recreated accounts require explicit controlled
+re-enrollment, never UID/name reuse fallback. Scope qualification to the frozen
+account directory and record this identity-lifetime limitation.
+
+One prompt at a time; queue limit 8, wait deadline 5 seconds, authentication dialog
+deadline 120 seconds. Host session is random 32-byte opaque handle, bound to the
+native person, original interactive session, authenticated channel/process and
+random host incarnation; absolute lifetime 300 seconds, no sliding renewal.
+IPC frames use the same 8192-byte request/4096-byte response bounds as B0-I;
+the Windows broker's separate credential-buffer exchange is capped at 65536 bytes
+and never routed through an ordinary JSON frame. Apply caps before allocation,
+with a 5-second local I/O/store wait deadline; timeout denies before authority
+publication. Fresh sign-in is usable for bootstrap for at most 60 seconds. Use monotonic
+elapsed time and authoritative issuer UTC; backward wall-clock movement or a
+wall/monotonic discrepancy over 30 seconds invalidates pending authentication.
+Forward wall movement cannot extend validity. On lock/logout/disable/role change,
+unknown state or restart invalidate immediately at the next observation; unlocking
+does not revive a handle. No claim of atomicity with independent OS events.
+
+This selection supersedes the older proposal's unselected native candidates
+for this bounded qualification only. It does not qualify the
+[protected-read host gate](LEAD-PROTECTED-READ.md#canonical-host-gate-requirements)
+or expose any custody endpoint. B1's choices are pinned; both-platform success,
+fresh-account verification and Linux lock-spoof resistance remain proof gates.
 
 | Owner | Required boundary in this qualification | Excluded responsibility |
 | --- | --- | --- |
@@ -314,9 +551,10 @@ does not bless those candidates by repetition or claim they were rerun.
 | Existing policy evaluator | Evaluate the existing closed human-operation catalog using host-acquired facts | Becoming a native credential verifier or accepting a machine as an employee |
 | Existing source/custody/runtime owners | Remain unchanged regression references | Being exposed to employee clients during this qualification |
 
-The protected host owns its authority state through one access interface. Its
-physical placement and any authority-only tables/schema must be pinned in the
-subsequent implementation work order. No second custody store or cross-owner SQL
+The protected host owns authority state through one access interface, using
+B0-I's record/transaction ownership and B1's protected service directories.
+Concrete SQL DDL and migration parity are reviewed with the harness/implementation;
+they cannot add new owners or change these invariants. No second custody store or cross-owner SQL
 is permitted. Normal employee processes must be unable to read, replace, restore
 or impersonate protected state/keystore. Test same-user exposure explicitly;
 private filenames or file modes under the employee's own identity are insufficient.
@@ -354,11 +592,9 @@ they are not implemented APIs or approval to run now.
    already have committed; recover its receipt rather than declaring rollback
    across the application boundary or making the claim reusable.
 5. Native sign-in maps a verified person to the existing individual employee,
-   immutable org and current role. Session handles are opaque, host-issued and
-   bound to person, native interactive session, channel and host incarnation.
-   Possession of a copied handle is insufficient. Pin absolute session lifetime,
-   fresh-verification window, clock behavior and finite request/queue limits
-   before acceptance; no sliding/default-unbounded session.
+   immutable org and current role. Session handles and finite session/freshness,
+   queue, frame and clock limits use B1's single profile above. Possession of a
+   copied handle is insufficient; no sliding/default-unbounded session.
 6. Logout, disablement, role change, expiry, lock and restart deny further
    interactive use. Check after waits and before any response. Test both orders
    of revocation versus session issuance/validation. A locked human session does
@@ -379,12 +615,102 @@ response bounds and owner death. That proposed gate is not implemented here.
 
 ## Proof matrix and executable acceptance gates
 
-**BLOCKER B2 — reproducible run pin:** before running, record disposable environment
-and native account ownership, exact scripts/revisions, permitted setup/teardown,
-selected B0-I/B1 mechanisms, session/freshness/capacity/timeout values and secret-free
-evidence schema. Pin all numeric bounds with boundary assertions in that revision.
-Native account, service, dependency or VM setup requires its own explicit run
-authority. This draft authorizes none on Juan's workstation or any other host.
+### B2: disposable qualification work order and freeze protocol
+
+**Contract pin, no run authorization.** Prepare the harness in a separately
+accepted implementation PR after review of this revision. Proposed owned paths
+(not files claimed to exist): `qualification/owner_authority/controller.py`,
+`licensing_fixture.py`, `linux_peer.c`, `windows_peer.c`, `native_broker.c`,
+`cases.json`, `run.schema.json`, `result.schema.json`, and `README.md`. The harness
+must call the same proposed verifier/adapter boundary on each platform, with the
+retained Linux credential probe as the regression reference. It is not a new
+workflow engine or production issuer. CI may test synthetic wire/ledger cases;
+native desktop/account proof has its own run authorization.
+
+**Environments:** two new disposable VM overlays, one per selected target above,
+cloned from operator-approved, shut-down images. Do not use a live employee desktop,
+reset an existing VM password, inspect existing accounts or assume prior Windows
+access. Each guest contains synthetic principals `li_owner`, `li_other` and
+`li_admin_test` (an unrelated administrator), plus its protected service. Guest
+local console only, no shared clipboard/folders, no mail/database/cloud secrets,
+no bridged NIC or production registry; default-deny guest egress. The licensing
+fixture runs inside each guest over loopback TLS using ephemeral test keys/CA;
+no production keyring mutation or runtime trust override. Freeze the baseline
+before account/service setup; setup and teardown are limited to these overlays.
+If an image or the operator's native-password entry is unavailable, record STOP;
+no host change, password recovery or Linux mock substitution.
+
+**Freeze-before-run sequence:**
+
+1. Review/accept this contract, then separately authorize building the bounded
+   harness. Independently review its exact commit and wire/negative fixtures.
+2. Create a secret-free `run.json` in durable evidence with full contract/harness
+   commits, executable/fixture/policy hashes, base-image SHA-256 and overlay IDs,
+   OS build/kernel, GNOME/systemd/polkit/PAM and compiler/SDK package revisions,
+   locked Python dependency digest, service/principal aliases, trust policy,
+   isolation/network policy, exact setup/run/teardown argv and evidence paths.
+   These observed content hashes cannot truthfully be invented before the files
+   or guest exist. No mutable `latest`, unresolved variable or missing hash is
+   runnable; a hash-only preparation receipt is not qualification.
+3. Send that frozen manifest and bounded setup/run/teardown scope for oversight
+   and Juan's explicit native-run authorization. This review-only revision does
+   not authorize provisioning or generating passwords/keys now.
+4. On the approved fresh overlays, freeze image/package state and execute only
+   the reviewed entrypoints. Controller interface is pinned as
+   `controller.py preflight --manifest <run.json>`,
+   `controller.py run --manifest <run.json> --platform linux|windows`, and
+   `controller.py collect --manifest <run.json>`. `<run.json>` resolves to one
+   approved absolute path in the receipt; no shell interpolation or guessed path.
+   Preflight validates every frozen hash, guest identity and deny-egress rule
+   before any native setup. A mismatch produces STOP without executing the run.
+5. Collect/review before teardown. Remove only the specifically authorized test
+   overlays and service/accounts inside them; preserve durable evidence. Operator
+   approval of teardown names the exact overlays, never a wildcard or host path.
+
+**Finite cases and verdicts:** execute every proof-matrix row below on each
+platform; ordinary lifecycle and boundary fixtures use the same public synthetic
+identities. Test min-1/min/max/max+1 for every declared bound, false/zero/empty/
+unknown enum, mixed valid-invalid and individually isolated corruptions. Required
+negative cases include ordinary/offline licence without claim; invalid signature,
+wrong purpose/org; simultaneous initial installations; revoked/expired claim;
+changed native/key/payload replay; service down before send; signed reply lost
+after issuer commit; issuer and host restart; restore attempting claim reuse;
+cancellation/timeout and native session change while waiting; direct file/key
+access; transferred handles; spoofed Linux lock state; disabled/recreated account.
+
+Instrument exact barriers at native validation, issuer lookup/transition/commit,
+local pending/receipt/admin/audit writes, local commit and result release. For
+each two-way race exercise both winners, three repetitions per order using
+separate processes and explicit barriers, no sleeps as proof. Inject an SQL
+failure between each row write and terminate the process before/after each commit.
+Assertions inspect both owners through their supported interfaces: no partial
+admin state, no duplicate consumption or replacement owner, same replay receipt,
+no publication while denied, and no hidden licensing call during subsequent
+synthetic host operations. Barrier/test interfaces exist only in the harness.
+No lead/custody read or live workflow is exercised to prove this profile.
+
+Case deadline 180 seconds, platform budget 3600 seconds, at most one guest test
+at a time. A watchdog timeout preserves evidence and fails that case; no unbounded
+retry. Overall result PASS only if every mandatory case on both native targets
+passes with assertions and no unreviewed environment drift. FAIL for an observed
+invariant violation; STOP for missing access/approval/environment; neither counts
+as pass. No automatic rerun after a security or data-integrity failure: reproduce,
+isolate the first losing owner, explain it and fix there in a separately reviewed
+harness/adapter delta. No production adoption follows a green packet.
+
+**Evidence:** save `run.json`, sanitized per-case JSONL, native result codes,
+barrier/commit receipts, deny-egress counters, fixture/adapter digests and a
+SHA-256 manifest outside worktrees under
+`~/Desktop/codex-evidence/connect-automate/lead-owner-authority-qualification/<run-id>/`.
+Directories 0700/files 0600 on the evidence owner, equivalent guest ACLs. Result
+schema is closed: contract/harness/run IDs, case/platform, outcome PASS/FAIL/STOP,
+expected and actual code, assertion IDs, public synthetic fixture digest, monotonic
+duration and artifact hashes. Never capture credential dialogs/keystrokes, private
+keys, native account names beyond fixture aliases, raw source content or memory
+dumps. Synthetic fixture envelopes may be retained; secrets may not. Keep packets
+through independent review; removal requires operator instruction. No evidence
+exists yet for this new profile. B2's plan is pinned; hashes and approval of the
+later executable freeze are a distinct execution gate, not an unspecified plan.
 
 | Required proof | Decisive assertions; evidence to retain |
 | --- | --- |
@@ -409,12 +735,12 @@ outcomes as well as successes; do not count a missing test environment as a pass
 
 Acceptance sequence:
 
-- B0 trust source and first-launch online dependency selected through the relayed
-  operator decisions above; B0-I
-  issuer mechanism, B1 native mechanisms and B2 run pins closed in a revised
-  contract. Agree the licensing-side owner/work order and preserve unchanged v1
-  behavior. Report any additional activation/connectivity or recovery tradeoff before
-  acceptance; do not silently add manual key copying or self-enrollment.
+- Review B0-I's specified interface/retention additions, B1's selected native
+  profile and B2's bounded freeze/run sequence at this exact revision. Licensing
+  owner accepts its own work order separately; existing licence behavior remains
+  unchanged. No further product or connectivity change is implied by earlier
+  direction. Harness preparation and the later frozen native run need their own
+  explicit authorization, as specified above.
 - Oversight review of the exact revision, explicit operator acceptance of that
   bounded work/run order, and contract CI/connector/merge gates. Docs acceptance
   alone does not authorize unspecified account/service setup.
@@ -436,8 +762,9 @@ change belongs in this contract PR.
 
 Future qualification evidence belongs outside worktrees in the durable evidence
 root, with private directory/file permissions and equivalent native ACL proof.
-Its precise runnable harness/files are B2 acceptance inputs, not an instruction
-to add placeholder code now. Stop before implementation or running any probe.
+Its proposed files, controller entrypoints and exact freeze protocol are pinned
+under B2. Their future content hashes and the approved guest/setup manifest must
+be reviewed before a run; no placeholder code or probe is added by this PR.
 
 Non-scope: production signing keys, license issuance or issuer/service changes,
 real users/credentials, installed host changes, receiver/transport
@@ -465,7 +792,14 @@ accepted text or executable files.
 Run documentation scope/link/citation/whitespace checks only. Do not rerun code
 tests or represent historical primitive/custody results as native sign-in proof.
 
-**NOT DONE:** B0-I claim lifecycle/interface, B1 native mechanisms, B2 exact run pins,
-oversight/exact-revision acceptance, qualification, integrated enforcement and
-all later V1b activation remain open. Publish this contract-only draft and stop
-for review. No completion, adoption or implementation authority is implied.
+**DONE for contract preparation:** B0-I wire/ownership/recovery/retention profile,
+B1 native API and platform selection, and B2 bounded disposable harness/freeze/run
+plan are specified for independent review. They are proposals, not tested behavior.
+
+**NOT DONE for execution:** licensing-side acceptance/implementation and signed
+endpoint publication, oversight/connector review of this revision, Juan's
+exact-revision acceptance, separately authorized harness implementation and
+hash-frozen native run, qualification, integrated enforcement and later V1b
+activation. Linux lock resistance may fail qualification and remains an explicit
+safety gate. Publish the documentation-only revision and stop for review; no
+merge, production claim or executable authority is implied.
