@@ -177,9 +177,24 @@ No private signing key belongs in the app or this qualification session.
 identity, linked entitlement identity, immutable organization/business, unique
 claim identity, issuance/not-before/expiry and revocation/reissue generation.
 It does not name an installation, host key or native person that may not yet
-exist. Purchase-time and hand-signed issuance cannot require a prior host-key
-handshake or extra user setup. The issuer authorizes the business; arbitrary
-setup text cannot change that business.
+exist. The licensing owner issues the online owner claim only during successful
+first-launch licence activation, not at purchase. A Friday purchase followed by
+a Monday installation therefore starts claim validity on Monday's activation.
+The claim is delivered with that activation response; no separate bootstrap
+claim-fetch or host-key handshake is introduced. The 86400-second cap starts at
+activation issuance, as the existing first-launch proposal describes at
+`local-connect-licensing/docs/contracts/LICENCE-SERVICE.md:26-29` (proposal only).
+The issuer authorizes the business; arbitrary setup text cannot change it.
+
+For an unconsumed claim that expires after activation, the user message is:
+"Your owner setup authorization expired. Resume licence activation to obtain a
+fresh authorization." That explicit normal-activation action verifies entitlement
+and business and atomically supersedes the unconsumed claim under the existing
+licensing-owner generation rule; no key copying or admin-enrollment command.
+An unresolved consume is reconciled first with its original binding: do not
+reissue or discard pending state because its response was lost. If consumption
+already committed, keep that owner and use controlled recovery, never a fresh
+claim to replace it. Expiry is not an invalid-licence message.
 
 **Consumption operation:** at first launch the protected host supplies its
 installation/host identity and proves possession of its protected key, alongside
@@ -220,9 +235,16 @@ response was lost, preserve the bound pending operation and explicitly report
 its unresolved status; unavailable is not evidence that nothing was consumed.
 Recovery replays that same operation, never a replacement claim or owner.
 
-Do not assume the licensing service already supports companion claims for
-hand-signed licences: qualifying that issuance path is part of B0-I and requires
-its own accepted licensing change. No claim means `OWNER_AUTHORIZATION_REQUIRED`;
+A hand-signed customer obtains a companion claim only through explicit online
+licence activation with that licence, after the licensing owner verifies the
+issued entitlement and business. The owner claim is issued at that activation,
+not with an earlier hand-signing/purchase date; the hand-signed licence itself
+stays unchanged. A fully disconnected customer has no owner-bootstrap path here.
+Do not assume the service implements this offline-entitlement activation path:
+it needs separate licensing acceptance and qualification. Until available, keep
+`OWNER_AUTHORIZATION_REQUIRED` with "This licence is valid; owner setup requires
+online activation and a business-scoped owner authorization." No local flag or
+manual key-copy fallback is permitted. No claim means `OWNER_AUTHORIZATION_REQUIRED`;
 a claim with unavailable online consumption means `LICENSING_UNAVAILABLE`.
 These outcomes derive from verified inputs and availability, not a guessed
 offline label or issuer-key naming convention. **C3 correction:** the same prior
@@ -299,12 +321,12 @@ order; this Markdown defines their conformance obligations, not generated code.
 | Type | Closed required fields and constraints |
 | --- | --- |
 | `ActivationManifest` payload | `version` const `owner-bootstrap/1`; `purpose` const `owner-bootstrap-activation`; `origin` HTTPS origin parsed as a URI, no userinfo/path/query/fragment, port 443 outside the isolated test build; `claim_key_ids`, `receipt_key_ids` arrays of 1..16 unique bounded key identifiers, all present in the installed keyring; `issued_at`, `expires_at` fixed UTC, ordered validity at most 2592000 seconds. Signed envelope must use an installed release-authority key, not an arbitrary pack key. No active manifest means unavailable. |
-| `OwnerClaim` payload | `version` const `owner-bootstrap/1`; `purpose` const `owner-bootstrap`; `claim_id`, `organization_id`, `entitlement_id` UUIDv4; `generation` integer 1..2147483647; `issued_at`, `not_before`, `expires_at` UTC `YYYY-MM-DDTHH:MM:SSZ`. Enforce `issued_at <= not_before < expires_at`, at most 86400 seconds of validity. No installation, host key or native identity at issuance. |
+| `OwnerClaim` payload | `version` const `owner-bootstrap/1`; `purpose` const `owner-bootstrap`; `claim_id`, `organization_id`, `entitlement_id` UUIDv4; `generation` integer 1..2147483647; `issued_at`, `not_before`, `expires_at` UTC `YYYY-MM-DDTHH:MM:SSZ`. Enforce `issued_at <= not_before < expires_at`, at most 86400 seconds of validity starting at first-launch activation issuance, never purchase. No installation, host key or native identity at issuance. |
 | Signed envelope | `version` const `owner-bootstrap/1`; `key_id` ASCII identifier matching `[a-z0-9][a-z0-9._-]{0,63}`; `payload_base64url` canonical unpadded base64url 1..2048 chars; `signature_base64url` canonical encoding of 64 bytes. Payload must satisfy its purpose-specific schema. `key_id` must be permitted for this purpose in the trusted activation manifest. |
 | `ConsumeBinding` | `version` const `owner-bootstrap/1`; `operation_id`, `installation_id`, `host_id`, `organization_id`, `claim_id`, `entitlement_id` UUIDv4; `generation` as claim; `claim_sha256`, `principal_commitment`, `initialization_sha256` lowercase hexadecimal SHA-256; `installation_public_key` canonical base64url of 32 Ed25519 public bytes. No native account name, password or lead data. |
 | `ConsumeRequest` | `version` const `owner-bootstrap/1`, `owner_claim` signed envelope, `binding` ConsumeBinding, `attempt_id` UUIDv4, `requested_at` fixed UTC timestamp, `installation_signature` canonical base64url of 64 bytes. No extra app, billing or document fields. |
 | `ConsumedReceipt` payload | `version` const `owner-bootstrap/1`; `purpose` const `owner-bootstrap-receipt`; `state` const `CONSUMED`; `receipt_id` UUIDv4; `binding` exact ConsumeBinding; `consumed_at` fixed UTC timestamp. Wrap in the signed envelope above. |
-| Refusal | `version` const `owner-bootstrap/1`; `code` enum `OWNER_AUTHORIZATION_INVALID`, `OWNER_AUTHORIZATION_EXPIRED`, `OWNER_AUTHORIZATION_REVOKED`, `OWNER_BINDING_CONFLICT`, `LICENSING_UNAVAILABLE`; `operation_id` UUIDv4; `completion` enum `NOT_COMMITTED` or `UNKNOWN`. Do not return free-form upstream text, claim bytes or account data. Never treat an unsigned refusal as proof of non-consumption after a timeout. |
+| Refusal | `version` const `owner-bootstrap/1`; `code` enum `OWNER_AUTHORIZATION_INVALID`, `OWNER_AUTHORIZATION_EXPIRED`, `OWNER_AUTHORIZATION_REVOKED`, `OWNER_BINDING_CONFLICT`, `OWNER_CLOCK_SKEW`, `LICENSING_UNAVAILABLE`; `operation_id` UUIDv4; `completion` enum `NOT_COMMITTED` or `UNKNOWN`. Do not return free-form upstream text, claim bytes or account data. Never treat an unsigned refusal as proof of non-consumption after a timeout. |
 
 The prefixes are `local-connect.owner-activation.v1`,
 `local-connect.owner-claim.v1`, `local-connect.owner-consume.v1`,
@@ -314,8 +336,12 @@ canonical object containing `version`, `binding`, `attempt_id`, `requested_at`
 with the consume prefix. Each explicit recovery uses a fresh attempt/time and
 signature over the same durable binding; a stored receipt or copied unsigned
 result cannot replace proof verification. Require request time within 60 seconds
-of issuer UTC on every attempt, including receipt lookup. This proves a recently
-signed request, not that a captured signed request cannot be forwarded within
+of issuer UTC on every attempt, including receipt lookup. The boundary is
+inclusive: offsets -60 through +60 seconds are eligible; a larger absolute offset
+returns only `OWNER_CLOCK_SKEW`, completion `NOT_COMMITTED`, before ledger lookup
+or mutation. This completion describes this refused attempt, not whether a prior
+ambiguous consume committed. It must not clear that prior pending binding.
+This proves a recently signed request, not that a captured signed request cannot be forwarded within
 that window: such forwarding may only return the same bound receipt, never alter
 or create a second owner. No prior online challenge is needed. The claim binds
 the business; the first valid consumption binds the installation/key. The issuer never receives the local principal record:
@@ -336,8 +362,10 @@ before sending and cannot change on recovery. An attempt with a different key,
 missing signature or stale proof cannot recover a receipt; possession of a
 returned receipt is never sufficient to publish local authority.
 
-**Issuer transaction and replay:** verify envelope/purpose, request shape,
-current attempt time and installation signature before any ledger lookup.
+**Issuer transaction and replay:** verify envelope/purpose, request shape and
+installation signature first; then apply the attempt-time rule and its sole
+`OWNER_CLOCK_SKEW` outcome, all before any ledger lookup. An invalid signature
+cannot elicit an authenticated clock-skew classification.
 The single request validator compares binding claim/org/entitlement/generation
 and claim digest against the verified signed claim; no independently valid but
 mismatched pair may reach the ledger. In one durable writer transaction, serialize by
@@ -374,12 +402,14 @@ after dispatch is `UNKNOWN`, never a definite rollback. Existing licence checks 
 | Verified `CONSUMED` receipt | Verify issuer purpose/key/signature, exact binding and consumed_at within the signed claim validity interval, then recheck fresh native identity/state and claim validity before local commit. Persist receipt and owner/admin/audit atomically. A receipt alone never creates authority for a different local person. |
 | `OWNER_AUTHORIZATION_REQUIRED` | No companion claim, including a hand-signed licence alone. Licence remains valid; no bootstrap request or admin write. |
 | `OWNER_AUTHORIZATION_INVALID`, `OWNER_AUTHORIZATION_EXPIRED`, `OWNER_AUTHORIZATION_REVOKED`, `OWNER_BINDING_CONFLICT` | Deterministic refusal; no admin publication. Do not substitute another person/claim automatically. |
+| `OWNER_CLOCK_SKEW` | Authenticated, otherwise well-formed attempt outside the 60-second clock window; completion `NOT_COMMITTED` for this attempt. User message: "Your computer clock differs from the licensing service. Correct the clock, then retry owner setup." Preserve any pending operation/receipt and obtain fresh native verification. After clock correction, sign a fresh attempt/time for the same operation, claim, key and initialization binding; do not mint another owner or silently change the clock. Apply this recovery to receipt lookup as well as first consumption. |
 | `LICENSING_UNAVAILABLE` | Missing endpoint, TLS/transport/timeout, stale/unverifiable response or unavailable service. Preserve any pending operation with completion `UNKNOWN` if dispatch could have occurred. Tell the user first-launch setup could not complete; offer only explicit recovery of that operation. |
 | `BOOTSTRAP_BUSY`, `NATIVE_AUTH_UNAVAILABLE`, `NATIVE_AUTH_DENIED`, `NATIVE_SESSION_INACTIVE`, `AUTHORITY_CORRUPT` | Local-only closed outcomes. No licensing call until native proof is valid and no owner authority on refusal. Shared credentials are unsupported; do not pretend to detect them from a username. |
 
 The issuer may use HTTP 200 for a consumed receipt, 400 for malformed requests,
 403 for an invalid/revoked claim, 409 for binding conflict, 410 for expired new
-consumption, 503 for unavailable/recovery-locked state. HTTP success is not
+consumption, 422 with `OWNER_CLOCK_SKEW` for the clock-window refusal, and 503 for
+unavailable/recovery-locked state. HTTP success is not
 consumption proof without the bound signed receipt. Oversize/partial/mixed or
 unknown-version replies fail closed. Replays after expiry may recover evidence,
 but expired native proof or claim never permits local publication; retain the
@@ -450,14 +480,43 @@ matching UID, local `seat0`, active graphical session, expected boot/session
 identity and unlocked state. Subscribe to session/lock/seat changes and reread at
 admission, after waits and before commit/release. `LockedHint` alone is NOT trusted:
 the systemd interface permits `SetLockedHint`. On the selected GNOME desktop also
-query the genuine session's `org.gnome.ScreenSaver.GetActive`; lost owner, shell
-restart or inconsistent/unknown state denies and invalidates the host session.
-A non-root employee must not be able to clear or spoof these observations into
-an unlocked result while the actual desktop is locked. The explicit attack on
-`SetLockedHint(false)`, ScreenSaver calls, user-bus name replacement and transferred
-handles is a mandatory native gate. If it succeeds, this Linux mechanism FAILS;
-no release, weaker fallback or claim that a second hint proves isolation. Report
-the first defeated observation owner and revise that boundary before proceeding.
+query the session's `org.gnome.ScreenSaver.GetActive` using this exact candidate
+connection path. The root service derives the decimal UID from kernel credentials
+and root system-bus login1 session data, then constructs only
+`unix:path=/run/user/<UID>/bus`. Do not use `DBUS_SESSION_BUS_ADDRESS`, the client's
+environment/address, autolaunch or discovery. Connect as root with
+`g_dbus_connection_new_for_address_sync`, authentication-client and message-bus
+flags, EXTERNAL authentication, cancellable under B1's local I/O deadline; no
+anonymous mechanism or switch to an employee helper on failure. If the selected
+bus denies root access, deny with `NATIVE_AUTH_UNAVAILABLE` and record that
+qualification blocker. The [GIO constructor](https://docs.gtk.org/gio/ctor.DBusConnection.new_for_address_sync.html)
+defines the explicit-address client; it is not a lock oracle.
+
+The `/run/user/<UID>` directory and bus socket are employee-owned on the target,
+as reported in [oversight's native observation](https://github.com/canfieldjuan/connect-automate/pull/72#discussion_r4437617899),
+not newly probed here. The employee can replace the socket and run a fake bus.
+Matching socket ownership, `SO_PEERCRED` UID, a bus GUID or a well-known name does
+not distinguish that server from the intended bus. A root connection to this
+path is therefore an unqualified observation, not proof of trusted lock state.
+Lost connection/name owner, shell restart, endpoint replacement or unknown state
+must invalidate the host session; do not silently reconnect and trust a new bus.
+
+Run the socket-replacement/fake-bus attack as the FIRST Linux native case, before
+normal bootstrap, issuer effects or the remaining test budget. In the isolated
+guest, while the actual desktop is locked, the employee unlinks/rebinds its bus
+socket, serves a fake message bus and ScreenSaver service returning unlocked,
+and also tries clearing `LockedHint`. Test replacement before the first root
+connection and after an established connection drops; bus-name replacement alone
+is insufficient. The service must deny every forged-unlocked result. Retain the
+actual locked-console observation and endpoint/identity evidence. If the fake bus
+can authorize the request, report FAIL to Juan with the first defeated owner
+(the root service's user-bus/lock observation boundary), preserve evidence and
+stop all dependent Linux/native work. No weaker fallback, alternate hint, proxy
+check or reset-and-continue is authorized. A connection-denied result alone is
+not a platform pass: the later genuine unlocked positive case must also succeed.
+These are mandatory proof obligations, not a claim of a proven defense against
+socket replacement. Other attacks still cover `SetLockedHint(false)`, ScreenSaver
+calls, bus-name replacement and transferred handles.
 
 Fresh sign-in uses system-bus `org.freedesktop.PolicyKit1.Authority.CheckAuthorization`
 for root-installed action `org.localconnect.owner-authenticate`. Policy pins:
@@ -667,16 +726,26 @@ no host change, password recovery or Linux mock substitution.
    overlays and service/accounts inside them; preserve durable evidence. Operator
    approval of teardown names the exact overlays, never a wildcard or host path.
 
-**Finite cases and verdicts:** execute every proof-matrix row below on each
-platform; ordinary lifecycle and boundary fixtures use the same public synthetic
-identities. Test min-1/min/max/max+1 for every declared bound, false/zero/empty/
+**Finite cases and verdicts:** the FIRST Linux native case is B1's socket-replacement
+and fake-user-bus gate, including initial connect and reconnect while the real
+desktop stays locked. Failure is sent to Juan and stops dependent work before
+any normal bootstrap/consumption or the remaining Linux matrix. Then, only if
+that gate is not defeated, execute every proof-matrix row below on each platform.
+Ordinary lifecycle and boundary fixtures use the same public synthetic identities. Test min-1/min/max/max+1 for every declared bound, false/zero/empty/
 unknown enum, mixed valid-invalid and individually isolated corruptions. Required
 negative cases include ordinary/offline licence without claim; invalid signature,
 wrong purpose/org; simultaneous initial installations; revoked/expired claim;
 changed native/key/payload replay; service down before send; signed reply lost
 after issuer commit; issuer and host restart; restore attempting claim reuse;
 cancellation/timeout and native session change while waiting; direct file/key
-access; transferred handles; spoofed Linux lock state; disabled/recreated account.
+access; transferred handles; replaced user-bus socket/fake server and spoofed
+Linux lock state; disabled/recreated account. Issuance fixtures must include a
+purchase more than 86400 seconds before first launch, valid activation-time
+issuance, and an unconsumed claim expiring after activation followed by explicit
+activation renewal. Clock fixtures use -61/-60/-59/0/+59/+60/+61 seconds for both
+new consumption and pending-receipt lookup: only the out-of-window cases return
+`OWNER_CLOCK_SKEW`/`NOT_COMMITTED`, no ledger writes, prior ambiguity retained;
+clock correction and a fresh signed attempt recover the same operation/binding.
 
 Instrument exact barriers at native validation, issuer lookup/transition/commit,
 local pending/receipt/admin/audit writes, local commit and result release. For
@@ -756,8 +825,10 @@ Acceptance sequence:
 This PR changes only this proposed contract and the receiver roadmap's completed
 V1a/next-work pointer. It preserves the entire accepted vertical plan and V1a
 work order, all source/tests, schemas, dependency pins, workflows and runtime
-configuration. The existing malformed `handoff_id` negative-test gap noted on
-PR #71 stays deferred until that test file is next touched; no incidental test
+configuration. The non-blocking malformed-refusal, activation-manifest renewal
+and failed-PC recovery questions from this review are deferred to [issue #73](https://github.com/canfieldjuan/connect-automate/issues/73),
+not resolved or implemented here. The existing malformed `handoff_id`
+negative-test gap noted on PR #71 stays deferred until that test file is next touched; no incidental test
 change belongs in this contract PR.
 
 Future qualification evidence belongs outside worktrees in the durable evidence
