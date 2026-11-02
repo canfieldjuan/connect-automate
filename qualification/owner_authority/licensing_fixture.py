@@ -249,13 +249,18 @@ class IssuerFixture:
             row = db.execute("SELECT 1 FROM consumptions WHERE claim_id=?", (claim_id,)).fetchone()
             if row is not None:
                 return "CONSUMED"
-            changed = db.execute("UPDATE claims SET state='REVOKED' "
-                                 "WHERE claim_id=? AND state='ACTIVE'",
-                                 (claim_id,)).rowcount
-            if changed:
+            result = db.execute("UPDATE claims SET state='REVOKED' "
+                                "WHERE claim_id=? AND state='ACTIVE' RETURNING state",
+                                (claim_id,)).fetchone()
+            if result is not None:
                 checkpoint(self.hook, "revocation_write", db)
                 self._journal(db, "REVOKE", claim_id)
-            return "REVOKED"
+            else:
+                result = db.execute("SELECT state FROM claims WHERE claim_id=?",
+                                    (claim_id,)).fetchone()
+                if result != ("REVOKED",):
+                    raise Refused("OWNER_BINDING_CONFLICT")
+            return result[0]
 
     def reissue(self, claim_id, replacement, now):
         claim_id = TypeAdapter(p.UuidV4).validate_python(claim_id)
