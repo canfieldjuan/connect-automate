@@ -1221,3 +1221,93 @@ def test_stored_receipt_must_verify_on_replay(tmp_path):
         issuer.consume(wire.request(claim), lambda: NOW)
     issuer.hook = None
     assert issuer.consume(wire.request(claim), lambda: NOW) == receipt
+
+
+@pytest.mark.parametrize("first", [0, 1])
+@pytest.mark.parametrize("repeat", range(3))
+def test_same_pending_recovery_race_commits_one_identical_receipt(tmp_path, first, repeat):
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    claim = issuer.issue(wire.claim(), START)
+    host = wire.host(tmp_path / "host", create=True)
+    host.prepare(claim, uid(4), observation, NOW)
+    with issuer_service(wire, issuer.root, clients=2) as (connections, inspect):
+        with host_worker(wire, host.root, claim, connections[first],
+                         pause="publish_writer") as leader:
+            leader[1].set()
+            assert leader[3]() == ("paused", "publish_writer")
+            with host_worker(wire, host.root, claim, connections[1 - first],
+                             pause="publish_before_writer") as follower:
+                follower[1].set()
+                assert follower[3]() == ("paused", "publish_before_writer")
+                follower[2].set()
+                leader[2].set()
+                assert leader[3]()[1]["code"] == follower[3]()[1]["code"] == "COMMITTED"
+        assert inspect()["calls"] == 2
+        assert inspect()["receipt_sha256"] == host.snapshot()["receipt_sha256"]
+    assert [host.snapshot()[k] for k in ("pending", "receipts", "admins", "audit")] == [1] * 4
+    assert issuer.snapshot()["consumptions"] == 1
+
+
+@pytest.mark.parametrize("point", ["prepare_writer", "prepare_before_commit"])
+def test_prepare_rechecks_synthetic_identity_after_waits(tmp_path, point):
+    from qualification.owner_authority.licensing_fixture import Refused
+
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    claim = issuer.issue(wire.claim(), START)
+    current = [observation()]
+    def hook(name, db):
+        if name == point:
+            current[0] = observation(active=False)
+    host = wire.host(tmp_path / "host", create=True, hook=hook)
+    with pytest.raises(Refused, match="NATIVE_SESSION_INACTIVE"):
+        host.prepare(claim, uid(4), lambda: current[0], NOW)
+    assert host.snapshot()["pending"] == 0
+
+
+@pytest.mark.parametrize("field", ["principal", "operation", "receipt"])
+def test_cached_commit_corruption_never_releases_success(tmp_path, field):
+    from qualification.owner_authority.licensing_fixture import FixtureCorrupt
+
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    claim = issuer.issue(wire.claim(), START)
+    def hook(name, db):
+        if name == "publish_after_commit":
+            if field == "principal":
+                db.execute("UPDATE admins SET principal_commitment=?", ("d" * 64,))
+            elif field == "operation":
+                db.execute("PRAGMA foreign_keys=OFF")
+                db.execute("UPDATE audit SET operation_id=?", (uid(20),))
+            else:
+                raw = json.loads(db.execute("SELECT envelope FROM receipts").fetchone()[0])
+                raw["signature_base64url"] = b64(b"\0" * 64)
+                db.execute("UPDATE receipts SET envelope=?", (p.canonical(raw),))
+    host = wire.host(tmp_path / "host", create=True, hook=hook)
+    host.prepare(claim, uid(4), observation, NOW)
+    assert host.bootstrap(lambda raw: issuer.consume(raw, lambda: NOW),
+                          observation, lambda: NOW).committed
+    expected = p.ProtocolInputError if field == "receipt" else FixtureCorrupt
+    with pytest.raises(expected):
+        host.bootstrap(lambda _: pytest.fail("cached corruption called issuer"),
+                        observation, lambda: NOW)
+
+
+@pytest.mark.parametrize("seconds", [-61, 61])
+def test_clock_skew_on_received_receipt_keeps_pending(tmp_path, seconds):
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    claim = issuer.issue(wire.claim(), START)
+    host = wire.host(tmp_path / "host", create=True)
+    host.prepare(claim, uid(4), observation, NOW)
+    clock = [NOW]
+    def consume(raw):
+        reply = issuer.consume(raw, lambda: NOW)
+        clock[0] += timedelta(seconds=seconds)
+        return reply
+    result = host.bootstrap(consume, observation, lambda: clock[0])
+    assert result.code == "OWNER_CLOCK_SKEW" and not result.committed
+    assert host.snapshot()["pending"] == 1 and host.snapshot()["admins"] == 0
+    assert host.bootstrap(lambda raw: issuer.consume(raw, lambda: NOW),
+                          observation, lambda: NOW).committed
