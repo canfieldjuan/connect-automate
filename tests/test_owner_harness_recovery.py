@@ -501,6 +501,8 @@ def test_new_consume_refuses_revocation_and_copied_claim_with_another_key(tmp_pa
     claim = revoked.issue(wire.claim(), START)
     assert revoked.revoke(uid(1)) == "REVOKED"
     before = revoked.snapshot()
+    assert revoked.revoke(uid(1)) == "REVOKED"
+    assert revoked.snapshot() == before
     assert p.parse_refusal(revoked.consume(wire.request(claim), lambda: NOW)).code == (
         "OWNER_AUTHORIZATION_REVOKED")
     assert revoked.snapshot() == before
