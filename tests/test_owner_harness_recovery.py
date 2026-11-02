@@ -1472,3 +1472,6 @@ def test_different_signed_stored_receipt_is_not_overwritten_or_reported_as_this_
     with pytest.raises(FixtureCorrupt, match="conflicting local receipt"):
         host.bootstrap(interleaved, observation, lambda: NOW)
     assert host.snapshot() == before[0] and issuer.snapshot()["consumptions"] == 1
+    assert host.bootstrap(lambda _: pytest.fail("conflict recovery dispatched"),
+                          observation, lambda: NOW).committed
+    assert host.snapshot() == before[0]
