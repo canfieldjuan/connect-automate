@@ -2,6 +2,7 @@
 
 import importlib
 import json
+import subprocess
 import sys
 from copy import deepcopy
 from pathlib import Path
@@ -223,3 +224,15 @@ def test_models_are_revalidated_on_serialization_and_no_io(monkeypatch):
                         (socket, "socket"), (sqlite3, "connect")]:
         monkeypatch.setattr(owner, name, forbidden)
     assert p.parse_packet(p.canonical(fixture()), "result").qualification_pass is False
+
+
+@pytest.mark.parametrize("kind", ["run", "result"])
+def test_generated_schema_bytes_survive_autocrlf_checkout(tmp_path, kind):
+    """Exercise Git's artifact owner, not a newline-normalizing reader."""
+    relative = "qualification/owner_authority/" + kind + ".schema.json"
+    subprocess.run(
+        ["git", "-C", str(ROOT), "-c", "core.autocrlf=true", "-c", "core.eol=crlf",
+         "checkout-index", "--prefix=" + tmp_path.as_posix() + "/", "--", relative],
+        check=True, capture_output=True,
+    )
+    assert (tmp_path / relative).read_bytes() == protocol().schemas()[kind + ".schema.json"]

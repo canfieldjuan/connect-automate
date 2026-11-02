@@ -1,2 +1,4 @@
 # Fixtures are byte-exact parser/signature inputs on every checkout platform.
 tests/fixtures/** -text
+# Derived schemas are also byte-exact drift inputs on every checkout platform.
+qualification/owner_authority/*.schema.json -text
