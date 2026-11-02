@@ -905,7 +905,9 @@ def test_synthetic_freshness_both_boundaries(tmp_path, age, valid):
 @pytest.mark.parametrize("changed", [{"evidence_class": "NATIVE_QUALIFICATION"},
     {"qualification_pass": True}, {"qualification_pass": 0}, {"active": 0},
     {"authority_generation": False}, {"authority_generation": 0},
-    {"authority_generation": 2147483648}, {"principal_ref": ""}, {"observed_at_ns": False}])
+    {"authority_generation": 2147483648}, {"principal_ref": ""}, {"observed_at_ns": False},
+    {"authenticated_at_ns": -1}, {"authenticated_at_ns": 9223372036854775808},
+    {"observed_at_ns": -1}, {"observed_at_ns": 9223372036854775808}])
 def test_observation_overrides_refuse_before_any_host_writer(tmp_path, monkeypatch, changed):
     from qualification.owner_authority import host_fixture as lane
 
@@ -1019,7 +1021,8 @@ def test_fixture_result_cannot_claim_uncommitted_or_native_success():
     good = {"evidence_class": "OFFLINE_CONFORMANCE", "qualification_pass": False,
             "operation_id": uid(4), "code": "COMMITTED", "committed": True}
     assert p.FixtureHostResult.model_validate(good).committed
-    for change in ({"committed": False}, {"committed": 0}, {"qualification_pass": True},
+    for change in ({"committed": False}, {"committed": 0}, {"committed": 1},
+                   {"qualification_pass": True},
                    {"qualification_pass": 0}, {"evidence_class": "NATIVE_QUALIFICATION"}):
         with pytest.raises(ValueError):
             p.FixtureHostResult.model_validate(good | change)
@@ -1295,19 +1298,69 @@ def test_cached_commit_corruption_never_releases_success(tmp_path, field):
 
 
 @pytest.mark.parametrize("seconds", [-61, 61])
-def test_clock_skew_on_received_receipt_keeps_pending(tmp_path, seconds):
+@pytest.mark.parametrize("phase", ["after_response", "publish_writer", "publish_before_commit"])
+def test_clock_skew_on_received_receipt_keeps_pending(tmp_path, seconds, phase):
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    claim = issuer.issue(wire.claim(), START)
+    clock = [NOW]
+    def hook(name, db):
+        if name == phase:
+            clock[0] += timedelta(seconds=seconds)
+    host = wire.host(tmp_path / "host", create=True, hook=hook)
+    host.prepare(claim, uid(4), observation, NOW)
+    def consume(raw):
+        return issuer.consume(raw, lambda: NOW)
+    result = host.bootstrap(consume, observation, lambda: clock[0])
+    assert result.code == "OWNER_CLOCK_SKEW" and not result.committed
+    assert host.snapshot()["pending"] == 1 and host.snapshot()["admins"] == 0
+    host.hook = None
+    assert host.bootstrap(lambda raw: issuer.consume(raw, lambda: NOW),
+                          observation, lambda: NOW).committed
+
+
+@pytest.mark.parametrize("now", [None, False, 0, "", NOW.replace(tzinfo=None)])
+def test_host_request_clock_requires_exact_utc_datetime(tmp_path, monkeypatch, now):
     wire = SyntheticWire()
     issuer = wire.issuer(tmp_path / "issuer", create=True)
     claim = issuer.issue(wire.claim(), START)
     host = wire.host(tmp_path / "host", create=True)
+    with pytest.raises(p.ProtocolInputError):
+        host.prepare(claim, uid(4), observation, now)
+    assert host.snapshot()["pending"] == 0
+    binding = host.prepare(claim, uid(4), observation, NOW)
+    monkeypatch.setattr(p, "_wire", lambda *a: pytest.fail("bad clock reached wire construction"))
+    with pytest.raises(p.ProtocolInputError):
+        host._request(binding, claim, now)
+
+
+def test_coherent_pending_replacement_during_dispatch_is_not_published(tmp_path):
+    from qualification.owner_authority.licensing_fixture import FixtureCorrupt
+
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    claim = issuer.issue(wire.claim(), START)
+    def hook(name, db):
+        if name == "publish_writer":
+            data = json.loads(db.execute("SELECT binding FROM pending").fetchone()[0])
+            data["operation_id"] = uid(20)
+            data["initialization_sha256"] = host._initialization(data)
+            db.execute("UPDATE pending SET operation_id=?,binding=?", (uid(20), p.canonical(data)))
+    host = wire.host(tmp_path / "host", create=True, hook=hook)
     host.prepare(claim, uid(4), observation, NOW)
-    clock = [NOW]
-    def consume(raw):
-        reply = issuer.consume(raw, lambda: NOW)
-        clock[0] += timedelta(seconds=seconds)
-        return reply
-    result = host.bootstrap(consume, observation, lambda: clock[0])
-    assert result.code == "OWNER_CLOCK_SKEW" and not result.committed
-    assert host.snapshot()["pending"] == 1 and host.snapshot()["admins"] == 0
-    assert host.bootstrap(lambda raw: issuer.consume(raw, lambda: NOW),
-                          observation, lambda: NOW).committed
+    with pytest.raises(FixtureCorrupt, match="pending identity changed"):
+        host.bootstrap(lambda raw: issuer.consume(raw, lambda: NOW), observation, lambda: NOW)
+    assert host.snapshot()["admins"] == 0 and host.snapshot()["operation_id"] == uid(4)
+
+
+def test_recovered_receipt_cannot_publish_before_claim_not_before(tmp_path):
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    data = wire.claim().model_dump() | {"not_before": instant(NOW + timedelta(seconds=1))}
+    claim = issuer.issue(p.OwnerClaim.model_validate(data), START)
+    host = wire.host(tmp_path / "host", create=True)
+    host.prepare(claim, uid(4), observation, NOW)
+    result = host.bootstrap(lambda raw: issuer.consume(raw, lambda: NOW + timedelta(seconds=2)),
+                            observation, lambda: NOW)
+    assert result.code == "OWNER_AUTHORIZATION_INVALID" and not result.committed
+    assert host.snapshot()["admins"] == 0 and issuer.snapshot()["consumptions"] == 1
