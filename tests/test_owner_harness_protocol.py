@@ -179,7 +179,20 @@ def test_valid_maximum_packet_and_empty_boundary():
             p.parse_packet(p.canonical(data | {"cases": cases}), "result")
 
 
-@pytest.mark.parametrize("raw", [b'{"version":1,"version":2}', b'{"x":NaN}',
+@pytest.mark.parametrize("kind", ["run", "result"])
+def test_duplicate_member_cannot_be_hidden_by_later_valid_value(kind):
+    p = protocol()
+    raw = p.canonical(fixture(kind)).replace(
+        b'"qualification_pass":false', b'"qualification_pass":true,"qualification_pass":false',
+    )
+    # Without the duplicate-member guard, JSON's last-value rule makes this
+    # otherwise-valid packet pass every model/schema check.
+    assert json.loads(raw) == fixture(kind)
+    with pytest.raises(p.ProtocolInputError):
+        p.parse_packet(raw, kind)
+
+
+@pytest.mark.parametrize("raw", [b'{"x":NaN}',
                                      b'{"x":Infinity}', b'"text"', b'\xff', b'[' * 2000])
 def test_malformed_json_refuses_with_input_free_error(raw):
     p = protocol()
