@@ -11,11 +11,11 @@ import json
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Annotated, Literal, NamedTuple
-from urllib.parse import urlsplit
 
 from cryptography.exceptions import InvalidSignature
 from pydantic import (
     AfterValidator,
+    AnyHttpUrl,
     BaseModel,
     BeforeValidator,
     ConfigDict,
@@ -227,30 +227,24 @@ def _date(value):
 
 
 def _origin(value):
-    uri = urlsplit(value)
-    host = uri.hostname
-    if (uri.scheme != "https" or uri.username is not None or uri.password is not None
-            or not host or uri.path or uri.query or uri.fragment or uri.geturl() != value
-            or uri.port not in (None, 443)):
-        raise ValueError("invalid activation origin")
-    if ":" in host:
-        address = ipaddress.IPv6Address(host)
-        if address.scope_id is not None:
-            raise ValueError("scoped host is not an activation origin")
-        canonical_host = "[" + address.compressed + "]"
-    else:
-        # URI parsing above; these are the DNS label grammar and length rules,
-        # not a second URL recognizer. No escaped host or Unicode is normalized.
-        labels = host.removesuffix(".").split(".")
-        if len(host) > 253 or any(
+    # Native URL parsing normalizes IPv4 alternate spellings, IPv6, case and
+    # default ports. Compare with its canonical HTTPS origin, never raw netloc.
+    host = AnyHttpUrl(value).host
+    if not host.startswith("["):
+        try:
+            ipaddress.IPv4Address(host)
+        except ValueError:
+            pass
+        else:
+            raise ValueError("IPv4 is not an activation DNS host")
+        labels = host.split(".")
+        if any(
             not 1 <= len(label) <= 63 or not label[0].isalnum() or not label[-1].isalnum()
             or any(c not in "abcdefghijklmnopqrstuvwxyz0123456789-" for c in label)
             for label in labels
         ):
             raise ValueError("invalid activation DNS host")
-        canonical_host = host
-    port = "" if uri.port is None else ":443"
-    if value != "https://" + canonical_host + port:
+    if value != "https://" + host:
         raise ValueError("noncanonical activation origin")
     return value
 

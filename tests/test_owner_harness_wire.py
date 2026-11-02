@@ -89,14 +89,18 @@ def check(wire, request=None, now=datetime(2026, 1, 1, 1, tzinfo=UTC)):
     )
 
 
+def receipt_payload(wire):
+    return {
+        "version": "owner-bootstrap/1", "purpose": "owner-bootstrap-receipt", "state": "CONSUMED",
+        "receipt_id": uid(8), "binding": wire["request"]["binding"].copy(),
+        "consumed_at": "2026-01-01T01:00:00Z",
+    }
+
+
 def test_valid_consume_and_signed_receipt(wire):
     p = protocol()
     request, claim = check(wire)
-    receipt = {
-        "version": "owner-bootstrap/1", "purpose": "owner-bootstrap-receipt", "state": "CONSUMED",
-        "receipt_id": uid(8), "binding": request.binding.model_dump(),
-        "consumed_at": "2026-01-01T01:00:00Z",
-    }
+    receipt = receipt_payload(wire)
     raw = wire["sign"]("receipt", receipt, "receipt")
     def checked_receipt(data):
         return p.check_receipt(data, wire["request_bytes"](),
@@ -180,7 +184,7 @@ def test_installation_signature_is_verified(wire):
     "https://fixture.example?", "https://fixture.example#", "https://fixture.example:444",
     "https://%66ixture.example", "https://fíxture.example", "https://fixture_.example",
     "https://fixture.example\n", "https://fixture.example/x", "https://-a.example",
-    "https://[fe80::1%25eth0]",
+    "https://[fe80::1%25eth0]", "https://fi_xt.example", "https://" + "a" * 64 + ".example",
 ])
 def test_manifest_origin_uses_real_uri_parser(wire, origin):
     p = protocol()
@@ -237,7 +241,7 @@ def test_missing_claim_fields_and_wrong_key_purpose(wire):
                         "claim", wire["keys"], frozenset({"claim"}))
 
 
-@pytest.mark.parametrize("origin", ["https://fixture.example", "https://fixture.example:443",
+@pytest.mark.parametrize("origin", ["https://fixture.example",
                                     "https://[::1]", "https://xn--bcher-kva.example"])
 def test_valid_origin_second_side(wire, origin):
     p = protocol()
@@ -300,3 +304,141 @@ def test_wire_functions_do_not_access_installed_or_external_state(wire, monkeypa
     assert check(wire)[0].binding.operation_id == uid(4)
     assert p.verify_signed(wire["sign"]("claim", wire["claim"], "claim"),
                            "claim", wire["keys"], frozenset({"claim"})).claim_id == uid(1)
+
+
+@pytest.mark.parametrize("origin", ["https://1.2.3.4", "https://127.1", "https://0x7f000001",
+                                    "https://a.example.", "https://a.example:443"])
+def test_canonical_origin_rejects_ip4_and_alternate_spellings(wire, origin):
+    p = protocol()
+    with pytest.raises(p.ProtocolInputError):
+        p.verify_signed(wire["sign"]("manifest", wire["manifest"] | {"origin": origin}, "release"),
+                        "manifest", wire["keys"], frozenset({"release"}))
+
+
+@pytest.mark.parametrize("kind,key", [("manifest", "release"), ("claim", "claim"),
+                                      ("receipt", "receipt")])
+def test_issuer_signature_and_invalid_signature_mapping(wire, kind, key):
+    import json
+    p = protocol()
+    payload = receipt_payload(wire) if kind == "receipt" else wire[kind]
+    raw = wire["sign"](kind, payload, key)
+    # Valid shape/purpose/key allowlist; replace ONLY the issuer signature.
+    data = json.loads(raw)
+    other = "receipt" if key != "receipt" else "claim"
+    data["signature_base64url"] = json.loads(wire["sign"]("claim", wire["claim"], other))[
+        "signature_base64url"]
+    assert p.verify_signed(raw, kind, wire["keys"], frozenset({key}))
+    with pytest.raises(p.ProtocolInputError):
+        p.verify_signed(p.canonical(data), kind, wire["keys"], frozenset({key}))
+
+
+def test_request_claim_uses_only_manifest_claim_key_set(wire):
+    import json
+    p = protocol()
+    request = deepcopy(wire["request"])
+    raw = wire["sign"]("claim", wire["claim"], "receipt")
+    request["owner_claim"] = json.loads(raw)
+    request["binding"]["claim_sha256"] = hashlib.sha256(raw).hexdigest()
+    # The alternative key and all signatures are valid, but not for this role.
+    assert p.verify_signed(raw, "claim", wire["keys"], frozenset({"receipt"}))
+    with pytest.raises(p.ProtocolInputError):
+        check(wire, request)
+
+
+def test_receipt_uses_only_manifest_receipt_key_set(wire):
+    p = protocol()
+    raw = wire["sign"]("receipt", receipt_payload(wire), "claim")
+    assert p.verify_signed(raw, "receipt", wire["keys"], frozenset({"claim"}))
+    with pytest.raises(p.ProtocolInputError):
+        p.check_receipt(raw, wire["request_bytes"](),
+                        wire["sign"]("manifest", wire["manifest"], "release"),
+                        wire["keys"], frozenset({"release"}),
+                        datetime(2026, 1, 1, 1, tzinfo=UTC))
+
+
+@pytest.mark.parametrize("field", ["claim_key_ids", "receipt_key_ids"])
+def test_manifest_cannot_name_an_uninstalled_key(wire, field):
+    p = protocol()
+    raw = wire["sign"]("manifest", wire["manifest"] | {field: ["absent-key"]}, "release")
+    with pytest.raises(p.ProtocolInputError):
+        p.verify_signed(raw, "manifest", wire["keys"], frozenset({"release"}))
+
+
+@pytest.mark.parametrize("expiry", ["2026-01-01T00:00:00Z", "2025-12-31T00:00:00Z",
+                                     "2026-01-31T00:00:01Z"])
+def test_manifest_interval_is_ordered_and_bounded(wire, expiry):
+    p = protocol()
+    raw = wire["sign"]("manifest", wire["manifest"] | {"expires_at": expiry}, "release")
+    with pytest.raises(p.ProtocolInputError):
+        p.verify_signed(raw, "manifest", wire["keys"], frozenset({"release"}))
+
+
+@pytest.mark.parametrize("patch", [{"issued_at": "2026-01-01T02:00:00Z"},
+                                   {"expires_at": "2026-01-01T01:00:00Z"}])
+def test_manifest_must_be_current_at_issuer_time(wire, patch):
+    p = protocol()
+    wire["manifest"].update(patch)
+    with pytest.raises(p.ProtocolInputError):
+        check(wire)
+
+
+@pytest.mark.parametrize("kind,field,value", [
+    ("manifest", "purpose", "owner-bootstrap"),
+    ("receipt", "purpose", "owner-bootstrap"), ("receipt", "state", "PENDING"),
+])
+def test_independent_manifest_and_receipt_constants(wire, kind, field, value):
+    p = protocol()
+    payload = receipt_payload(wire) if kind == "receipt" else wire[kind]
+    key = "release" if kind == "manifest" else "receipt"
+    with pytest.raises(p.ProtocolInputError):
+        p.verify_signed(wire["sign"](kind, payload | {field: value}, key),
+                        kind, wire["keys"], frozenset({key}))
+
+
+@pytest.mark.parametrize("mode", ["offset", "subclass"])
+def test_issuer_clock_requires_exact_utc_datetime(wire, mode):
+    from datetime import timezone
+    p = protocol()
+
+    class OtherDate(datetime):
+        pass
+
+    now = (datetime(2026, 1, 1, 2, tzinfo=timezone(timedelta(hours=1))) if mode == "offset"
+           else OtherDate(2026, 1, 1, 1, tzinfo=UTC))
+    with pytest.raises(p.ProtocolInputError):
+        check(wire, now=now)
+
+
+def test_request_byte_limit_precedes_request_parse(wire, monkeypatch):
+    p = protocol()
+    original = p.json.loads
+
+    def loads(value, **kwargs):
+        if len(value) > 8192:
+            pytest.fail("oversize request reached JSON parse")
+        return original(value, **kwargs)
+
+    monkeypatch.setattr(p.json, "loads", loads)
+    with pytest.raises(p.ProtocolInputError):
+        p.check_consume_request(b" " * 8193,
+                                wire["sign"]("manifest", wire["manifest"], "release"),
+                                wire["keys"], frozenset({"release"}),
+                                datetime(2026, 1, 1, 1, tzinfo=UTC))
+
+
+@pytest.mark.parametrize("model_name,budget_name", [("SmallEnvelope", "SMALL"),
+                                                  ("ManifestEnvelope", "MANIFEST")])
+def test_decoded_budget_is_implied_by_earlier_encoded_schema(wire, model_name, budget_name):
+    from pydantic import ValidationError
+    p = protocol()
+    model, budget = getattr(p, model_name), getattr(p, budget_name)
+    value = b64(b"x" * (budget.payload + 1))
+    # A downstream decoded-size guard is unreachable after the stronger encoded
+    # schema. Test each owner directly; do not pretend one sample isolates both.
+    assert len(value) > budget.encoded
+    with pytest.raises(ValidationError):
+        model.model_validate({"version": "owner-bootstrap/1", "key_id": "claim",
+                              "payload_base64url": value,
+                              "signature_base64url": b64(b"\0" * 64)})
+    with pytest.raises(ValueError):
+        p._decoded(value, budget.payload)
