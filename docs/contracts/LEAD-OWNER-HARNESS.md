@@ -74,7 +74,24 @@ test-only APIs and receipt exchange, never cross-database SQL or a claimed
 transaction spanning both stores. No Connect provider, scheduler or dispatch
 mechanism is added.
 
-## Required change surface for a later implementation PR
+## Required change surface and stacked implementation slices
+
+Propose these stacked PRs in dependency order, each about 1,000 changed lines
+including tests, fixtures and generated schemas. Split further by concern before
+exceeding that budget; do not omit tests to fit. Each slice needs its own review
+and CI gates and adds its own portable tests to the existing Windows invocation
+from its first push. Naming the stack authorizes no implementation.
+
+| Slice | Bounded concern and owned paths from the inventory below |
+| --- | --- |
+| H1a: protocol and schemas | `protocol.py`, derived `run.schema.json`/`result.schema.json`, and `tests/test_owner_harness_protocol.py`; schema-level offline-only results and literal non-qualification first |
+| H1b: disposable ledgers and recovery, stacked on H1a | `licensing_fixture.py`, `host_fixture.py`, and `tests/test_owner_harness_recovery.py`; independent issuer/local transactions, race ordering and crash/replay assertions |
+| H1c: controller and evidence, stacked on H1b | `controller.py`, `cases.json`, `README.md`, and `tests/test_owner_harness_controller.py`; offline commands, native refusal, immutable case inventory and bounded evidence collection |
+
+Each slice may update only its necessary shared model/schema seam and Windows
+test entries in addition to those owned files. Preserve one protocol/schema
+owner across the stack; do not duplicate it to make a slice standalone. H1 is
+complete only after the full stack's requirements and evidence are reconciled.
 
 This document is the entire current change surface. The following paths are
 **proposed future files**, not files created or execution authorized here:
@@ -89,7 +106,7 @@ This document is the entire current change surface. The following paths are
 | `qualification/owner_authority/run.schema.json`, `result.schema.json` | Derived schema artifacts from the single model owner, checked for drift; no separately handwritten duplicate validation |
 | `qualification/owner_authority/README.md` | Offline commands, evidence limits, freeze process, current blockers and the later separately authorized native handoff |
 | `tests/test_owner_harness_protocol.py`, `test_owner_harness_recovery.py`, `test_owner_harness_controller.py` | Portable adversarial schema, process/transaction and controller tests using synthetic fixtures and private temporary roots |
-| `.github/workflows/ci.yml` | In the later implementation PR only, append those new portable tests to the existing Windows focused pytest invocation; preserve existing jobs, platform pins and test entries |
+| `.github/workflows/ci.yml` | In each later implementation slice, append that slice's new portable tests to the existing Windows focused pytest invocation from its first push; preserve existing jobs, platform pins and test entries |
 
 No new dependency or native compiler/SDK installation is assumed. The baseline
 Linux job discovers new tests; the Windows job has an explicit file list, so
@@ -109,13 +126,21 @@ closed types, schema constraints and one named cross-field validator where
 necessary; an origin is parsed as a URI, never checked with ad hoc substring
 tests. Preserve duplicate-member rejection before model admission.
 
-Every result requires an explicit evidence class: `OFFLINE_CONFORMANCE` or
-`NATIVE_QUALIFICATION`. H1 can emit assertions only for the first. Native case
-entries remain `NOT_RUN` in the inventory; a requested native execution returns
-STOP before I/O with a fixed harness refusal reason. Never serialize these as
-a native PASS, infer trust from a copied policy result, or mark a required case
-optional. Parent per-case PASS/FAIL/STOP semantics remain unchanged; `NOT_RUN`
-is inventory metadata, not a new execution outcome.
+H1's closed `result.schema.json` admits only the evidence class
+`OFFLINE_CONFORMANCE` (`const`), and every packet requires
+`qualification_pass: false` (`const`). It has no overall PASS field or aggregate
+PASS outcome. Schema admission rejects `NATIVE_QUALIFICATION`, a copied native
+PASS, a true/missing qualification flag and any extra overall-PASS field, even
+when the controller is bypassed. Per-case offline PASS/FAIL/STOP records describe
+only the individual offline assertions; none is qualification success. A later
+native work order must revise the schema under its own acceptance.
+
+Native cases exist only as `NOT_RUN` entries in `cases.json`; that inventory
+branch cannot carry an execution result. A requested native execution returns
+an offline STOP refusal before I/O with a fixed harness reason. Never infer
+trust from a copied policy result or mark a required case optional. Parent
+per-case PASS/FAIL/STOP semantics remain unchanged; `NOT_RUN` is inventory
+metadata, not a new execution outcome.
 
 H1's offline interface is `controller.py inspect --manifest <absolute-path>`
 and `controller.py offline --manifest <absolute-path>`. Both read only the
@@ -143,7 +168,7 @@ retained in evidence. This work order creates none.
 | Consumption and replay | Separate issuer and host processes, immutable binding, exact authenticated-request replay, changed organization/principal/key/payload conflict, revoke/consume in both orders and reissue supersession. Synthetic native observations are explicitly labelled. |
 | Recovery and atomicity | Explicit barriers, both race winners, SQL failure between each local row write, lost response and process death before/after issuer and local commits. Inspect each store through its own API. Same receipt resumes; no partial admin, replacement owner, duplicate consumption or claim reuse. |
 | Harness denial | Native/platform case requested through every controller path, forged evidence-class override, copied native-success fixture and unknown case all refuse before effects. Place forbidden-call sentinels at the actual owner for account/service/key-store/native/network/product access; assert they were not invoked. |
-| Evidence integrity | Changed/missing input digest, out-of-root/reparse/symlink path, mixed-case inventory, oversize artifact, secret-bearing unexpected field and partial write cannot publish a successful packet. No directory/profile/drive enumeration or environment-derived fallback. |
+| Evidence integrity | Changed/missing input digest, out-of-root/reparse/symlink path, mixed-case inventory, oversize artifact, secret-bearing unexpected field and partial write cannot publish a valid offline evidence packet. The result schema rejects native evidence, overall PASS and any qualification flag other than literal false without depending on controller refusal. No directory/profile/drive enumeration or environment-derived fallback. |
 | Portable parity | Existing entitlement, policy, source/auth/custody/runtime tests and fixtures remain unchanged. Run focused new tests and applicable lint first; CI owns broad repetition. Explicit Windows invocation and UTF-8 reads, short stable test IDs and real fresh child processes from the first push. No native/platform result inferred from hosted CI. |
 
 Each new guard requires a valid control, an invalid counterpart and a deliberate
@@ -151,6 +176,13 @@ fault proving the intended assertion fails. Declare expected fail-first failures
 before execution. A child-process boundary must be real, not a process-inspection
 proxy. Use barriers, not sleeps, for race ordering. Follow parent case/platform
 deadlines; a timeout records failure/STOP honestly, never silent retry to green.
+
+The parent's barrier, repetition and assertion rules
+(`LEAD-OWNER-AUTHORITY.md:1036-1044`) apply in full to every applicable offline
+case: each two-way race exercises both winners, three repetitions per order,
+using separate processes and explicit barriers; assertions include no publication
+while denied and no hidden licensing call during subsequent synthetic host
+operations, as well as the transaction/recovery assertions above.
 
 Future evidence goes outside worktrees under
 `~/Desktop/codex-evidence/connect-automate/lead-owner-harness/<packet-id>/`,
@@ -181,7 +213,8 @@ enrollment or native isolation from disposable reference-ledger results.
    inaccessible-disk evidence. H1 must not invent an operation ID for a malformed
    request, a hidden refresh, replacement ownership or an isolation proxy. Record
    those cases as blocked pending the respective bounded contract decisions;
-   they cannot be excluded from an eventual native/release pass.
+   this order neither resolves nor excludes those items. Their release status is
+   Juan's to decide at their respective contract reviews.
 6. Review the exact later H1 code and evidence independently before proposing
    native helpers, a frozen run or enforcement. Parent Linux fake-user-bus gate
    remains the FIRST native Linux case; defeat stops dependent native work.
