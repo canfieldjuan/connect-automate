@@ -1,0 +1,165 @@
+{
+  "$defs": {
+    "Artifact": {
+      "additionalProperties": false,
+      "properties": {
+        "alias": {
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+          "title": "Alias",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "alias",
+        "sha256"
+      ],
+      "title": "Artifact",
+      "type": "object"
+    },
+    "OfflineCase": {
+      "additionalProperties": false,
+      "properties": {
+        "actual_code": {
+          "pattern": "^[A-Z][A-Z0-9_]{0,63}$",
+          "title": "Actual Code",
+          "type": "string"
+        },
+        "artifacts": {
+          "items": {
+            "$ref": "#/$defs/Artifact"
+          },
+          "maxItems": 64,
+          "title": "Artifacts",
+          "type": "array"
+        },
+        "assertion_ids": {
+          "items": {
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+            "type": "string"
+          },
+          "maxItems": 64,
+          "minItems": 1,
+          "title": "Assertion Ids",
+          "type": "array",
+          "uniqueItems": true
+        },
+        "case_id": {
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+          "title": "Case Id",
+          "type": "string"
+        },
+        "duration_ns": {
+          "maximum": 180000000000,
+          "minimum": 0,
+          "title": "Duration Ns",
+          "type": "integer"
+        },
+        "expected_code": {
+          "pattern": "^[A-Z][A-Z0-9_]{0,63}$",
+          "title": "Expected Code",
+          "type": "string"
+        },
+        "fixture_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Fixture Sha256",
+          "type": "string"
+        },
+        "outcome": {
+          "enum": [
+            "PASS",
+            "FAIL",
+            "STOP"
+          ],
+          "title": "Outcome",
+          "type": "string"
+        },
+        "platform": {
+          "enum": [
+            "linux",
+            "windows"
+          ],
+          "title": "Platform",
+          "type": "string"
+        }
+      },
+      "required": [
+        "case_id",
+        "platform",
+        "outcome",
+        "expected_code",
+        "actual_code",
+        "assertion_ids",
+        "fixture_sha256",
+        "duration_ns",
+        "artifacts"
+      ],
+      "title": "OfflineCase",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "cases": {
+      "items": {
+        "$ref": "#/$defs/OfflineCase"
+      },
+      "maxItems": 64,
+      "minItems": 1,
+      "title": "Cases",
+      "type": "array"
+    },
+    "contract_commit": {
+      "pattern": "^[0-9a-f]{40}$",
+      "title": "Contract Commit",
+      "type": "string"
+    },
+    "dependency_lock_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Dependency Lock Sha256",
+      "type": "string"
+    },
+    "evidence_class": {
+      "const": "OFFLINE_CONFORMANCE",
+      "title": "Evidence Class",
+      "type": "string"
+    },
+    "harness_commit": {
+      "pattern": "^[0-9a-f]{40}$",
+      "title": "Harness Commit",
+      "type": "string"
+    },
+    "qualification_pass": {
+      "const": false,
+      "title": "Qualification Pass",
+      "type": "boolean"
+    },
+    "run_id": {
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "version": {
+      "const": "owner-harness/1",
+      "title": "Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "version",
+    "evidence_class",
+    "qualification_pass",
+    "contract_commit",
+    "harness_commit",
+    "run_id",
+    "dependency_lock_sha256",
+    "cases"
+  ],
+  "title": "OfflineResult",
+  "type": "object"
+}
