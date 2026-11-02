@@ -78,3 +78,4 @@ jobs:
           tests/test_pack_kit_events.py
           tests/test_owner_harness_protocol.py
           tests/test_owner_harness_wire.py
+          tests/test_owner_harness_recovery.py
