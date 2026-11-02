@@ -84,7 +84,7 @@ class HostFixture:
             raise FixtureCorrupt("missing deployment or changed installation key")
         return value
 
-    def _pending(self, db):
+    def _pending(self, db, expected=None):
         configuration = self._configuration(db)
         row = db.execute("SELECT operation_id,binding,claim,salt,principal FROM pending "
                          "WHERE singleton=1").fetchone()
@@ -97,6 +97,8 @@ class HostFixture:
                 or binding.principal_commitment != hashlib.sha256(row[3] + row[4]).hexdigest()
                 or binding.initialization_sha256 != self._initialization(binding.model_dump())):
             raise FixtureCorrupt("inconsistent pending commitment")
+        if expected is not None and binding != expected:
+            raise FixtureCorrupt("pending identity changed during recovery")
         return binding, *row[2:]
 
     @staticmethod
@@ -174,7 +176,11 @@ class HostFixture:
             checkpoint(self.hook, "pending_write", db)
             return binding
 
-    def _result(self, binding, code, committed, observe, principal):
+    def _result(self, binding, code, observe, principal):
+        # Commit truth is observed in this ledger snapshot, never before transport.
+        with read_store(self.root, "host") as db:
+            self._pending(db, binding)
+            committed = self._stored_commit(db, binding) is not None
         try:
             self._observe(observe, principal)
         except Refused as exc:
@@ -188,19 +194,18 @@ class HostFixture:
         with read_store(self.root, "host") as db:
             binding, claim, _, principal = self._pending(db)
             stored = self._stored_commit(db, binding)
-            committed = stored is not None
         try:
             self._observe(observe, principal)
             request = self._request(binding, claim, clock())
-            if committed:
+            if stored is not None:
                 p.check_receipt(stored, request, self.manifest, self.keys,
                                 self.release_ids, clock())
-                return self._result(binding, "COMMITTED", True, observe, principal)
+                return self._result(binding, "COMMITTED", observe, principal)
             checkpoint(self.hook, "before_dispatch", None)
             try:
                 response = consume(request)  # Exactly one call, outside every host transaction.
             except (OSError, TimeoutError):
-                return self._result(binding, "LICENSING_UNAVAILABLE", False, observe, principal)
+                return self._result(binding, "LICENSING_UNAVAILABLE", observe, principal)
             checkpoint(self.hook, "after_response", None)
             try:
                 p.check_receipt(response, request, self.manifest, self.keys,
@@ -209,11 +214,11 @@ class HostFixture:
                 try:
                     refusal = p.parse_refusal(response)
                 except p.ProtocolInputError:
-                    return self._result(binding, "LICENSING_UNAVAILABLE", False, observe, principal)
+                    return self._result(binding, "LICENSING_UNAVAILABLE", observe, principal)
                 if refusal.operation_id != binding.operation_id:
-                    return self._result(binding, "LICENSING_UNAVAILABLE", False, observe, principal)
+                    return self._result(binding, "LICENSING_UNAVAILABLE", observe, principal)
                 # An unsigned refusal never clears even an apparently uncommitted intent.
-                return self._result(binding, refusal.code, False, observe, principal)
+                return self._result(binding, refusal.code, observe, principal)
 
             def validate():
                 self._observe(observe, principal)
@@ -227,9 +232,7 @@ class HostFixture:
                                 self.release_ids, clock())
 
             with transaction(self.root, "host", self._hook("publish"), validate) as db:
-                current, current_claim, _, current_principal = self._pending(db)
-                if (current != binding or current_claim != claim or current_principal != principal):
-                    raise FixtureCorrupt("pending identity changed during recovery")
+                self._pending(db, binding)
                 old = self._stored_commit(db, binding)
                 if old is None:
                     db.execute("INSERT INTO receipts VALUES(1,?,?)",
@@ -243,12 +246,11 @@ class HostFixture:
                     checkpoint(self.hook, "audit_write", db)
                 elif old != response:
                     raise FixtureCorrupt("conflicting local receipt")
-            committed = True
-            return self._result(binding, "COMMITTED", True, observe, principal)
+            return self._result(binding, "COMMITTED", observe, principal)
         except Refused as exc:
-            return self._result(binding, exc.code, committed, observe, principal)
+            return self._result(binding, exc.code, observe, principal)
         except p.ClockSkewError:
-            return self._result(binding, "OWNER_CLOCK_SKEW", committed, observe, principal)
+            return self._result(binding, "OWNER_CLOCK_SKEW", observe, principal)
 
     def snapshot(self):
         with read_store(self.root, "host") as db:
