@@ -476,6 +476,8 @@ def test_signer_mismatch_and_wrong_owner_refuse_before_business_rows(tmp_path):
     issuer = wire.issuer(tmp_path / "issuer", create=True)
     with pytest.raises(lane.FixtureCorrupt), lane.read_store(issuer.root, "host"):
         pytest.fail("wrong storage owner admitted")
+    with pytest.raises(lane.FixtureCorrupt), lane.transaction(issuer.root, "host"):
+        pytest.fail("wrong writer owner admitted")
     assert issuer.snapshot()["claims"] == []
 
 
@@ -507,6 +509,8 @@ def test_new_consume_refuses_revocation_and_copied_claim_with_another_key(tmp_pa
     claim = revoked.issue(wire.claim(), START)
     assert revoked.revoke(uid(1)) == "REVOKED"
     before = revoked.snapshot()
+    assert revoked.revoke(uid(1)) == "REVOKED"
+    assert revoked.snapshot() == before
     assert p.parse_refusal(revoked.consume(wire.request(claim), lambda: NOW)).code == (
         "OWNER_AUTHORIZATION_REVOKED")
     assert revoked.snapshot() == before
@@ -1076,3 +1080,144 @@ def test_wrong_host_configuration_refuses_without_any_dispatch(tmp_path, bad):
         else:
             host.prepare(claim, uid(4), observation, NOW)
     assert host.snapshot()["admins"] == 0
+
+
+@pytest.mark.parametrize("state", ["unknown", "superseded"])
+def test_revocation_and_reissue_refuse_ineligible_transition(tmp_path, state):
+    from qualification.owner_authority.licensing_fixture import Refused
+
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    issuer.issue(wire.claim(), START)
+    claim_id = uid(99) if state == "unknown" else uid(1)
+    if state == "superseded":
+        issuer.reissue(uid(1), wire.claim(index=10, generation=2, issued=NOW), NOW)
+    before = issuer.snapshot()
+    with pytest.raises(Refused, match="OWNER_BINDING_CONFLICT"):
+        issuer.revoke(claim_id)
+    with pytest.raises(Refused, match="OWNER_BINDING_CONFLICT"):
+        issuer.reissue(claim_id, wire.claim(index=20, generation=3, issued=NOW), NOW)
+    assert issuer.snapshot() == before
+
+
+@pytest.mark.parametrize("action", ["issue", "reissue"])
+@pytest.mark.parametrize("seconds,valid", [(-1, False), (0, True), (172799, True), (172800, False)])
+def test_manifest_window_controls_admin_transitions(tmp_path, action, seconds, valid):
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    if action == "reissue":
+        issuer.issue(wire.claim(), START)
+    now = START + timedelta(seconds=seconds)
+    claim = wire.claim(index=10, generation=2, issued=now)
+    before = issuer.snapshot()
+    def call():
+        return issuer.issue(claim, now) if action == "issue" else issuer.reissue(uid(1), claim, now)
+    if valid:
+        value = p.verify_signed(call(), "claim", wire.public, frozenset({"claim"}))
+        assert value.claim_id == uid(10)
+    else:
+        with pytest.raises(p.ProtocolInputError):
+            call()
+        assert issuer.snapshot() == before
+
+
+@pytest.mark.parametrize("signer", ["claim", "receipt"])
+def test_matching_key_with_wrong_purpose_id_is_refused(tmp_path, signer):
+    from qualification.owner_authority.licensing_fixture import IssuerFixture
+
+    wire = SyntheticWire()
+    selected = {kind: (kind, wire.private[kind]) for kind in ("claim", "receipt")}
+    selected[signer] = ("release", wire.private["release"])
+    with pytest.raises(p.ProtocolInputError):
+        IssuerFixture(tmp_path / "issuer", wire.manifest, wire.public, frozenset({"release"}),
+                      selected["claim"], selected["receipt"])
+
+
+def test_claim_clock_rejects_datetime_subclass(tmp_path):
+    class OtherClock(datetime):
+        pass
+
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    before = issuer.snapshot()
+    with pytest.raises(p.ProtocolInputError):
+        issuer.issue(wire.claim(), OtherClock(2026, 1, 1, tzinfo=UTC))
+    assert issuer.snapshot() == before
+
+
+@pytest.mark.parametrize("kind,restored", [("other", False), ("", False), (False, False),
+                                          ("issuer", 0), ("host", 1), ("issuer", ""),
+                                          ("issuer", None)])
+def test_storage_kind_and_restored_flag_are_closed(tmp_path, kind, restored):
+    from qualification.owner_authority import licensing_fixture as lane
+
+    root = tmp_path / "invalid"
+    with pytest.raises(lane.FixtureCorrupt):
+        lane.create_store(root, kind, "", restored=restored)
+    assert not root.exists()
+
+
+@pytest.mark.parametrize("target", ["root", "db"])
+def test_indirect_fixture_paths_refuse_before_sqlite(tmp_path, monkeypatch, target):
+    import subprocess
+
+    from qualification.owner_authority import licensing_fixture as lane
+
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    assert issuer.snapshot()["claims"] == []
+    link = tmp_path / "alias" if target == "root" else issuer.root / "fixture.sqlite"
+    destination = issuer.root
+    if target == "db":
+        destination = issuer.root / "original.sqlite"
+        link.rename(destination)
+    if os.name == "nt":
+        if target == "db":
+            destination = tmp_path / "junction-target"
+            destination.mkdir()
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(destination)],
+                       check=True, capture_output=True)
+    else:
+        link.symlink_to(destination, target_is_directory=target == "root")
+    monkeypatch.setattr(lane.sqlite3, "connect",
+                        lambda *a, **k: pytest.fail("indirect path opened"))
+    with pytest.raises(lane.FixtureCorrupt):
+        wire.issuer(link if target == "root" else issuer.root).snapshot()
+
+
+def test_stored_envelope_equality_is_independent_of_signature_admission(tmp_path):
+    wire = SyntheticWire()
+    manifest = p.verify_signed(wire.manifest, "manifest", wire.public, frozenset({"release"}))
+    wire.manifest = wire.sign("manifest", manifest.model_dump() | {
+        "claim_key_ids": ["claim", "release"]}, "release")
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    claim = issuer.issue(wire.claim(), START)
+    alternate = wire.sign("claim", wire.claim().model_dump(), "release")
+
+    def changed(name, db):
+        if name == "writer":
+            db.execute("UPDATE claims SET envelope=? WHERE claim_id=?", (alternate, uid(1)))
+
+    issuer.hook = changed
+    assert p.parse_refusal(issuer.consume(wire.request(claim), lambda: NOW)).code == (
+        "OWNER_AUTHORIZATION_INVALID")
+    issuer.hook = None
+    assert issuer.snapshot()["consumptions"] == 0
+
+
+def test_stored_receipt_must_verify_on_replay(tmp_path):
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    claim = issuer.issue(wire.claim(), START)
+    receipt = issuer.consume(wire.request(claim), lambda: NOW)
+    corrupt = p.canonical(json.loads(receipt) | {"signature_base64url": b64(b"\0" * 64)})
+
+    def changed(name, db):
+        if name == "writer":
+            db.execute("UPDATE consumptions SET receipt=?", (corrupt,))
+
+    issuer.hook = changed
+    with pytest.raises(p.ProtocolInputError):
+        issuer.consume(wire.request(claim), lambda: NOW)
+    issuer.hook = None
+    assert issuer.consume(wire.request(claim), lambda: NOW) == receipt
