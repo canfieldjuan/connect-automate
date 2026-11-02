@@ -440,3 +440,32 @@ def parse_refusal(raw: bytes):
         return _wire(raw, Refusal, 4096)
     except (ValueError, TypeError, RecursionError):
         raise ProtocolInputError() from None
+
+
+class FixtureObservation(Closed):
+    """Synthetic principal reference and time, never acquired native identity."""
+
+    evidence_class: Literal["OFFLINE_CONFORMANCE"]
+    qualification_pass: FalseOnly
+    principal_ref: Token
+    authority_generation: Generation
+    active: StrictBool
+    authenticated_at_ns: Annotated[StrictInt, Field(ge=0, le=9223372036854775807)]
+    observed_at_ns: Annotated[StrictInt, Field(ge=0, le=9223372036854775807)]
+
+
+class FixtureHostResult(Closed):
+    evidence_class: Literal["OFFLINE_CONFORMANCE"]
+    qualification_pass: FalseOnly
+    operation_id: UuidV4
+    committed: StrictBool
+    code: Literal["COMMITTED", "PENDING", "OWNER_AUTHORIZATION_REQUIRED",
+                  "OWNER_AUTHORIZATION_INVALID", "OWNER_AUTHORIZATION_EXPIRED",
+                  "OWNER_AUTHORIZATION_REVOKED", "OWNER_BINDING_CONFLICT", "OWNER_CLOCK_SKEW",
+                  "LICENSING_UNAVAILABLE", "NATIVE_AUTH_DENIED", "NATIVE_SESSION_INACTIVE"]
+
+    @model_validator(mode="after")
+    def truthful_commit(self):
+        if self.code == "COMMITTED" and not self.committed:
+            raise ValueError("uncommitted fixture result")
+        return self
