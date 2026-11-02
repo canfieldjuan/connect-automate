@@ -1364,3 +1364,111 @@ def test_recovered_receipt_cannot_publish_before_claim_not_before(tmp_path):
                             observation, lambda: NOW)
     assert result.code == "OWNER_AUTHORIZATION_INVALID" and not result.committed
     assert host.snapshot()["admins"] == 0 and issuer.snapshot()["consumptions"] == 1
+
+
+@pytest.mark.parametrize("offset,valid", [(-1, False), (0, True), (1, True)])
+@pytest.mark.parametrize("edge", ["start", "end"])
+def test_prepare_checks_manifest_window_before_pending(tmp_path, edge, offset, valid):
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    claim = issuer.issue(wire.claim(), START)
+    manifest = p.verify_signed(wire.manifest, "manifest", wire.public, frozenset({"release"}))
+    boundary = NOW + timedelta(seconds=-offset if edge == "start" else offset)
+    wire.manifest = wire.sign("manifest", manifest.model_dump() | {
+        "issued_at" if edge == "start" else "expires_at": instant(boundary)}, "release")
+    host = wire.host(tmp_path / "host", create=True)
+    valid = valid and not (edge == "end" and offset == 0)
+    if valid:
+        assert host.prepare(claim, uid(4), observation, NOW).operation_id == uid(4)
+    else:
+        with pytest.raises(p.ProtocolInputError):
+            host.prepare(claim, uid(4), observation, NOW)
+        assert host.snapshot()["pending"] == 0
+
+
+@pytest.mark.parametrize("seconds,valid", [(-61, False), (-60, True), (60, True), (61, False)])
+def test_prepare_checks_otherwise_valid_signed_attempt_clock(tmp_path, monkeypatch, seconds, valid):
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    claim = issuer.issue(wire.claim(), START)
+    host = wire.host(tmp_path / "host", create=True)
+    canonical = p.canonical
+
+    def skew(value):
+        # Fault at request construction: ordinary code uses the same now for both clocks.
+        if isinstance(value, dict) and "attempt_id" in value and value.get("requested_at") == (
+                instant(NOW)):
+            value = value | {"requested_at": instant(NOW + timedelta(seconds=seconds))}
+        return canonical(value)
+
+    monkeypatch.setattr(p, "canonical", skew)
+    if valid:
+        assert host.prepare(claim, uid(4), observation, NOW).operation_id == uid(4)
+    else:
+        with pytest.raises(p.ClockSkewError):
+            host.prepare(claim, uid(4), observation, NOW)
+        assert host.snapshot()["pending"] == 0
+
+
+def test_prepare_wrong_claim_purpose_refuses_before_writer(tmp_path, monkeypatch):
+    from qualification.owner_authority import host_fixture as lane
+
+    wire = SyntheticWire()
+    claim = wire.sign("claim", wire.claim().model_dump(), "receipt")
+    p.verify_signed(claim, "claim", wire.public, frozenset(wire.public))
+    host = wire.host(tmp_path / "host", create=True)
+    monkeypatch.setattr(lane, "transaction", lambda *a: pytest.fail("wrong purpose reached writer"))
+    with pytest.raises(p.ProtocolInputError):
+        host.prepare(claim, uid(4), observation, NOW)
+    assert host.snapshot()["pending"] == 0
+
+
+@pytest.mark.parametrize("phase", ["publish_writer", "publish_before_commit"])
+def test_receipt_must_still_verify_after_writer_wait_and_before_commit(tmp_path, phase):
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    claim = issuer.issue(wire.claim(), START)
+    staged = []
+
+    def hook(name, db):
+        if name == phase:
+            staged.append(db.execute("SELECT count(*) FROM receipts").fetchone()[0])
+            host.keys["receipt"] = wire.public["host"]
+
+    host = wire.host(tmp_path / "host", create=True, hook=hook)
+    host.prepare(claim, uid(4), observation, NOW)
+    before = host.snapshot()
+    with pytest.raises(p.ProtocolInputError):
+        host.bootstrap(lambda raw: issuer.consume(raw, lambda: NOW), observation, lambda: NOW)
+    assert staged == [int(phase == "publish_before_commit")]
+    assert host.snapshot() == before and issuer.snapshot()["consumptions"] == 1
+    host.hook, host.keys["receipt"] = None, wire.public["receipt"]
+    assert host.bootstrap(lambda raw: issuer.consume(raw, lambda: NOW),
+                          observation, lambda: NOW).committed
+
+
+def test_different_signed_stored_receipt_is_not_overwritten_or_reported_as_this_reply(tmp_path):
+    from qualification.owner_authority.licensing_fixture import FixtureCorrupt
+
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    claim = issuer.issue(wire.claim(), START)
+    host = wire.host(tmp_path / "host", create=True)
+    host.prepare(claim, uid(4), observation, NOW)
+    before = []
+
+    def interleaved(raw):
+        receipt = issuer.consume(raw, lambda: NOW)
+        value = p.verify_signed(receipt, "receipt", wire.public, frozenset({"receipt"}))
+        alternate = wire.sign("receipt", value.model_dump() | {
+            "consumed_at": instant(NOW - timedelta(seconds=1))}, "receipt")
+        assert alternate != receipt
+        p.check_receipt(alternate, raw, wire.manifest, wire.public, frozenset({"release"}), NOW)
+        assert wire.host(host.root).bootstrap(lambda _: alternate,
+                                              observation, lambda: NOW).committed
+        before.append(host.snapshot())
+        return receipt
+
+    with pytest.raises(FixtureCorrupt, match="conflicting local receipt"):
+        host.bootstrap(interleaved, observation, lambda: NOW)
+    assert host.snapshot() == before[0] and issuer.snapshot()["consumptions"] == 1
