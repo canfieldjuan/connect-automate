@@ -79,3 +79,4 @@ jobs:
           tests/test_owner_harness_protocol.py
           tests/test_owner_harness_wire.py
           tests/test_owner_harness_recovery.py
+          tests/test_owner_harness_controller.py

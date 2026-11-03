@@ -1,0 +1,39 @@
+{
+  "version": "owner-harness-cases/1",
+  "cases": [
+    {
+      "kind": "OFFLINE_CONFORMANCE",
+      "case_id": "lost-response-replay",
+      "requirement": "b0-i-recovery",
+      "expected_code": "COMMITTED",
+      "assertion_ids": ["pending-after-loss", "stable-binding", "one-local-triplet", "same-receipt", "cached-no-dispatch", "issuer-effects"],
+      "capability": "disposable-fixtures"
+    },
+    {
+      "kind": "OFFLINE_CONFORMANCE",
+      "case_id": "revoked-claim",
+      "requirement": "b0-i-revocation",
+      "expected_code": "OWNER_AUTHORIZATION_REVOKED",
+      "assertion_ids": ["no-publication", "issuer-effects"],
+      "capability": "disposable-fixtures"
+    },
+    {
+      "kind": "OFFLINE_CONFORMANCE",
+      "case_id": "inactive-session",
+      "requirement": "b1-session-denial",
+      "expected_code": "NATIVE_SESSION_INACTIVE",
+      "assertion_ids": ["no-publication", "issuer-effects"],
+      "capability": "disposable-fixtures"
+    },
+    {"kind": "NOT_RUN", "case_id": "linux-fake-user-bus", "requirement": "b1-first-linux-gate"},
+    {"kind": "NOT_RUN", "case_id": "linux-native-sign-in", "requirement": "b1-linux-native"},
+    {"kind": "NOT_RUN", "case_id": "windows-local-password", "requirement": "b1-windows-native"},
+    {"kind": "NOT_RUN", "case_id": "windows-microsoft-account", "requirement": "b1-windows-native"},
+    {"kind": "NOT_RUN", "case_id": "windows-hello", "requirement": "b1-windows-native"},
+    {"kind": "NOT_RUN", "case_id": "native-isolation-and-revocation", "requirement": "b2-native-proof"},
+    {"kind": "BLOCKED", "case_id": "malformed-request-refusal", "requirement": "issue-73"},
+    {"kind": "BLOCKED", "case_id": "manifest-renewal", "requirement": "issue-73"},
+    {"kind": "BLOCKED", "case_id": "device-replacement", "requirement": "issue-73"},
+    {"kind": "BLOCKED", "case_id": "inaccessible-disk-evidence", "requirement": "issue-73"}
+  ]
+}
