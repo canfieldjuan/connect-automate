@@ -6,6 +6,8 @@ import os
 import socket
 import subprocess
 import sys
+from contextlib import contextmanager, suppress
+from functools import partial
 from pathlib import Path
 from time import monotonic_ns
 
@@ -407,3 +409,153 @@ def test_catalog_cardinality_boundaries():
     for count in (0, 65):
         with pytest.raises(p.ProtocolInputError):
             p.parse_inventory(inventory(count))
+
+
+def _changed_first_receipt(monkeypatch):
+    consume = ctl.IssuerFixture.consume
+    first = True
+
+    def changed(issuer, raw, clock):
+        nonlocal first
+        receipt = consume(issuer, raw, clock)
+        if not first:
+            return receipt
+        first = False
+        payload = p.check_receipt(receipt, raw, issuer.manifest, issuer.keys,
+                                  issuer.release_ids, clock()).model_dump()
+        payload["consumed_at"] = "2026-01-01T00:59:59Z"
+        alternate = ctl.signed("receipt", payload, issuer.receipt_signer)
+        p.check_receipt(alternate, raw, issuer.manifest, issuer.keys, issuer.release_ids, clock())
+        assert alternate != receipt
+        return alternate
+
+    monkeypatch.setattr(ctl.IssuerFixture, "consume", changed)
+
+
+def _faulted_host(monkeypatch, fault):
+    from qualification.owner_authority.licensing_fixture import read_store, transaction
+
+    bootstrap = ctl.HostFixture.bootstrap
+
+    def altered(host, consume, observe, clock):
+        def twice(raw):
+            result = consume(raw)
+            consume(raw)
+            return result
+
+        if fault == "cached-no-dispatch" and host.snapshot()["admins"]:
+            with read_store(host.root, "host") as db:
+                binding, claim, *_ = host._pending(db)
+            with suppress(TimeoutError):
+                consume(host._request(binding, claim, clock()))
+
+        result = bootstrap(host, twice if fault == "issuer-effects" else consume, observe, clock)
+        if fault == "pending-after-loss" and result.code == "LICENSING_UNAVAILABLE":
+            return p.FixtureHostResult.model_validate(result.model_dump() | {"code": "PENDING"})
+        if fault == "no-publication":
+            # Emulate a bad local writer after the real inactive-session denial.
+            with transaction(host.root, "host") as db:
+                binding, *_ = host._pending(db)
+                op = binding.operation_id
+                db.execute("INSERT INTO receipts VALUES(1,?,?)", (op, b"synthetic-fault"))
+                db.execute("INSERT INTO admins VALUES(1,?,?,'admin')",
+                           (op, binding.principal_commitment))
+                db.execute("INSERT INTO audit VALUES(1,?,'FIXTURE_BOOTSTRAP')", (op,))
+        return result
+
+    monkeypatch.setattr(ctl.HostFixture, "bootstrap", altered)
+
+
+def _faulted_child(fault, target, *args):
+    """Install deliberate fixture faults inside a spawned child."""
+    with pytest.MonkeyPatch.context() as patch:
+        if target is ctl._issuer and fault == "same-receipt":
+            _changed_first_receipt(patch)
+        if target is ctl._host:
+            _faulted_host(patch, fault)
+        ctl._child(target, *args)
+        if target is ctl._host and fault == "child-exit":
+            raise SystemExit(9)
+
+
+@pytest.mark.parametrize("fault,case_id", [
+    ("issuer-effects", ctl.REPLAY), ("same-receipt", ctl.REPLAY),
+    ("pending-after-loss", ctl.REPLAY), ("cached-no-dispatch", ctl.REPLAY),
+    ("no-publication", ctl.INACTIVE), ("child-exit", ctl.REPLAY),
+])
+def test_real_child_fault_reaches_evidence_verdict(tmp_path, monkeypatch, capfd, fault, case_id):
+    path = manifest(tmp_path, packet(case_id))
+    output = tmp_path / "out"
+    monkeypatch.setattr(ctl, "_child", partial(_faulted_child, fault))
+    args = ["offline", "--manifest", str(path), "--output-root", str(output)]
+    assert ctl.main(args) == (2 if fault == "child-exit" else 1)
+    captured = capfd.readouterr()
+    assert not captured.err
+    raw = (output / "result.json").read_bytes()
+    assert captured.out.strip().encode("ascii") == raw
+    case, = p.parse_packet(raw, "result").cases
+    evidence = json.loads((output / case.artifacts[0].alias).read_bytes())
+    if fault == "child-exit":
+        assert (case.outcome, case.actual_code) == ("STOP", "CASE_PROCESS_FAILED")
+    else:
+        assert case.outcome == "FAIL"
+        assert case.actual_code == case.expected_code
+        assert evidence["assertions"] == {key: key != fault for key in case.assertion_ids}
+
+
+def test_same_size_input_modified_in_place_during_read(tmp_path, monkeypatch):
+    path = tmp_path / "input"
+    path.write_bytes(b"first")
+    original = os.fdopen
+    initial = path.stat()
+
+    @contextmanager
+    def open_changed(fd, mode):
+        with original(fd, mode) as stream:
+            read = stream.read
+
+            def changed(size):
+                raw = read(size)
+                with path.open("r+b") as writer:
+                    writer.write(b"other")
+                os.utime(path, ns=(initial.st_atime_ns, initial.st_mtime_ns + 2_000_000_000))
+                return raw
+
+            monkeypatch.setattr(stream, "read", changed)
+            yield stream
+
+    monkeypatch.setattr(ctl.os, "fdopen", open_changed)
+    with pytest.raises(ctl.Stop, match="FILE_CHANGED"):
+        ctl._read(path)
+    assert path.stat().st_size == initial.st_size
+    assert path.read_bytes() == b"other"
+
+
+@pytest.mark.parametrize("relative,reason", [(True, "INVALID_PATH"),
+                                               (False, "UNSUPPORTED_PLATFORM")])
+def test_output_guards_precede_parent_access(tmp_path, monkeypatch, capsys, relative, reason):
+    path = manifest(tmp_path)
+    original = ctl._direct
+
+    def direct(candidate, directory=False):
+        if directory:
+            forbidden()
+        return original(candidate)
+
+    monkeypatch.setattr(ctl, "_direct", direct)
+    if not relative:
+        monkeypatch.setattr(ctl.sys, "platform", "unsupported")
+    output = "relative" if relative else str(tmp_path / "out")
+    assert ctl.main(["offline", "--manifest", str(path), "--output-root", output]) == 2
+    stop(capsys, reason)
+
+
+@pytest.mark.parametrize("count", [0, 1, 64, 65])
+def test_worker_assertion_count_is_bounded(count):
+    raw = p.canonical({"actual_code": "COMMITTED",
+                       "assertions": {f"synthetic-{i}": True for i in range(count)}})
+    if 1 <= count <= 64:
+        assert len(p.parse_observation(raw).assertions) == count
+    else:
+        with pytest.raises(p.ProtocolInputError):
+            p.parse_observation(raw)
