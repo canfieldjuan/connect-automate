@@ -11,6 +11,7 @@ import sqlite3
 import sys
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from multiprocessing.connection import wait
 from pathlib import Path
 
 import pytest
@@ -90,6 +91,13 @@ class SyntheticWire:
                                ("claim", self.private["claim"]),
                                ("receipt", self.private["receipt"]), hook=hook)
         return issuer.create() if create else issuer
+
+    def host(self, root, create=False, hook=None):
+        from qualification.owner_authority.host_fixture import HostFixture
+
+        host = HostFixture(root, self.manifest, self.public, frozenset({"release"}),
+                           self.private["host"], hook=hook)
+        return host.create(uid(5), uid(6), uid(2)) if create else host
 
 
 def test_issuer_receipt_is_durable_and_replay_is_identical(tmp_path):
@@ -525,6 +533,581 @@ def test_sql_error_rolls_back_in_issuer_owner(tmp_path):
     assert issuer.snapshot() == before
 
 
+def observation(**changed):
+    return p.FixtureObservation.model_validate({
+        "evidence_class": "OFFLINE_CONFORMANCE", "qualification_pass": False,
+        "principal_ref": "owner", "authority_generation": 1, "active": True,
+        "authenticated_at_ns": 0, "observed_at_ns": 1,
+    } | changed)
+
+
+def test_host_commits_receipt_admin_audit_once_without_hidden_issuer_calls(tmp_path):
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    claim = issuer.issue(wire.claim(), START)
+    host = wire.host(tmp_path / "host", create=True)
+    binding = host.prepare(claim, uid(4), observation, NOW)
+    result = host.bootstrap(lambda request: issuer.consume(request, lambda: NOW),
+                            observation, lambda: NOW)
+    assert result.code == "COMMITTED" and result.committed
+    assert result.qualification_pass is False
+    snapshot = host.snapshot()
+    assert [snapshot[k] for k in ("pending", "receipts", "admins", "audit")] == [1, 1, 1, 1]
+    assert snapshot["operation_id"] == binding.operation_id
+
+    def forbidden(_):
+        pytest.fail("committed host performed another licensing call")
+
+    restarted = wire.host(tmp_path / "host")
+    assert restarted.bootstrap(forbidden, observation, lambda: NOW) == result
+    assert restarted.snapshot() == snapshot
+
+
+def test_changed_stored_scope_is_corruption_not_a_new_owner(tmp_path):
+    from qualification.owner_authority.licensing_fixture import FixtureCorrupt
+
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    claim = issuer.issue(wire.claim(), START)
+
+    def corrupt(name, db):
+        if name == "prepare_after_commit":
+            db.execute("UPDATE configuration SET organization_id=?", (uid(30),))
+
+    host = wire.host(tmp_path / "host", create=True, hook=corrupt)
+    host.prepare(claim, uid(4), observation, NOW)
+    with pytest.raises(FixtureCorrupt):
+        host.bootstrap(lambda raw: issuer.consume(raw, lambda: NOW), observation, lambda: NOW)
+    assert host.snapshot()["admins"] == issuer.snapshot()["consumptions"] == 0
+
+
+def test_partial_stored_commit_is_corruption_not_a_cached_success(tmp_path):
+    from qualification.owner_authority.licensing_fixture import FixtureCorrupt
+
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    claim = issuer.issue(wire.claim(), START)
+
+    def corrupt(name, db):
+        if name == "publish_after_commit":
+            db.execute("DELETE FROM audit")
+
+    host = wire.host(tmp_path / "host", create=True, hook=corrupt)
+    host.prepare(claim, uid(4), observation, NOW)
+    with pytest.raises(FixtureCorrupt):
+        host.bootstrap(lambda raw: issuer.consume(raw, lambda: NOW), observation, lambda: NOW)
+    assert host.snapshot()["audit"] == 0
+    with pytest.raises(FixtureCorrupt):
+        host.bootstrap(lambda _: pytest.fail("cached corruption called issuer"),
+                        observation, lambda: NOW)
+
+
+@pytest.mark.parametrize("reply", ["unavailable", "refusal"])
+def test_denial_is_rechecked_before_unavailable_or_refusal_result(tmp_path, reply):
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    claim = issuer.issue(wire.claim(), START)
+    host = wire.host(tmp_path / "host", create=True)
+    native = [observation()]
+    host.prepare(claim, uid(4), lambda: native[0], NOW)
+
+    def consume(raw):
+        native[0] = observation(active=False)
+        if reply == "unavailable":
+            raise TimeoutError("synthetic response lost")
+        return p.canonical(p.Refusal.model_validate({
+            "version": "owner-bootstrap/1", "operation_id": uid(4),
+            "code": "OWNER_AUTHORIZATION_REVOKED", "completion": "NOT_COMMITTED",
+        }).model_dump())
+
+    result = host.bootstrap(consume, lambda: native[0], lambda: NOW)
+    assert result.code == "NATIVE_SESSION_INACTIVE" and result.committed is False
+    assert host.snapshot()["admins"] == 0
+
+
+def _issuer_service_child(root, manifest, public, claim_seed, receipt_seed, control, clients, drop):
+    from qualification.owner_authority.licensing_fixture import IssuerFixture
+
+    issuer = IssuerFixture(root, manifest, public, frozenset({"release"}),
+                           ("claim", Ed25519PrivateKey.from_private_bytes(claim_seed)),
+                           ("receipt", Ed25519PrivateKey.from_private_bytes(receipt_seed)))
+    calls, digest = 0, None
+    control.send("ready")
+    while True:
+        for connection in wait([control, *clients], timeout=30):
+            action, raw = connection.recv()
+            if action == "stop":
+                return
+            if action == "inspect":
+                control.send({"calls": calls, "receipt_sha256": digest})
+                continue
+            calls += 1
+            receipt = issuer.consume(raw, lambda: NOW)
+            digest = hashlib.sha256(receipt).hexdigest()
+            connection.send(("lost", None) if drop and calls == 1 else ("reply", receipt))
+
+
+@contextmanager
+def issuer_service(wire, root, *, drop=False, clients=1):
+    context = multiprocessing.get_context("spawn")
+    control, remote_control = context.Pipe()
+    pairs = [context.Pipe() for _ in range(clients)]
+    child = context.Process(target=_issuer_service_child, args=(
+        root, wire.manifest, wire.public, wire.seeds["claim"], wire.seeds["receipt"],
+        remote_control, [pair[1] for pair in pairs], drop))
+    child.start()
+    remote_control.close()
+    for _, remote in pairs:
+        remote.close()
+    assert control.poll(30) and control.recv() == "ready"
+
+    def inspect():
+        control.send(("inspect", None))
+        assert control.poll(30)
+        return control.recv()
+
+    try:
+        yield [pair[0] for pair in pairs], inspect
+    finally:
+        control.send(("stop", None))
+        child.join(10)
+        if child.is_alive():
+            child.terminate()
+            child.join(10)
+        for local, _ in pairs:
+            local.close()
+        control.close()
+        assert child.exitcode == 0
+
+
+def transport(connection):
+    def consume(raw):
+        connection.send(("consume", raw))
+        assert connection.poll(30), "issuer fixture response deadline"
+        kind, response = connection.recv()
+        if kind == "lost":
+            raise TimeoutError("synthetic response lost after issuer commit")
+        assert kind == "reply"
+        return response
+    return consume
+
+
+def _host_child(root, manifest, public, host_seed, claim, principal, operation,
+                mode, endpoint, channel, start, release, pause, fault):
+    from qualification.owner_authority.host_fixture import HostFixture
+
+    def hook(name, db):
+        if name == pause:
+            channel.send(("paused", name))
+            if not release.wait(30):
+                raise TimeoutError("host barrier deadline")
+        if fault is not None and name == fault[0]:
+            if fault[1] == "crash":
+                os._exit(72)
+            db.execute("SELECT deliberately_missing_host_fault_column")
+
+    host = HostFixture(root, manifest, public, frozenset({"release"}),
+                       Ed25519PrivateKey.from_private_bytes(host_seed), hook=hook)
+    state, clock = {"active": True}, [NOW]
+
+    def native():
+        return observation(principal_ref=principal, active=state["active"])
+
+    def consume(raw):
+        response = transport(endpoint)(raw)
+        if fault is not None and fault[0] == "response":
+            if fault[1] == "timeout":
+                raise TimeoutError("synthetic losing recovery response")
+            if fault[1] == "invalid":
+                return b"{}"
+            if fault[1] == "signature":
+                return p.canonical(json.loads(response) | {"signature_base64url": b64(b"\0" * 64)})
+            if fault[1] == "inactive":
+                state["active"] = False
+                return response
+            if fault[1] == "clock":
+                clock[0] += timedelta(seconds=61)
+                return response
+            operation_id = uid(20 if fault[1] == "wrong_operation" else operation)
+            return p.canonical({"version": "owner-bootstrap/1", "operation_id": operation_id,
+                                "code": "LICENSING_UNAVAILABLE", "completion": "NOT_COMMITTED"})
+        return response
+    channel.send(("ready", None))
+    if not start.wait(30):
+        return
+    try:
+        if mode != "bootstrap":
+            binding = host.prepare(claim, uid(operation), native, NOW)
+        result = (binding if mode == "prepare" else
+                  host.bootstrap(consume, native, lambda: clock[0]))
+        channel.send(("result", result.model_dump()))
+    except Exception as exc:
+        channel.send(("error", type(exc).__name__, str(exc)))
+    finally:
+        channel.close()
+
+
+@contextmanager
+def host_worker(wire, root, claim, endpoint=None, *, mode="bootstrap", principal="owner",
+                operation=4, pause=None, fault=None):
+    context = multiprocessing.get_context("spawn")
+    receiving, sending = context.Pipe(duplex=False)
+    start, release = context.Event(), context.Event()
+    child = context.Process(target=_host_child, args=(
+        root, wire.manifest, wire.public, wire.seeds["host"], claim, principal, operation,
+        mode, endpoint, sending, start, release, pause, fault))
+    child.start()
+    sending.close()
+
+    def receive():
+        assert receiving.poll(30), "host fixture child deadline"
+        return receiving.recv()
+
+    try:
+        assert receive() == ("ready", None)
+        yield child, start, release, receive
+    finally:
+        release.set()
+        start.set()
+        child.join(10)
+        if child.is_alive():
+            child.terminate()
+            child.join(10)
+        receiving.close()
+
+
+def test_lost_response_recovers_same_receipt_across_separate_issuer_and_host_processes(tmp_path):
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    claim = issuer.issue(wire.claim(), START)
+    host = wire.host(tmp_path / "host", create=True)
+    binding = host.prepare(claim, uid(4), observation, NOW)
+    with issuer_service(wire, issuer.root, drop=True) as (connections, inspect):
+        for expected in ("LICENSING_UNAVAILABLE", "COMMITTED"):
+            with host_worker(wire, host.root, claim, connections[0]) as child:
+                child[1].set()
+                kind, result = child[3]()
+                assert kind == "result" and result["code"] == expected
+                assert result["operation_id"] == binding.operation_id
+                assert result["qualification_pass"] is False
+            if expected == "LICENSING_UNAVAILABLE":
+                assert host.snapshot()["admins"] == 0
+                assert issuer.snapshot()["consumptions"] == 1
+                assert host.prepare(claim, uid(4), observation, NOW) == binding
+        state = inspect()
+        assert state["calls"] == 2
+        assert state["receipt_sha256"] == host.snapshot()["receipt_sha256"]
+        assert host.bootstrap(lambda _: pytest.fail("hidden licensing call"),
+                              observation, lambda: NOW).committed
+        assert inspect() == state
+
+
+@pytest.mark.parametrize("first", ["owner", "other"])
+@pytest.mark.parametrize("repeat", range(3))
+def test_host_initialization_race_never_elects_two_owners(tmp_path, first, repeat):
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    claim = issuer.issue(wire.claim(), START)
+    host = wire.host(tmp_path / "host", create=True)
+    second = "other" if first == "owner" else "owner"
+    with issuer_service(wire, issuer.root, clients=2) as (connections, inspect):
+        with host_worker(wire, host.root, claim, connections[0], mode="setup", principal=first,
+                         operation=4, pause="prepare_writer") as leader:
+            leader[1].set()
+            assert leader[3]() == ("paused", "prepare_writer")
+            with host_worker(wire, host.root, claim, connections[1], mode="setup", principal=second,
+                             operation=20, pause="prepare_before_writer") as follower:
+                follower[1].set()
+                assert follower[3]() == ("paused", "prepare_before_writer")
+                follower[2].set()
+                leader[2].set()
+                assert leader[3]()[1]["code"] == "COMMITTED"
+                assert follower[3]()[0:2] == ("error", "Refused")
+        assert inspect()["calls"] == 1
+    assert host.snapshot()["operation_id"] == uid(4)
+    assert [host.snapshot()[key] for key in ("receipts", "admins", "audit")] == [1, 1, 1]
+    assert issuer.snapshot()["consumptions"] == 1
+
+
+@pytest.mark.parametrize("point,fault", [
+    ("before_dispatch", "crash"), ("after_response", "crash"),
+    *[(point, fault) for point in ("receipt_write", "admin_write", "audit_write",
+                                  "publish_before_commit", "publish_after_commit")
+      for fault in ("sql", "crash")],
+])
+def test_host_crash_and_sql_fault_preserve_pending_and_atomic_publication(tmp_path, point, fault):
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    claim = issuer.issue(wire.claim(), START)
+    host = wire.host(tmp_path / "host", create=True)
+    binding = host.prepare(claim, uid(4), observation, NOW)
+    with issuer_service(wire, issuer.root) as (connections, inspect):
+        with host_worker(wire, host.root, claim, connections[0], fault=(point, fault)) as child:
+            child[1].set()
+            if fault == "sql":
+                assert child[3]()[0:2] == ("error", "OperationalError")
+            child[0].join(30)
+            assert child[0].exitcode == (72 if fault == "crash" else 0)
+        after = host.snapshot()
+        assert after["pending"] == 1 and after["operation_id"] == binding.operation_id
+        committed = int(point == "publish_after_commit")
+        assert [after[k] for k in ("receipts", "admins", "audit")] == [committed] * 3
+        assert host.bootstrap(transport(connections[0]), observation, lambda: NOW).committed
+        assert inspect()["receipt_sha256"] == host.snapshot()["receipt_sha256"]
+    assert issuer.snapshot()["consumptions"] == 1
+
+
+@pytest.mark.parametrize("point", [
+    "pending_write", "prepare_before_commit", "prepare_after_commit",
+])
+@pytest.mark.parametrize("fault", ["sql", "crash"])
+def test_pending_commit_precedes_every_dispatch(tmp_path, point, fault):
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    claim = issuer.issue(wire.claim(), START)
+    host = wire.host(tmp_path / "host", create=True)
+    with host_worker(wire, host.root, claim, mode="prepare", fault=(point, fault)) as child:
+        child[1].set()
+        if fault == "sql":
+            assert child[3]()[0:2] == ("error", "OperationalError")
+        child[0].join(30)
+        assert child[0].exitcode == (72 if fault == "crash" else 0)
+    assert host.snapshot()["pending"] == int(point == "prepare_after_commit")
+    assert issuer.snapshot()["consumptions"] == 0
+    binding = host.prepare(claim, uid(4), observation, NOW)
+    assert host.prepare(claim, uid(4), observation, NOW) == binding
+
+
+@pytest.mark.parametrize("phase", ["initial", "publish_writer", "publish_before_commit",
+                                   "publish_after_commit"])
+@pytest.mark.parametrize("change", [{"active": False}, {"principal_ref": "other"},
+                                   {"authority_generation": 2}, {"observed_at_ns": 60000000001}])
+def test_synthetic_denial_never_publishes_and_postcommit_denial_is_truthful(
+        tmp_path, phase, change):
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    claim = issuer.issue(wire.claim(), START)
+    native = [observation()]
+
+    def changed(name, db):
+        if name == phase:
+            native[0] = observation(**change)
+
+    host = wire.host(tmp_path / "host", create=True, hook=changed)
+    host.prepare(claim, uid(4), lambda: native[0], NOW)
+    if phase == "initial":
+        native[0] = observation(**change)
+    result = host.bootstrap(lambda raw: issuer.consume(raw, lambda: NOW),
+                            lambda: native[0], lambda: NOW)
+    assert result.code == ("NATIVE_SESSION_INACTIVE" if change == {"active": False}
+                           else "NATIVE_AUTH_DENIED")
+    assert result.committed == (phase == "publish_after_commit")
+    assert host.snapshot()["admins"] == int(phase == "publish_after_commit")
+    assert issuer.snapshot()["consumptions"] == int(phase != "initial")
+
+
+@pytest.mark.parametrize("age,valid", [(-1, False), (0, True), (60000000000, True),
+                                     (60000000001, False)])
+def test_synthetic_freshness_both_boundaries(tmp_path, age, valid):
+    from qualification.owner_authority.licensing_fixture import Refused
+
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    claim = issuer.issue(wire.claim(), START)
+    host = wire.host(tmp_path / "host", create=True)
+    def native():
+        return observation(authenticated_at_ns=1, observed_at_ns=age + 1)
+    if valid:
+        assert host.prepare(claim, uid(4), native, NOW).operation_id == uid(4)
+    else:
+        with pytest.raises(Refused, match="NATIVE_AUTH_DENIED"):
+            host.prepare(claim, uid(4), native, NOW)
+        assert host.snapshot()["pending"] == 0
+
+
+@pytest.mark.parametrize("changed", [{"evidence_class": "NATIVE_QUALIFICATION"},
+    {"qualification_pass": True}, {"qualification_pass": 0}, {"active": 0},
+    {"authority_generation": False}, {"authority_generation": 0},
+    {"authority_generation": 2147483648}, {"principal_ref": ""}, {"observed_at_ns": False},
+    {"authenticated_at_ns": -1}, {"authenticated_at_ns": 9223372036854775808},
+    {"observed_at_ns": -1}, {"observed_at_ns": 9223372036854775808}])
+def test_observation_overrides_refuse_before_any_host_writer(tmp_path, monkeypatch, changed):
+    from qualification.owner_authority import host_fixture as lane
+
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    claim = issuer.issue(wire.claim(), START)
+    host = wire.host(tmp_path / "host", create=True)
+    invalid = observation().model_copy(update=changed)
+    monkeypatch.setattr(lane, "transaction", lambda *a, **k: pytest.fail("bad observation wrote"))
+    with pytest.raises(ValueError):
+        host.prepare(claim, uid(4), lambda: invalid, NOW)
+
+
+def test_missing_claim_and_unsigned_noncommit_refusal_cannot_freeze_another_owner(tmp_path):
+    from qualification.owner_authority.licensing_fixture import Refused
+
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    host = wire.host(tmp_path / "host", create=True)
+    with pytest.raises(Refused, match="OWNER_AUTHORIZATION_REQUIRED"):
+        host.prepare(None, uid(4), observation, NOW)
+    assert host.snapshot()["pending"] == 0
+    claim = issuer.issue(wire.claim(), START)
+    frozen = host.prepare(claim, uid(4), observation, NOW)
+
+    def misleading(raw):
+        issuer.consume(raw, lambda: NOW)
+        return p.canonical({"version": "owner-bootstrap/1", "operation_id": uid(4),
+                            "code": "LICENSING_UNAVAILABLE", "completion": "NOT_COMMITTED"})
+
+    assert host.bootstrap(misleading, observation, lambda: NOW).committed is False
+    with pytest.raises(Refused, match="OWNER_BINDING_CONFLICT"):
+        host.prepare(claim, uid(20), lambda: observation(principal_ref="other"), NOW)
+    assert host.prepare(claim, uid(4), observation, NOW) == frozen
+    assert host.bootstrap(lambda raw: issuer.consume(raw, lambda: NOW),
+                          observation, lambda: NOW).committed
+    assert issuer.snapshot()["consumptions"] == 1
+
+
+def test_expired_pending_receipt_recovers_evidence_without_local_publication(tmp_path):
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    claim = issuer.issue(wire.claim(expires=NOW + timedelta(seconds=1)), START)
+    host = wire.host(tmp_path / "host", create=True)
+    frozen = host.prepare(claim, uid(4), observation, NOW)
+
+    def lost(raw):
+        issuer.consume(raw, lambda: NOW)
+        raise TimeoutError("synthetic lost receipt")
+
+    assert host.bootstrap(lost, observation, lambda: NOW).committed is False
+    late = NOW + timedelta(seconds=2)
+    reply = host.bootstrap(lambda raw: issuer.consume(raw, lambda: late), observation, lambda: late)
+    assert reply.code == "OWNER_AUTHORIZATION_EXPIRED" and not reply.committed
+    assert host.snapshot()["operation_id"] == frozen.operation_id
+    assert host.snapshot()["admins"] == 0 and issuer.snapshot()["consumptions"] == 1
+
+
+@pytest.mark.parametrize("change", ["signature", "binding", "partial", "oversize"])
+def test_unverified_responses_keep_pending_without_publishing(tmp_path, change):
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    claim = issuer.issue(wire.claim(), START)
+    host = wire.host(tmp_path / "host", create=True)
+    host.prepare(claim, uid(4), observation, NOW)
+
+    def corrupted(raw):
+        receipt = issuer.consume(raw, lambda: NOW)
+        if change == "signature":
+            return p.canonical(json.loads(receipt) | {"signature_base64url": b64(b"\0" * 64)})
+        if change == "binding":
+            payload = p.verify_signed(receipt, "receipt", wire.public, frozenset({"receipt"}))
+            return wire.sign("receipt", payload.model_dump() | {
+                "binding": payload.binding.model_dump() | {"principal_commitment": "d" * 64}},
+                "receipt")
+        return b"{}" if change == "partial" else b" " * 4097
+
+    reply = host.bootstrap(corrupted, observation, lambda: NOW)
+    assert reply.code == "LICENSING_UNAVAILABLE" and not reply.committed
+    assert host.snapshot()["pending"] == 1 and host.snapshot()["admins"] == 0
+    assert host.bootstrap(lambda raw: issuer.consume(raw, lambda: NOW),
+                          observation, lambda: NOW).committed
+
+
+@pytest.mark.parametrize("field,value", [("operation_id", uid(30)), ("claim_sha256", "d" * 64),
+                                        ("principal_commitment", "d" * 64),
+                                        ("initialization_sha256", "d" * 64)])
+def test_pending_consistency_has_independent_corruption_cases(tmp_path, field, value):
+    from qualification.owner_authority.licensing_fixture import FixtureCorrupt
+
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    claim = issuer.issue(wire.claim(), START)
+
+    def corrupt(name, db):
+        if name == "prepare_after_commit":
+            old = db.execute("SELECT binding FROM pending").fetchone()[0]
+            changed = json.loads(old) | {field: value}
+            if field != "initialization_sha256":
+                changed["initialization_sha256"] = host._initialization(changed)
+            db.execute("UPDATE pending SET binding=?", (p.canonical(changed),))
+
+    host = wire.host(tmp_path / "host", create=True, hook=corrupt)
+    host.prepare(claim, uid(4), observation, NOW)
+    with pytest.raises(FixtureCorrupt):
+        host.bootstrap(lambda _: pytest.fail("corrupt intent reached issuer"),
+                        observation, lambda: NOW)
+
+
+def test_fixture_result_cannot_claim_uncommitted_or_native_success():
+    good = {"evidence_class": "OFFLINE_CONFORMANCE", "qualification_pass": False,
+            "operation_id": uid(4), "code": "COMMITTED", "committed": True}
+    assert p.FixtureHostResult.model_validate(good).committed
+    for change in ({"committed": False}, {"committed": 0}, {"committed": 1},
+                   {"qualification_pass": True},
+                   {"qualification_pass": 0}, {"evidence_class": "NATIVE_QUALIFICATION"}):
+        with pytest.raises(ValueError):
+            p.FixtureHostResult.model_validate(good | change)
+
+
+def test_refusal_for_another_operation_is_not_this_pending_result(tmp_path):
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    claim = issuer.issue(wire.claim(), START)
+    host = wire.host(tmp_path / "host", create=True)
+    host.prepare(claim, uid(4), observation, NOW)
+    wrong = p.canonical({"version": "owner-bootstrap/1", "operation_id": uid(20),
+                         "code": "OWNER_AUTHORIZATION_REVOKED", "completion": "NOT_COMMITTED"})
+    result = host.bootstrap(lambda _: wrong, observation, lambda: NOW)
+    assert result.code == "LICENSING_UNAVAILABLE" and not result.committed
+    assert host.snapshot()["pending"] == 1 and host.snapshot()["admins"] == 0
+
+
+@pytest.mark.parametrize("changed", ["operation", "claim", "principal"])
+def test_each_frozen_pending_field_has_its_own_conflict_case(tmp_path, changed):
+    from qualification.owner_authority.licensing_fixture import Refused
+
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    claim = issuer.issue(wire.claim(), START)
+    host = wire.host(tmp_path / "host", create=True)
+    frozen = host.prepare(claim, uid(4), observation, NOW)
+    other = wire.sign("claim", wire.claim(index=20).model_dump(), "claim")
+    with pytest.raises(Refused, match="OWNER_BINDING_CONFLICT"):
+        host.prepare(other if changed == "claim" else claim,
+                     uid(20) if changed == "operation" else uid(4),
+                     (lambda: observation(principal_ref="other")) if changed == "principal"
+                     else observation, NOW)
+    assert host.prepare(claim, uid(4), observation, NOW) == frozen
+
+
+@pytest.mark.parametrize("bad", ["key", "organization", "missing_config", "missing_pending"])
+def test_wrong_host_configuration_refuses_without_any_dispatch(tmp_path, bad):
+    from qualification.owner_authority.licensing_fixture import FixtureCorrupt, Refused
+
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    claim = issuer.issue(wire.claim(), START)
+    def hook(name, db):
+        if name == "prepare_writer" and bad == "missing_config":
+            db.execute("DELETE FROM configuration")
+    host = wire.host(tmp_path / "host", create=True, hook=hook)
+    if bad == "organization":
+        claim = wire.sign("claim", wire.claim().model_dump() | {"organization_id": uid(30)},
+                          "claim")
+    if bad == "key":
+        host.key = wire.private["receipt"]
+    expected = Refused if bad == "organization" else FixtureCorrupt
+    with pytest.raises(expected):
+        if bad == "missing_pending":
+            host.bootstrap(lambda _: pytest.fail("unprepared host dispatched"),
+                            observation, lambda: NOW)
+        else:
+            host.prepare(claim, uid(4), observation, NOW)
+    assert host.snapshot()["admins"] == 0
+
+
 @pytest.mark.parametrize("state", ["unknown", "superseded"])
 def test_revocation_and_reissue_refuse_ineligible_transition(tmp_path, state):
     from qualification.owner_authority.licensing_fixture import Refused
@@ -664,3 +1247,316 @@ def test_stored_receipt_must_verify_on_replay(tmp_path):
         issuer.consume(wire.request(claim), lambda: NOW)
     issuer.hook = None
     assert issuer.consume(wire.request(claim), lambda: NOW) == receipt
+
+
+@pytest.mark.parametrize("first", [0, 1])
+@pytest.mark.parametrize("repeat", range(3))
+def test_same_pending_recovery_race_commits_one_identical_receipt(tmp_path, first, repeat):
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    claim = issuer.issue(wire.claim(), START)
+    host = wire.host(tmp_path / "host", create=True)
+    host.prepare(claim, uid(4), observation, NOW)
+    with issuer_service(wire, issuer.root, clients=2) as (connections, inspect):
+        with host_worker(wire, host.root, claim, connections[first],
+                         pause="publish_writer") as leader:
+            leader[1].set()
+            assert leader[3]() == ("paused", "publish_writer")
+            with host_worker(wire, host.root, claim, connections[1 - first],
+                             pause="publish_before_writer") as follower:
+                follower[1].set()
+                assert follower[3]() == ("paused", "publish_before_writer")
+                follower[2].set()
+                leader[2].set()
+                assert leader[3]()[1]["code"] == follower[3]()[1]["code"] == "COMMITTED"
+        assert inspect()["calls"] == 2
+        assert inspect()["receipt_sha256"] == host.snapshot()["receipt_sha256"]
+    assert [host.snapshot()[k] for k in ("pending", "receipts", "admins", "audit")] == [1] * 4
+    assert issuer.snapshot()["consumptions"] == 1
+
+
+@pytest.mark.parametrize("point", ["prepare_writer", "prepare_before_commit"])
+def test_prepare_rechecks_synthetic_identity_after_waits(tmp_path, point):
+    from qualification.owner_authority.licensing_fixture import Refused
+
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    claim = issuer.issue(wire.claim(), START)
+    current = [observation()]
+    def hook(name, db):
+        if name == point:
+            current[0] = observation(active=False)
+    host = wire.host(tmp_path / "host", create=True, hook=hook)
+    with pytest.raises(Refused, match="NATIVE_SESSION_INACTIVE"):
+        host.prepare(claim, uid(4), lambda: current[0], NOW)
+    assert host.snapshot()["pending"] == 0
+
+
+@pytest.mark.parametrize("field", ["principal", "operation", "receipt"])
+def test_cached_commit_corruption_never_releases_success(tmp_path, field):
+    from qualification.owner_authority.licensing_fixture import FixtureCorrupt
+
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    claim = issuer.issue(wire.claim(), START)
+    def hook(name, db):
+        if name == "publish_after_commit":
+            if field == "principal":
+                db.execute("UPDATE admins SET principal_commitment=?", ("d" * 64,))
+            elif field == "operation":
+                db.execute("PRAGMA foreign_keys=OFF")
+                db.execute("UPDATE audit SET operation_id=?", (uid(20),))
+            else:
+                raw = json.loads(db.execute("SELECT envelope FROM receipts").fetchone()[0])
+                raw["signature_base64url"] = b64(b"\0" * 64)
+                db.execute("UPDATE receipts SET envelope=?", (p.canonical(raw),))
+    host = wire.host(tmp_path / "host", create=True, hook=hook)
+    host.prepare(claim, uid(4), observation, NOW)
+    if field == "receipt":
+        assert host.bootstrap(lambda raw: issuer.consume(raw, lambda: NOW),
+                              observation, lambda: NOW).committed
+    else:
+        with pytest.raises(FixtureCorrupt):
+            host.bootstrap(lambda raw: issuer.consume(raw, lambda: NOW), observation, lambda: NOW)
+    expected = p.ProtocolInputError if field == "receipt" else FixtureCorrupt
+    with pytest.raises(expected):
+        host.bootstrap(lambda _: pytest.fail("cached corruption called issuer"),
+                        observation, lambda: NOW)
+
+
+@pytest.mark.parametrize("seconds", [-61, 61])
+@pytest.mark.parametrize("phase", ["after_response", "publish_writer", "publish_before_commit"])
+def test_clock_skew_on_received_receipt_keeps_pending(tmp_path, seconds, phase):
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    claim = issuer.issue(wire.claim(), START)
+    clock = [NOW]
+    def hook(name, db):
+        if name == phase:
+            clock[0] += timedelta(seconds=seconds)
+    host = wire.host(tmp_path / "host", create=True, hook=hook)
+    host.prepare(claim, uid(4), observation, NOW)
+    def consume(raw):
+        return issuer.consume(raw, lambda: NOW)
+    result = host.bootstrap(consume, observation, lambda: clock[0])
+    assert result.code == "OWNER_CLOCK_SKEW" and not result.committed
+    assert host.snapshot()["pending"] == 1 and host.snapshot()["admins"] == 0
+    host.hook = None
+    assert host.bootstrap(lambda raw: issuer.consume(raw, lambda: NOW),
+                          observation, lambda: NOW).committed
+
+
+@pytest.mark.parametrize("now", [None, False, 0, "", NOW.replace(tzinfo=None)])
+def test_host_request_clock_requires_exact_utc_datetime(tmp_path, monkeypatch, now):
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    claim = issuer.issue(wire.claim(), START)
+    host = wire.host(tmp_path / "host", create=True)
+    with pytest.raises(p.ProtocolInputError):
+        host.prepare(claim, uid(4), observation, now)
+    assert host.snapshot()["pending"] == 0
+    binding = host.prepare(claim, uid(4), observation, NOW)
+    monkeypatch.setattr(p, "_wire", lambda *a: pytest.fail("bad clock reached wire construction"))
+    with pytest.raises(p.ProtocolInputError):
+        host._request(binding, claim, now)
+
+
+def test_coherent_pending_replacement_during_dispatch_is_not_published(tmp_path):
+    from qualification.owner_authority.licensing_fixture import FixtureCorrupt
+
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    claim = issuer.issue(wire.claim(), START)
+    def hook(name, db):
+        if name == "publish_writer":
+            data = json.loads(db.execute("SELECT binding FROM pending").fetchone()[0])
+            data["operation_id"] = uid(20)
+            data["initialization_sha256"] = host._initialization(data)
+            db.execute("UPDATE pending SET operation_id=?,binding=?", (uid(20), p.canonical(data)))
+    host = wire.host(tmp_path / "host", create=True, hook=hook)
+    host.prepare(claim, uid(4), observation, NOW)
+    with pytest.raises(FixtureCorrupt, match="pending identity changed"):
+        host.bootstrap(lambda raw: issuer.consume(raw, lambda: NOW), observation, lambda: NOW)
+    assert host.snapshot()["admins"] == 0 and host.snapshot()["operation_id"] == uid(4)
+
+
+def test_recovered_receipt_cannot_publish_before_claim_not_before(tmp_path):
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    data = wire.claim().model_dump() | {"not_before": instant(NOW + timedelta(seconds=1))}
+    claim = issuer.issue(p.OwnerClaim.model_validate(data), START)
+    host = wire.host(tmp_path / "host", create=True)
+    host.prepare(claim, uid(4), observation, NOW)
+    result = host.bootstrap(lambda raw: issuer.consume(raw, lambda: NOW + timedelta(seconds=2)),
+                            observation, lambda: NOW)
+    assert result.code == "OWNER_AUTHORIZATION_INVALID" and not result.committed
+    assert host.snapshot()["admins"] == 0 and issuer.snapshot()["consumptions"] == 1
+
+
+@pytest.mark.parametrize("offset,valid", [(-1, False), (0, True), (1, True)])
+@pytest.mark.parametrize("edge", ["start", "end"])
+def test_prepare_checks_manifest_window_before_pending(tmp_path, edge, offset, valid):
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    claim = issuer.issue(wire.claim(), START)
+    manifest = p.verify_signed(wire.manifest, "manifest", wire.public, frozenset({"release"}))
+    boundary = NOW + timedelta(seconds=-offset if edge == "start" else offset)
+    wire.manifest = wire.sign("manifest", manifest.model_dump() | {
+        "issued_at" if edge == "start" else "expires_at": instant(boundary)}, "release")
+    host = wire.host(tmp_path / "host", create=True)
+    valid = valid and not (edge == "end" and offset == 0)
+    if valid:
+        assert host.prepare(claim, uid(4), observation, NOW).operation_id == uid(4)
+    else:
+        with pytest.raises(p.ProtocolInputError):
+            host.prepare(claim, uid(4), observation, NOW)
+        assert host.snapshot()["pending"] == 0
+
+
+@pytest.mark.parametrize("seconds,valid", [(-61, False), (-60, True), (60, True), (61, False)])
+def test_prepare_checks_otherwise_valid_signed_attempt_clock(tmp_path, monkeypatch, seconds, valid):
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    claim = issuer.issue(wire.claim(), START)
+    host = wire.host(tmp_path / "host", create=True)
+    canonical = p.canonical
+
+    def skew(value):
+        # Fault at request construction: ordinary code uses the same now for both clocks.
+        if isinstance(value, dict) and "attempt_id" in value and value.get("requested_at") == (
+                instant(NOW)):
+            value = value | {"requested_at": instant(NOW + timedelta(seconds=seconds))}
+        return canonical(value)
+
+    monkeypatch.setattr(p, "canonical", skew)
+    if valid:
+        assert host.prepare(claim, uid(4), observation, NOW).operation_id == uid(4)
+    else:
+        with pytest.raises(p.ClockSkewError):
+            host.prepare(claim, uid(4), observation, NOW)
+        assert host.snapshot()["pending"] == 0
+
+
+def test_prepare_wrong_claim_purpose_refuses_before_writer(tmp_path, monkeypatch):
+    from qualification.owner_authority import host_fixture as lane
+
+    wire = SyntheticWire()
+    claim = wire.sign("claim", wire.claim().model_dump(), "receipt")
+    p.verify_signed(claim, "claim", wire.public, frozenset(wire.public))
+    host = wire.host(tmp_path / "host", create=True)
+    monkeypatch.setattr(lane, "transaction", lambda *a: pytest.fail("wrong purpose reached writer"))
+    with pytest.raises(p.ProtocolInputError):
+        host.prepare(claim, uid(4), observation, NOW)
+    assert host.snapshot()["pending"] == 0
+
+
+@pytest.mark.parametrize("phase", ["publish_writer", "publish_before_commit"])
+def test_receipt_must_still_verify_after_writer_wait_and_before_commit(tmp_path, phase):
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    claim = issuer.issue(wire.claim(), START)
+    staged = []
+
+    def hook(name, db):
+        if name == phase:
+            staged.append(db.execute("SELECT count(*) FROM receipts").fetchone()[0])
+            host.keys["receipt"] = wire.public["host"]
+
+    host = wire.host(tmp_path / "host", create=True, hook=hook)
+    host.prepare(claim, uid(4), observation, NOW)
+    before = host.snapshot()
+    with pytest.raises(p.ProtocolInputError):
+        host.bootstrap(lambda raw: issuer.consume(raw, lambda: NOW), observation, lambda: NOW)
+    assert staged == [int(phase == "publish_before_commit")]
+    assert host.snapshot() == before and issuer.snapshot()["consumptions"] == 1
+    host.hook, host.keys["receipt"] = None, wire.public["receipt"]
+    assert host.bootstrap(lambda raw: issuer.consume(raw, lambda: NOW),
+                          observation, lambda: NOW).committed
+
+
+def test_different_signed_stored_receipt_is_not_overwritten_or_reported_as_this_reply(tmp_path):
+    from qualification.owner_authority.licensing_fixture import FixtureCorrupt
+
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    claim = issuer.issue(wire.claim(), START)
+    host = wire.host(tmp_path / "host", create=True)
+    host.prepare(claim, uid(4), observation, NOW)
+    before = []
+
+    def interleaved(raw):
+        receipt = issuer.consume(raw, lambda: NOW)
+        value = p.verify_signed(receipt, "receipt", wire.public, frozenset({"receipt"}))
+        alternate = wire.sign("receipt", value.model_dump() | {
+            "consumed_at": instant(NOW - timedelta(seconds=1))}, "receipt")
+        assert alternate != receipt
+        p.check_receipt(alternate, raw, wire.manifest, wire.public, frozenset({"release"}), NOW)
+        assert wire.host(host.root).bootstrap(lambda _: alternate,
+                                              observation, lambda: NOW).committed
+        before.append(host.snapshot())
+        return receipt
+
+    with pytest.raises(FixtureCorrupt, match="conflicting local receipt"):
+        host.bootstrap(interleaved, observation, lambda: NOW)
+    assert host.snapshot() == before[0] and issuer.snapshot()["consumptions"] == 1
+    assert host.bootstrap(lambda _: pytest.fail("conflict recovery dispatched"),
+                          observation, lambda: NOW).committed
+    assert host.snapshot() == before[0]
+
+
+@pytest.mark.parametrize("outcome", ["timeout", "refusal", "invalid", "wrong_operation",
+                                      "signature", "inactive", "clock"])
+@pytest.mark.parametrize("first", [0, 1])
+@pytest.mark.parametrize("repeat", range(3))
+def test_losing_recovery_reports_the_other_process_commit(tmp_path, outcome, first, repeat):
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    claim = issuer.issue(wire.claim(), START)
+    host = wire.host(tmp_path / "host", create=True)
+    host.prepare(claim, uid(4), observation, NOW)
+    with issuer_service(wire, issuer.root, clients=2) as (connections, inspect):
+        with host_worker(wire, host.root, claim, connections[first],
+                         pause="publish_writer") as leader:
+            leader[1].set()
+            assert leader[3]() == ("paused", "publish_writer")
+            with host_worker(wire, host.root, claim, connections[1 - first],
+                             pause="before_dispatch", fault=("response", outcome)) as follower:
+                follower[1].set()
+                assert follower[3]() == ("paused", "before_dispatch")
+                leader[2].set()
+                assert leader[3]()[1]["committed"] is True
+                before = host.snapshot()
+                follower[2].set()
+                kind, result = follower[3]()
+                expected = {"inactive": "NATIVE_SESSION_INACTIVE", "clock": "OWNER_CLOCK_SKEW"}
+                assert kind == "result" and result["code"] == expected.get(
+                    outcome, "LICENSING_UNAVAILABLE")
+                assert result["committed"] is True
+                assert host.snapshot() == before
+        assert inspect()["calls"] == 2
+        assert inspect()["receipt_sha256"] == host.snapshot()["receipt_sha256"]
+    assert [host.snapshot()[k] for k in ("pending", "receipts", "admins", "audit")] == [1] * 4
+    assert issuer.snapshot()["consumptions"] == 1
+
+
+def test_result_reconciliation_refuses_coherent_pending_replacement(tmp_path):
+    from qualification.owner_authority.licensing_fixture import FixtureCorrupt, transaction
+
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    claim = issuer.issue(wire.claim(), START)
+    host = wire.host(tmp_path / "host", create=True)
+    host.prepare(claim, uid(4), observation, NOW)
+
+    def lost(raw):
+        issuer.consume(raw, lambda: NOW)
+        with transaction(host.root, "host") as db:
+            data = json.loads(db.execute("SELECT binding FROM pending").fetchone()[0])
+            data["operation_id"] = uid(20)
+            data["initialization_sha256"] = host._initialization(data)
+            db.execute("UPDATE pending SET operation_id=?,binding=?", (uid(20), p.canonical(data)))
+        raise TimeoutError("synthetic loss after coherent state replacement")
+
+    with pytest.raises(FixtureCorrupt, match="pending identity changed"):
+        host.bootstrap(lost, observation, lambda: NOW)
+    assert host.snapshot()["admins"] == 0 and issuer.snapshot()["consumptions"] == 1
