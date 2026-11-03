@@ -30,6 +30,7 @@ from pydantic import (
 from connect_automate.entitlement import UuidV4, verify_signature
 
 PACKET_BYTES = 1048576
+CASE_NS = 180_000_000_000
 Token = Annotated[StrictStr, Field(pattern=r"^[a-z0-9][a-z0-9._-]{0,63}$")]
 Code = Annotated[StrictStr, Field(pattern=r"^[A-Z][A-Z0-9_]{0,63}$")]
 Digest = Annotated[StrictStr, Field(pattern=r"^[0-9a-f]{64}$")]
@@ -75,7 +76,7 @@ class OfflineCase(Closed):
     actual_code: Code
     assertion_ids: Identifiers
     fixture_sha256: Digest
-    duration_ns: Annotated[StrictInt, Field(ge=0, le=180000000000)]
+    duration_ns: Annotated[StrictInt, Field(ge=0, le=CASE_NS)]
     artifacts: Annotated[list[Artifact], Field(max_length=64)]
 
     @model_validator(mode="after")
@@ -469,3 +470,47 @@ class FixtureHostResult(Closed):
         if self.code == "COMMITTED" and not self.committed:
             raise ValueError("uncommitted fixture result")
         return self
+
+
+class RunnableCase(Closed):
+    kind: Literal["OFFLINE_CONFORMANCE"]
+    case_id: Literal["lost-response-replay", "revoked-claim", "inactive-session"]
+    requirement: Token
+    expected_code: Code
+    assertion_ids: Identifiers
+    capability: Literal["disposable-fixtures"]
+
+
+class DeferredCase(Closed):
+    kind: Literal["NOT_RUN", "BLOCKED"]
+    case_id: Token
+    requirement: Token
+
+
+class CaseInventory(Closed):
+    version: Literal["owner-harness-cases/1"]
+    cases: Annotated[list[RunnableCase | DeferredCase], Field(min_length=1, max_length=64)]
+
+    @model_validator(mode="after")
+    def unique_cases(self):
+        _unique([case.case_id for case in self.cases])
+        return self
+
+
+class CaseObservation(Closed):
+    actual_code: Code
+    assertions: Annotated[dict[Token, StrictBool], Field(min_length=1, max_length=64)]
+
+
+def parse_inventory(raw: bytes):
+    try:
+        return CaseInventory.model_validate(_json(raw, PACKET_BYTES))
+    except (ValueError, TypeError, RecursionError):
+        raise ProtocolInputError() from None
+
+
+def parse_observation(raw: bytes):
+    try:
+        return CaseObservation.model_validate(_json(raw, PACKET_BYTES))
+    except (ValueError, TypeError, RecursionError):
+        raise ProtocolInputError() from None
