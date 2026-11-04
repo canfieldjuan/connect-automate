@@ -450,7 +450,8 @@ after dispatch is `UNKNOWN`, never a definite rollback. Existing licence checks 
 | `LICENSING_UNAVAILABLE` | Missing endpoint, TLS/transport/timeout, stale/unverifiable response or unavailable service. Preserve any pending operation with completion `UNKNOWN` if dispatch could have occurred. Tell the user first-launch setup could not complete; offer only explicit recovery of that operation. |
 | `BOOTSTRAP_BUSY`, `NATIVE_AUTH_UNAVAILABLE`, `NATIVE_AUTH_DENIED`, `NATIVE_SESSION_INACTIVE`, `AUTHORITY_CORRUPT` | Local-only closed outcomes. No licensing call until native proof is valid and no owner authority on refusal. Shared credentials are unsupported; do not pretend to detect them from a username. |
 
-The issuer may use HTTP 200 for a consumed receipt, 400 for malformed requests,
+The issuer may use HTTP 200 for a consumed receipt, 400 as specified in
+[Malformed consume requests](#malformed-consume-requests),
 403 for an invalid/revoked claim, 409 for binding conflict, 410 for expired new
 consumption, 422 with `OWNER_CLOCK_SKEW` for the clock-window refusal, and 503 for
 unavailable/recovery-locked state. HTTP success is not
@@ -484,6 +485,77 @@ be created on the strength of this prose. An unrelated administrator without a
 valid scoped authorization must be denied through the supported bootstrap
 interface. This does not promise protection from a compromised kernel or an
 attacker replacing the protected host/trust anchor; pin that computing boundary.
+
+#### Malformed consume requests
+
+**Proposed contract amendment for [issue #73](https://github.com/canfieldjuan/connect-automate/issues/73).**
+The HTTP mapping allows 400 when the request fails wire validation. The
+operation-bound `Refusal` requires a UUIDv4 operation ID, which may be absent,
+ambiguous or invalid at that boundary. Use a separate response so malformed
+input cannot supply an operation identity or a completion claim.
+
+The licensing owner's consume endpoint applies its existing request byte cap,
+strict JSON decoder and closed `ConsumeRequest` validation before using any
+request field as authority. If that wire validation fails and the endpoint
+can return a response, it sends HTTP 400 with `Content-Type: application/json`
+and this canonical UTF-8 body:
+
+```json
+{"code":"MALFORMED_CONSUME_REQUEST","version":"owner-bootstrap/1"}
+```
+
+The response body schema is closed:
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "code": {"const": "MALFORMED_CONSUME_REQUEST"},
+    "version": {"const": "owner-bootstrap/1"}
+  },
+  "required": ["code", "version"],
+  "additionalProperties": false
+}
+```
+
+The same response applies even if a rejected request appears to contain a valid
+operation ID. This branch uses no request-derived data in the response, performs
+no claim or operation lookup, and writes no consumption, receipt or
+operation-linked audit record. It does not extract an ID from a rejected
+document. Well-formed requests continue through the existing claim and
+installation proof, binding and clock checks before any ledger access.
+An invalid signature on a well-formed request stays on that verification path.
+
+The CA client recognizes this diagnostic only with HTTP 400,
+`application/json` and the canonical body defined here, under the existing
+response byte cap and strict decoding rules. A different status with that
+body, a different 400 body, or a transport-layer rejection follows the
+existing unverifiable-response handling. A recognized
+400 also uses the existing `LICENSING_UNAVAILABLE` outcome. If dispatch may
+have occurred, the client keeps any pending binding with completion
+`UNKNOWN`, including when this response follows an earlier lost response.
+It neither clears the pending operation nor grants authority or triggers an
+automatic retry. Explicit recovery still requires a fresh authenticated
+attempt for the same binding. Only the existing verified receipt and local
+checks can permit publication.
+
+Synthetic acceptance examples for a later implementation:
+
+| Input or sequence | Required observation |
+| --- | --- |
+| Truncated JSON, duplicate members, a missing binding, missing or invalid operation ID, or an over-cap body | Endpoint rejection before ledger access. If the endpoint responds, it sends the fixed 400 body. |
+| Valid-looking operation ID with a missing attempt ID | The same 400 body, without echoing the operation ID or accessing the ledger. |
+| Structurally valid request with an invalid installation signature | The existing verification path refuses before ledger access. It cannot yield the malformed-wire diagnostic or an authenticated clock-skew classification. |
+| Valid signed control with a fresh attempt for the frozen binding | The existing consume or receipt-recovery path runs and returns its existing bound outcome. |
+| 400 with an extra `operation_id` or `completion`, a duplicate field, or a missing or wrong literal | The client rejects the body. The fixed body on a non-400 response is also rejected. |
+| Earlier issuer commit followed by response loss, then a 400 during recovery | The client preserves the original pending binding and `UNKNOWN` completion, with no authority publication or automatic retry. A later explicit, authenticated replay of the original binding can recover the same signed receipt. |
+
+This proposal requires independent review and Juan's exact-revision acceptance.
+The licensing owner must separately accept its implementation work order. The
+H1 case stays blocked pending an accepted follow-up. Manifest renewal, device
+replacement, inaccessible-disk evidence, native sign-in, Hello, Gmail and live
+activation remain outside this slice.
 
 ## Native mechanism pins and protected ownership
 
@@ -1114,9 +1186,10 @@ Acceptance sequence:
 This PR changes only this proposed contract and the receiver roadmap's completed
 V1a/next-work pointer. It preserves the entire accepted vertical plan and V1a
 work order, all source/tests, schemas, dependency pins, workflows and runtime
-configuration. The non-blocking malformed-refusal, activation-manifest renewal
-and failed-PC recovery questions from this review are deferred to [issue #73](https://github.com/canfieldjuan/connect-automate/issues/73),
-not resolved or implemented here. The existing malformed `handoff_id`
+configuration. The later [malformed consume requests](#malformed-consume-requests)
+amendment proposes one resolution for [issue #73](https://github.com/canfieldjuan/connect-automate/issues/73).
+Activation-manifest renewal, failed-PC recovery and inaccessible-disk evidence
+remain open in that issue. The existing malformed `handoff_id`
 negative-test gap noted on PR #71 stays deferred until that test file is next touched; no incidental test
 change belongs in this contract PR.
 
