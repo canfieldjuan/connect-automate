@@ -557,6 +557,73 @@ H1 case stays blocked pending an accepted follow-up. Manifest renewal, device
 replacement, inaccessible-disk evidence, native sign-in, Hello, Gmail and live
 activation remain outside this slice.
 
+#### Expired activation manifests during pending recovery
+
+**Proposed contract amendment for [issue #73](https://github.com/canfieldjuan/connect-automate/issues/73).**
+A pending consume operation can outlive the activation manifest needed to
+authenticate its next attempt and receipt. The existing expiry check blocks
+that attempt, while the configuration-renewal owner and recovery sequence are
+unspecified. The pending operation remains durable with its original binding.
+
+The licensing/release owner publishes the replacement manifest through normal
+licence activation. CA's protected activation-configuration owner validates and
+installs it. The user explicitly requests configuration renewal through that
+activation path, then explicitly resumes the saved owner-setup operation.
+Neither opening the app nor a failed consume attempt starts renewal, a refresh,
+a health call or an automatic retry. If the licensing owner has no accepted
+renewal operation, recovery stays `LICENSING_UNAVAILABLE`.
+
+This bounded renewal changes the validity interval of the previously admitted
+`ActivationManifest`. It retains its version, purpose, HTTPS origin and
+claim/receipt key-ID sets. Validation uses the installed release authority and
+the existing closed manifest schema, wire budget and key-purpose rules. The
+replacement must satisfy `issued_at <= now < expires_at`, have an expiry later
+than the retained manifest's expiry, and have an issue time no earlier than
+the retained manifest's issue time. The existing maximum validity interval
+still applies. Endpoint migration, claim/receipt key-policy changes and trust
+installation require their own accepted work order.
+
+Retain the previously admitted signed manifest with the saved operation so
+that its policy can be compared without treating its expired interval as
+current authority. An absent or unverifiable retained manifest blocks this
+renewal path. Publish the fully verified replacement through the protected
+configuration writer atomically. Recheck that the pending operation and its
+retained manifest are still the ones the user selected, under the same
+protected-host writer serialization as publication.
+A validation, write or concurrent-state failure preserves the saved operation
+and its last complete configuration.
+
+Renewal cannot consume, revoke, reissue or replace an owner claim. It preserves
+the original signed claim bytes, operation, installation/key, business,
+principal commitment, initialization digest and any retained receipt. The
+protected host checks the replacement manifest again when the user resumes,
+obtains fresh native verification under the existing rules, and signs a new
+attempt/time for that same durable binding. The original consumption/replay
+owner decides the outcome. An expired claim can still recover a previously
+consumed receipt under the existing replay rule, while the existing local
+claim-validity and native checks continue to gate publication.
+
+An unsuccessful renewal or replay keeps unresolved completion `UNKNOWN` and
+the same pending binding. Configuration renewal alone never grants owner/admin
+authority or turns an ambiguous dispatch into `NOT_COMMITTED`. Established
+lead operations retain their existing local authorization behavior.
+
+Synthetic acceptance examples for a later implementation:
+
+| Input or sequence | Required observation |
+| --- | --- |
+| Expired manifest and a saved pending operation, without a user renewal action | `LICENSING_UNAVAILABLE`, retained binding and receipt, and no renewal or consume call. |
+| Explicit renewal with the same policy and a valid later interval | Protected configuration publication only. A separate explicit resume makes one fresh authenticated attempt for the saved binding. |
+| Wrong release authority, missing key purpose, changed origin/key-ID sets, future issue time, expired replacement or non-advancing expiry | Refusal before configuration publication, with the pending operation retained. |
+| Renewal failure or a different pending operation appearing before publication | Preserve the last complete configuration and the selected pending operation's evidence. Require a new explicit selection before another attempt. |
+| Issuer commit, response loss, manifest expiry, then successful renewal and explicit replay | Recover the same signed consumed receipt. Publish only after the original local validity and fresh native checks pass. |
+| The same sequence with an expired claim, invalid native proof or another lost response | Preserve the original binding and receipt evidence with no local authority publication or automatic retry. |
+
+Independent review and Juan's exact-revision acceptance are required. Licensing
+implementation and an offline renewal fixture need separate accepted work
+orders. The H1 catalog entry remains blocked. Native sign-in, Hello, Gmail and
+live activation remain on hold.
+
 ## Native mechanism pins and protected ownership
 
 ### B1: selected native qualification profile
@@ -1188,8 +1255,9 @@ V1a/next-work pointer. It preserves the entire accepted vertical plan and V1a
 work order, all source/tests, schemas, dependency pins, workflows and runtime
 configuration. The later [malformed consume requests](#malformed-consume-requests)
 amendment proposes one resolution for [issue #73](https://github.com/canfieldjuan/connect-automate/issues/73).
-Activation-manifest renewal, failed-PC recovery and inaccessible-disk evidence
-remain open in that issue. The existing malformed `handoff_id`
+The [expired activation-manifest recovery](#expired-activation-manifests-during-pending-recovery)
+amendment proposes its renewal sequence. Failed-PC recovery and inaccessible-disk
+evidence remain open in that issue. The existing malformed `handoff_id`
 negative-test gap noted on PR #71 stays deferred until that test file is next touched; no incidental test
 change belongs in this contract PR.
 
