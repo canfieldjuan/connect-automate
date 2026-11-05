@@ -256,3 +256,10 @@ review deadline absent an operator update or exact-head notification.
 service acceptance, integrated enforcement, activation or release.** Oversight
 review is not operator acceptance. Stop after sending this proposal; existing
 implementation and native-proof holds remain in force.
+
+## Bounded follow-up work orders
+
+The proposed [offline malformed-consume refusal and recovery work order](LEAD-OWNER-MALFORMED-RECOVERY.md)
+inventories the implemented H1 baseline and specifies one later synthetic case.
+It needs its own exact-revision review/acceptance and a separate offline
+implementation go; native sign-in, Hello, Gmail and live activation remain on hold.
