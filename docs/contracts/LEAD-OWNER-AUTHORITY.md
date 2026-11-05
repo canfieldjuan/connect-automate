@@ -964,6 +964,7 @@ fresh-account verification and Linux lock-spoof resistance remain proof gates.
 | Licensing/release owner, using existing issuer trust chain | Issue a business-scoped companion claim; bind installation/key proof and opaque native/payload commitment at consumption; own revoke/reissue and bound receipts under B0-I; own replacement approval under [PC recovery](#failed-or-replaced-pc-recovery) | Native employee authentication, lead data, granting ownership from installer privilege or a new identity cloud service |
 | Existing Connect/Automate protected host seam | Own installation identity, immutable org scope, employee enrollment/role, bootstrap consumption, host sessions and authority versions; own retirement proof and local replacement publication under [PC recovery](#failed-or-replaced-pc-recovery) | Source/custody/workflow SQL or a second scheduler/lead store |
 | Native adapter under that host | Verify current caller/person/session and perform fresh native authentication using pinned mechanisms | Trusting webview JSON, an account name/PID alone, a copied result or a transport bearer |
+| Qualification operator and native preflight owner | Juan establishes and preserves the isolation boundary; the preflight owner admits only the exact reviewed evidence under [non-test-disk isolation](#non-test-disk-isolation-evidence) | Inferring physical isolation from a caller flag, discovering non-test disks or changing their state |
 | Existing policy evaluator | Evaluate the existing closed human-operation catalog using host-acquired facts | Becoming a native credential verifier or accepting a machine as an employee |
 | Existing source/custody/runtime owners | Remain unchanged regression references | Being exposed to employee clients during this qualification |
 
@@ -1066,6 +1067,8 @@ Hello/MS-account case as local-password success.
 Before any authorized Windows preflight, Juan identifies the current test boot
 and its boot-volume alias, and physically disconnects or otherwise makes the
 Linux boot disk and other non-test data disks inaccessible for the Windows proof.
+The [non-test-disk isolation evidence gate](#non-test-disk-isolation-evidence)
+below defines what can establish that prerequisite; a status flag is insufficient.
 The reviewed
 manifest pins that isolation and only the specifically named boot/test-volume
 identities; the harness must not enumerate drives or probe other disks. If that
@@ -1335,6 +1338,140 @@ Acceptance sequence:
   replay/revocation at owning operations, authenticated GET results and the thin
   Connect v2 provider. No receiver activation is granted by this work order.
 
+### Non-test-disk isolation evidence
+
+This amendment proposes the evidence gate for B2's later Windows 11 real-machine
+run. It does not establish that Juan's current disks are isolated. Physical
+disconnection remains the baseline. A disk that remains connected qualifies only
+through the separately accepted and qualified isolation profile described below;
+without that profile, the connected-disk case is `WINDOWS_SAFETY_BLOCKED`.
+
+**Owner and trust boundary.** Juan supplies the approved physical-layout mapping,
+identifies the boot/test volumes and separately approved evidence-exchange
+destination, and confirms the complete set of non-test disks to exclude. Use
+private, run-scoped aliases, not a drive scan or personal file/device inventory.
+He establishes isolation before the test boot and preserves it through the
+authorized phase. An unknown connection, uncertain mapping or inability to
+confirm completeness blocks the run; the harness must not discover the answer.
+This operator-supplied mapping and continued physical control are explicit trust
+assumptions, not facts independently proved by a JSON record. Unreported manual
+reconnection is outside that evidence guarantee; no claim of resistance to an
+adversarial physical operator follows.
+
+The native preflight owner validates the frozen evidence and the specifically
+approved current boot identity before admitting any setup, test or cleanup
+effect. It may read only the approved manifest/receipt and named boot-identity
+metadata through its reviewed adapter; no disk enumeration, non-test device
+open or access attempt is a verification method. The adapter's precise API,
+identity stability and allowlist require separate implementation review and
+qualification. A path, drive letter, display name or elapsed uptime alone cannot
+stand in for the approved boot-volume and boot-session identities.
+
+**Admissible mechanism evidence.** Each protected disk has one method selected
+in the frozen isolation plan:
+
+- `PHYSICAL_DISCONNECTION`: Juan confirms the mapped device's physical
+  disconnection, including every attachment path named by that mapping, before
+  the approved boot. The later phase confirmation establishes that he has
+  preserved that state. A written claim that a connected disk is disconnected
+  is not qualifying evidence.
+- `QUALIFIED_EXTERNAL_ISOLATION`: the disk remains connected, but a pinned
+  isolation profile establishes an enforcing boundary outside the test OS's
+  control. Its independently reviewed qualification packet must demonstrate on
+  disposable synthetic storage that the exact mechanism withholds all access
+  to the protected device, including raw/alternate access and attempted
+  re-enablement by the run's most privileged test identity. It must cover its
+  boot/reset behavior, supported hardware/firmware/configuration and failure
+  modes. The actual frozen configuration must match that qualified profile.
+  Qualification must not target Juan's real non-test disks. No such profile,
+  hardware capability or qualification result is selected or asserted here.
+
+Unmounted/offline status, a missing drive letter, encryption/locked status, file
+ACLs, a denied file open, a process list or an empty disk listing do not satisfy
+either method. Neither an operator waiver nor a well-formed receipt can replace
+the required enforcing boundary. Missing or inconclusive profile evidence is a
+blocker, not permission to probe a protected disk or choose a weaker proxy.
+
+**Frozen plan and phase receipt.** Extend the later native protocol owner's
+closed models, not H1's offline schemas. The frozen `run.json` must bind the
+contract/harness commits, machine and boot/test aliases, approved exchange
+destination, complete protected-disk alias set, each disk's selected method,
+and the exact profile/configuration/evidence digests for any external isolator.
+The operator-controlled private mapping is reviewed with that plan; the public
+packet contains only aliases and digests. Changing a disk set, method, target,
+profile or destination requires a new freeze and go.
+
+After the approved boot and before each separately authorized phase, retain one
+sanitized isolation receipt binding all of the following:
+
+- one fresh receipt ID, the run ID and phase (`PREFLIGHT`, `RUN` or `CLEANUP`);
+- the exact frozen manifest SHA-256, machine/boot-volume aliases and the actual
+  current boot-session identity acquired through the reviewed adapter;
+- exactly one evidence entry for every protected-disk alias, matching its frozen
+  method and applicable profile/configuration digests, with bounded references
+  to the approved evidence rather than inline device contents;
+- the observation time and Juan's fresh confirmation of complete coverage and
+  unchanged physical/isolation state for that phase, through the existing
+  explicit operator-authorization boundary.
+
+The operator's phase go must name the manifest and receipt digests. A field
+claiming approval, possession of a receipt or a matching digest is not operator
+authorization. The receipt binds the frozen manifest; that manifest must not
+embed the receipt's digest and create a circular hash dependency. Preserve both
+digests and the actual go in the admission record. Their hashes establish byte
+binding, not independent proof of physical state.
+
+The future protocol revision must pin the wire version, exact fields and finite
+bounds in its single closed model and derived JSON Schema: required nonempty
+identities, enum-selected method/phase, conditional profile fields, bounded
+lists/references and no extra properties. Reject duplicate JSON members before
+admission. Use the same schema for admission; one validator at that owner handles
+exact plan/boot/alias coverage, uniqueness and approval-provenance relations.
+Do not add a parallel regex or a second receipt validator in the controller.
+No native schema or receipt producer is implemented by this amendment.
+
+**Freshness, concurrency and refusal.** Evidence covers one uninterrupted boot
+and one specifically authorized phase. Reboot, suspend/resume, isolation or
+connection changes, cancellation, controller restart or uncertain state invalidate
+it; a later phase needs a fresh receipt and go. Recheck the named current boot,
+receipt bindings and operator confirmation after waits and before phase effects.
+One admission owner serializes acceptance of a receipt for a phase and records
+its disposition before effects; concurrent or repeated use cannot start another
+phase. A crash or uncertain disposition stops for reconciliation and new
+authorization, not automatic replay. No software/physical-state atomicity is
+claimed: Juan must preserve the confirmed boundary throughout the phase.
+
+Absent, stale, partial, duplicated, contradictory, wrong-run/boot or unqualified
+evidence returns STOP with `WINDOWS_SAFETY_BLOCKED` before setup, test, cleanup or
+new test-root creation. Retain only sanitized reason/alias/digest evidence in the
+already approved destination, or the bounded refusal diagnostic if it is
+unavailable. Do not mount, unlock, enumerate, read, write or repair another disk
+to complete the packet. An exchange destination on a protected disk cannot be
+used to satisfy an otherwise missing evidence path.
+
+The following synthetic examples describe required future behavior; none has
+been run or qualifies the current machine:
+
+| Example | Required gate result |
+| --- | --- |
+| Complete physical-disconnection evidence, exact boot/run/phase binding and fresh operator go | Isolation prerequisite eligible; all other B2 gates still apply |
+| Complete matching external-isolation profile with independently qualified synthetic proof and fresh go | Isolation prerequisite eligible; not a native qualification PASS |
+| Connected disk with only offline/unmounted/encrypted/ACL or absence-of-listing evidence | `WINDOWS_SAFETY_BLOCKED`; no protected-disk probe |
+| Otherwise valid receipt for another manifest, boot session, phase or target | `WINDOWS_SAFETY_BLOCKED`; no phase effects |
+| Mixed valid entries with one missing, duplicate, unknown or mismatched protected alias | Reject the whole receipt; no partial admission |
+| Missing/empty evidence, false/default approval or a copied receipt without actual operator go | `WINDOWS_SAFETY_BLOCKED`; no inferred approval |
+| Two admissions race for the same otherwise valid receipt | At most one phase admission; the other is refused without effects |
+| Reboot, suspend/resume, controller restart or changed isolation after confirmation | Invalidate; STOP pending a fresh receipt and go |
+| Profile evidence is missing, expired under its policy or for another configuration | `WINDOWS_SAFETY_BLOCKED`; no substitution or waiver |
+| Exchange destination is unavailable or lies on a protected disk | STOP; no alternate-disk discovery, mount or read |
+
+Acceptance of this proposal does not authorize receipt collection, physical
+changes, a preflight, a probe or a run. The executable closed protocol,
+boot-identity adapter, any alternative isolation profile and its qualification,
+and the exact native freeze/go remain separately accepted work. The H1
+`inaccessible-disk-evidence` case stays `BLOCKED`; its native commands still
+refuse. Native sign-in, Hello, Gmail and live activation remain on hold.
+
 ## Required change surface, non-scope and rollback
 
 This PR changes only this proposed contract and the receiver roadmap's completed
@@ -1345,8 +1482,10 @@ amendment proposes one resolution for [issue #73](https://github.com/canfieldjua
 The [expired activation-manifest recovery](#expired-activation-manifests-during-pending-recovery)
 amendment proposes its renewal sequence. The
 [failed or replaced PC recovery](#failed-or-replaced-pc-recovery) amendment
-proposes replacement approval and its prerequisite gates. Inaccessible-disk
-evidence remains open in that issue. The existing malformed `handoff_id`
+proposes replacement approval and its prerequisite gates. The
+[non-test-disk isolation evidence](#non-test-disk-isolation-evidence) amendment
+proposes its evidence gate; native implementation and qualification remain separate.
+The existing malformed `handoff_id`
 negative-test gap noted on PR #71 stays deferred until that test file is next touched; no incidental test
 change belongs in this contract PR.
 
