@@ -624,6 +624,93 @@ implementation and an offline renewal fixture need separate accepted work
 orders. The H1 catalog entry remains blocked. Native sign-in, Hello, Gmail and
 live activation remain on hold.
 
+#### Failed or replaced PC recovery
+
+**Proposed contract amendment for [issue #73](https://github.com/canfieldjuan/connect-automate/issues/73).**
+The licensing owner retains the original consumed claim, exact installation
+binding and receipt. A failed PC, missing local database, restored backup or
+replacement key does not make that claim available for first-admin bootstrap.
+The existing consume endpoint continues to refuse a changed binding.
+
+When the original installation can still prove its original protected key,
+native-person binding and pending operation, use its existing authenticated
+replay path with fresh verification. A restored store must pass its existing
+continuity checks before it can supply authority. Loss of that proof enters
+the separate replacement-recovery process below.
+
+The licensing administrator owns replacement approval through the licensing
+owner's separately approved administrative provisioning channel. Approval
+requires independent verification of the requester's authority for the same
+business and entitlement under an explicitly accepted recovery policy.
+A licence, old claim, receipt, email address, local account or installer
+privilege alone cannot meet that requirement. The licensing owner must supply
+the concrete verification policy for acceptance before this path becomes
+available. This proposal does not select new identity documents or an identity
+service.
+
+The licensing owner opens an auditable recovery case against the original
+consumed deployment. It records the approving administrative identity and
+accepted policy revision, verified business/entitlement, predecessor claim
+and consumed binding, the evidence references and the requested replacement
+binding. That binding includes a new installation/host/key and operation,
+freshly verified replacement native-person commitment and initialization
+digest. Native credentials and source documents stay outside the case.
+Possession of a case reference supplies no host authority.
+
+Before approving a replacement for publication, the licensing owner must
+determine the predecessor's authoritative consumption outcome and the
+protected-host owner must prove that its old authority has been disabled.
+The old host's qualified retirement mechanism must persist that decision,
+invalidate its admin sessions and machine grants, and preserve history.
+Qualification must establish that supported restart or restore cannot revive
+that authority. Disabling an issuer claim or recording a support decision
+alone cannot prove those local effects.
+
+An unreachable predecessor has no proven disablement under the current local
+operation policy. In that case replacement publication stays blocked,
+including when the requester's business authority is verified. A hardware
+failure report or an assumed lost disk cannot satisfy the disablement gate.
+Supporting replacement without that proof requires Juan's separate product
+decision and an accepted enforcement contract. Ordinary lead operations gain
+no licensing polling or background revocation dependency from this proposal.
+
+The licensing owner's durable writer serializes recovery approval against
+the predecessor and any competing replacement case. It permits one selected
+replacement binding at a time. Exact administrative retries resume the same
+case and binding; changed targets or competing approvals require a new
+decision and cannot overwrite an admitted binding. Preserve an uncertain
+predecessor outcome and every partial approval or failed publication.
+There is no transaction spanning the licensing ledger and either host.
+
+A separately accepted recovery protocol must bind any executable replacement
+authorization to that case, predecessor, verified business/entitlement and
+exact replacement binding. It must specify its closed wire models, signing
+purpose, bounds, validity, replay, revocation and receipts before use. Ordinary
+owner claims and consumed receipts retain their existing purposes. The new
+host publishes its owner/admin record only after the recovery authorization,
+predecessor-disablement evidence and fresh native proof all pass, in its own
+protected authority transaction. The linked recovery history preserves the
+original consumed record and every subsequent replacement.
+
+Synthetic acceptance examples for a later recovery work order:
+
+| Input or sequence | Required observation |
+| --- | --- |
+| Original installation, original proof and an unresolved response | Existing same-binding replay with fresh authentication; the stored consumed receipt remains bound to that installation. |
+| Otherwise-valid signed consume request using a consumed claim with a changed installation/key/person commitment | Existing binding conflict and no replacement authority. |
+| Copied receipt presented without fresh proof of the original binding | Existing proof verification refuses authority publication. |
+| Verified business requester, exact replacement binding, determined predecessor outcome and qualified old-host disablement | A separately accepted recovery protocol may admit the linked replacement. The original consumed row remains immutable. |
+| Verified requester but unreachable old PC, missing retirement proof or unsupported restore behavior | Replacement publication remains blocked with history retained. |
+| Lost response with unknown predecessor consumption, or an unverified requester's business authority | Preserve the unresolved case. No assumed unconsumed claim, replacement approval or local authority publication. |
+| Two approvals for different replacements, or a retry after a partial write | Serialize the case and preserve the selected binding. An exact retry resumes; another target cannot silently replace it. |
+
+Independent oversight and Juan's exact-revision acceptance are required for
+this proposal. The business-verification policy, recovery wire contract and
+retirement qualification are named blockers for an executable replacement
+path. Licensing implementation and an offline recovery fixture need their
+own accepted work orders. The H1 device-replacement case remains blocked.
+Native sign-in, Hello, Gmail and live activation remain on hold.
+
 ## Native mechanism pins and protected ownership
 
 ### B1: selected native qualification profile
@@ -874,8 +961,8 @@ fresh-account verification and Linux lock-spoof resistance remain proof gates.
 
 | Owner | Required boundary in this qualification | Excluded responsibility |
 | --- | --- | --- |
-| Licensing/release owner, using existing issuer trust chain | Issue a business-scoped companion claim; bind installation/key proof and opaque native/payload commitment at consumption; own revoke/reissue and bound receipts under B0-I | Native employee authentication, lead data, granting ownership from installer privilege or a new identity cloud service |
-| Existing Connect/Automate protected host seam | Own installation identity, immutable org scope, employee enrollment/role, bootstrap consumption, host sessions and authority versions | Source/custody/workflow SQL or a second scheduler/lead store |
+| Licensing/release owner, using existing issuer trust chain | Issue a business-scoped companion claim; bind installation/key proof and opaque native/payload commitment at consumption; own revoke/reissue and bound receipts under B0-I; own replacement approval under [PC recovery](#failed-or-replaced-pc-recovery) | Native employee authentication, lead data, granting ownership from installer privilege or a new identity cloud service |
+| Existing Connect/Automate protected host seam | Own installation identity, immutable org scope, employee enrollment/role, bootstrap consumption, host sessions and authority versions; own retirement proof and local replacement publication under [PC recovery](#failed-or-replaced-pc-recovery) | Source/custody/workflow SQL or a second scheduler/lead store |
 | Native adapter under that host | Verify current caller/person/session and perform fresh native authentication using pinned mechanisms | Trusting webview JSON, an account name/PID alone, a copied result or a transport bearer |
 | Existing policy evaluator | Evaluate the existing closed human-operation catalog using host-acquired facts | Becoming a native credential verifier or accepting a machine as an employee |
 | Existing source/custody/runtime owners | Remain unchanged regression references | Being exposed to employee clients during this qualification |
@@ -1256,8 +1343,10 @@ work order, all source/tests, schemas, dependency pins, workflows and runtime
 configuration. The later [malformed consume requests](#malformed-consume-requests)
 amendment proposes one resolution for [issue #73](https://github.com/canfieldjuan/connect-automate/issues/73).
 The [expired activation-manifest recovery](#expired-activation-manifests-during-pending-recovery)
-amendment proposes its renewal sequence. Failed-PC recovery and inaccessible-disk
-evidence remain open in that issue. The existing malformed `handoff_id`
+amendment proposes its renewal sequence. The
+[failed or replaced PC recovery](#failed-or-replaced-pc-recovery) amendment
+proposes replacement approval and its prerequisite gates. Inaccessible-disk
+evidence remains open in that issue. The existing malformed `handoff_id`
 negative-test gap noted on PR #71 stays deferred until that test file is next touched; no incidental test
 change belongs in this contract PR.
 
