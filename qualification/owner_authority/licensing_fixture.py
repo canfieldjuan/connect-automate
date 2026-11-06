@@ -189,6 +189,18 @@ class IssuerFixture:
             self._journal(db, "ISSUE", claim.claim_id)
         return raw
 
+    def exchange(self, raw, clock):
+        """Fixture-only metadata adapter; the consume owner keeps all effects."""
+        try:
+            body = self.consume(raw, clock)
+        except p.MalformedConsumeRequest:
+            return p.fixture_response(400, "application/json", p.MALFORMED_BODY)
+        try:
+            status = p.REFUSAL_STATUS[p.parse_refusal(body).code]
+        except p.ProtocolInputError:
+            status = 200
+        return p.fixture_response(status, "application/json", body)
+
     def consume(self, raw, clock):
         request, claim = p.check_consume_request(
             raw, self.manifest, self.keys, self.release_ids, clock())

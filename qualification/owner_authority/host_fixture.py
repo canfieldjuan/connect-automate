@@ -190,7 +190,20 @@ class HostFixture:
             "operation_id": binding.operation_id, "code": code, "committed": committed,
         })
 
+    def bootstrap_exchange(self, exchange, observe, clock):
+        """Explicit metadata adapter sharing the original publication owner."""
+        def consume(request):
+            try:
+                return p.admit_fixture_response(exchange(request))
+            except p.MalformedConsumeResponse:
+                checkpoint(self.hook, "malformed_response", None)
+            except p.ProtocolInputError:
+                pass
+            raise OSError("unverifiable fixture exchange") from None
+        return self.bootstrap(consume, observe, clock)
+
     def bootstrap(self, consume, observe, clock):
+        """Explicit legacy body callback; no metadata inference or fallback."""
         with read_store(self.root, "host") as db:
             binding, claim, _, principal = self._pending(db)
             stored = self._stored_commit(db, binding)
@@ -256,8 +269,11 @@ class HostFixture:
         with read_store(self.root, "host") as db:
             counts = {name: db.execute("SELECT count(*) FROM " + name).fetchone()[0]
                       for name in ("pending", "receipts", "admins", "audit")}
-            row = db.execute("SELECT operation_id FROM pending WHERE singleton=1").fetchone()
+            row = db.execute("SELECT operation_id,binding FROM pending "
+                             "WHERE singleton=1").fetchone()
             receipt = db.execute("SELECT envelope FROM receipts WHERE singleton=1").fetchone()
             return counts | {"operation_id": None if row is None else row[0],
+                             "pending_binding_sha256": None if row is None else
+                             hashlib.sha256(row[1]).hexdigest(),
                              "receipt_sha256": None if receipt is None else
                              hashlib.sha256(receipt[0]).hexdigest()}

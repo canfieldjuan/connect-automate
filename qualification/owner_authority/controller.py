@@ -6,25 +6,28 @@ import multiprocessing
 import os
 import stat
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import monotonic_ns
+from unittest.mock import patch
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from . import licensing_fixture as lf
 from . import protocol as p
 from .host_fixture import HostFixture
 from .licensing_fixture import IssuerFixture, signed
 
 HERE = Path(__file__).absolute().parent
 ROOT = HERE.parents[1]
-CONTRACT = "314b43a6a8d4860fd6ca0f17bab1427059f7dea7"
+CONTRACT = p.CONTRACT_COMMIT
 NATIVE_COMMANDS = frozenset({"preflight", "run", "collect"})
 PLATFORM_NS = 3_600_000_000_000
 REPLAY = "lost-response-replay"
 REVOKED = "revoked-claim"
 INACTIVE = "inactive-session"
+MALFORMED = "malformed-request-refusal"
 START = "2026-01-01T00:00:00Z"
 NOW = datetime(2026, 1, 1, 1, tzinfo=UTC)
 SNAPSHOT = b"snapshot"
@@ -81,8 +84,6 @@ def _read(path, limit=p.PACKET_BYTES):
 
 def _admit(manifest):
     run = p.parse_packet(_read(manifest), "run")
-    if run.contract_commit != CONTRACT:
-        raise Stop("CONTRACT_MISMATCH")
     raw = _read(HERE / "cases.json")
     if {item.alias: item.sha256 for item in run.fixtures} != {"cases": digest(raw)}:
         raise Stop("FIXTURE_MISMATCH")
@@ -131,15 +132,34 @@ def _issuer(root, case_id, channel):
         channel.send((manifest, public, claim))
         calls = 0
         first_receipt = receipt_hash = None
+        malformed_entries = 0
+        connect = lf.connect_store
+
+        def counted_connect(*args, **kwargs):
+            nonlocal malformed_entries
+            malformed_entries += 1
+            return connect(*args, **kwargs)
+
         while (request := channel.recv_bytes()) != SNAPSHOT:
-            reply = issuer.consume(request, _clock)
             calls += 1
+            if case_id == MALFORMED:
+                if calls == 2:
+                    with patch.object(lf, "connect_store", counted_connect):
+                        reply = issuer.exchange(request, _clock)
+                else:
+                    reply = issuer.exchange(request, _clock)
+                    receipt_hash = digest(p.admit_fixture_response(reply))
+                    if calls == 1:
+                        first_receipt = receipt_hash
+            else:
+                reply = issuer.consume(request, _clock)
             if case_id == REPLAY:
                 receipt_hash = digest(reply)
                 if calls == 1:
                     first_receipt = receipt_hash
             channel.send_bytes(reply)
-        channel.send((calls, issuer.snapshot()["consumptions"], first_receipt, receipt_hash))
+        stats = (calls, issuer.snapshot()["consumptions"], first_receipt, receipt_hash)
+        channel.send((*stats, malformed_entries) if case_id == MALFORMED else stats)
 
 
 def _observe(active=True):
@@ -180,6 +200,61 @@ def _replay(host, claim, binding, consume):
     }
 
 
+def _malformed_recovery(host, consume):
+    requests, diagnostics, replies, counts = [], [], [], []
+    clock = [NOW]
+    host.hook = lambda name, db: diagnostics.append(name) if name == "malformed_response" else None
+
+    def fresh():
+        tick = int((clock[0] - NOW).total_seconds()) * 1_000_000_000
+        return _observe().model_copy(update={"authenticated_at_ns": tick, "observed_at_ns": tick})
+
+    def exchange(raw):
+        requests.append(p.parse_consume_request(raw))
+        if len(requests) == 2:
+            changed = requests[-1].model_dump()
+            del changed["attempt_id"]
+            raw = p.canonical(changed)
+        reply = consume(raw)
+        replies.append(reply)
+        if len(requests) == 1:
+            raise TimeoutError  # Issuer committed; host deliberately loses its reply.
+        return reply
+
+    original = host.snapshot()
+    failed = host.bootstrap_exchange(exchange, fresh, lambda: clock[0])
+    pending = host.snapshot()
+    counts.append(len(requests))
+    clock[0] += timedelta(seconds=1)
+    malformed = host.bootstrap_exchange(exchange, fresh, lambda: clock[0])
+    unresolved = host.snapshot()
+    counts.append(len(requests))
+    clock[0] += timedelta(seconds=1)
+    result = host.bootstrap_exchange(exchange, fresh, lambda: clock[0])
+    published = host.snapshot()
+    cached = host.bootstrap_exchange(exchange, fresh, lambda: clock[0])
+    counts.append(len(requests))
+    diagnostic = p.parse_fixture_response(replies[1])
+    return result.code, {
+        "pending-after-loss": failed.code == "LICENSING_UNAVAILABLE" and not failed.committed
+            and pending == original,
+        "malformed-diagnostic": diagnostics == ["malformed_response"]
+            and diagnostic.status == 400 and diagnostic.content_type == "application/json"
+            and diagnostic.body == p.MALFORMED_BODY,
+        "derived-unknown": malformed.code == "LICENSING_UNAVAILABLE" and not malformed.committed
+            and unresolved == original and original["pending"] == 1
+            and all(original[k] == 0 for k in ("receipts", "admins", "audit")),
+        "stable-binding": original["pending_binding_sha256"] is not None
+            and all(r.binding == requests[0].binding for r in requests),
+        "fresh-attempts": len({r.attempt_id for r in requests}) == 3
+            and len({r.requested_at for r in requests}) == 3,
+        "no-auto-retry": counts == [1, 2, 3],
+        "one-local-triplet": result.committed
+            and all(published[k] == 1 for k in ("pending", "receipts", "admins", "audit")),
+        "cached-no-dispatch": cached == result and host.snapshot() == published,
+    }
+
+
 def _host(root, case_id, issuer, report):
     with issuer, report:
         manifest, public, claim = issuer.recv()
@@ -193,6 +268,8 @@ def _host(root, case_id, issuer, report):
 
         if case_id == REPLAY:
             code, assertions = _replay(host, claim, binding, consume)
+        elif case_id == MALFORMED:
+            code, assertions = _malformed_recovery(host, consume)
         else:
             result = host.bootstrap(consume, lambda: _observe(case_id != INACTIVE), _clock)
             snapshot = host.snapshot()
@@ -202,13 +279,16 @@ def _host(root, case_id, issuer, report):
                           and [snapshot[k] for k in ("pending", "receipts", "admins", "audit")]
                           == [1, 0, 0, 0]}
         issuer.send_bytes(SNAPSHOT)
-        calls, consumed, first, receipt = issuer.recv()
-        if case_id == REPLAY:
+        stats = issuer.recv()
+        calls, consumed, first, receipt = stats[:4]
+        if case_id == MALFORMED:
+            assertions["malformed-no-ledger"] = stats[4] == 0
+        if case_id in (REPLAY, MALFORMED):
             assertions["same-receipt"] = (
                 first is not None and first == receipt == host.snapshot()["receipt_sha256"]
             )
         assertions["issuer-effects"] = (calls, consumed) == {
-            REPLAY: (2, 1), REVOKED: (1, 0), INACTIVE: (0, 0),
+            REPLAY: (2, 1), REVOKED: (1, 0), INACTIVE: (0, 0), MALFORMED: (3, 1),
         }[case_id]
         report.send_bytes(p.canonical({"actual_code": code, "assertions": assertions}))
 
@@ -380,6 +460,8 @@ def main(argv=None):
             raw, status = _offline(run, cases, args.output_root)
     except (Stop, p.ProtocolInputError, OSError) as error:
         reason = "INVALID_PACKET" if isinstance(error, p.ProtocolInputError) else "FILE_UNAVAILABLE"
+        if isinstance(error, p.ContractMismatchError):
+            reason = "CONTRACT_MISMATCH"
         if isinstance(error, Stop):
             reason = str(error)
         print(p.canonical({"outcome": "STOP", "reason": reason}).decode("ascii"))

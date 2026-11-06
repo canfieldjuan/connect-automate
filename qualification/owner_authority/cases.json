@@ -31,7 +31,14 @@
     {"kind": "NOT_RUN", "case_id": "windows-microsoft-account", "requirement": "b1-windows-native"},
     {"kind": "NOT_RUN", "case_id": "windows-hello", "requirement": "b1-windows-native"},
     {"kind": "NOT_RUN", "case_id": "native-isolation-and-revocation", "requirement": "b2-native-proof"},
-    {"kind": "BLOCKED", "case_id": "malformed-request-refusal", "requirement": "issue-73"},
+    {
+      "kind": "OFFLINE_CONFORMANCE",
+      "case_id": "malformed-request-refusal",
+      "requirement": "issue-73",
+      "expected_code": "COMMITTED",
+      "assertion_ids": ["pending-after-loss", "malformed-diagnostic", "derived-unknown", "stable-binding", "fresh-attempts", "no-auto-retry", "one-local-triplet", "cached-no-dispatch", "malformed-no-ledger", "same-receipt", "issuer-effects"],
+      "capability": "disposable-fixtures"
+    },
     {"kind": "BLOCKED", "case_id": "manifest-renewal", "requirement": "issue-73"},
     {"kind": "BLOCKED", "case_id": "device-replacement", "requirement": "issue-73"},
     {"kind": "BLOCKED", "case_id": "inaccessible-disk-evidence", "requirement": "issue-73"}

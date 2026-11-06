@@ -37,7 +37,7 @@
       "uniqueItems": true
     },
     "contract_commit": {
-      "pattern": "^[0-9a-f]{40}$",
+      "const": "ba7f7cf7db9b14c050d87021fddd7333ff149851",
       "title": "Contract Commit",
       "type": "string"
     },

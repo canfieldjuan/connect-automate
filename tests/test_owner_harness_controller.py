@@ -156,7 +156,7 @@ def test_catalog_schema_refuses_mixed_or_forged_metadata(corruption):
 
 
 def test_real_offline_cli_publishes_hash_bound_results(tmp_path):
-    case_ids = (ctl.REPLAY, ctl.REVOKED, ctl.INACTIVE)
+    case_ids = (ctl.REPLAY, ctl.REVOKED, ctl.INACTIVE, ctl.MALFORMED)
     path = manifest(tmp_path, packet(*case_ids))
     output = tmp_path / "new-output"
     command = cli("offline", "--manifest", path, "--output-root", output)
@@ -168,7 +168,7 @@ def test_real_offline_cli_publishes_hash_bound_results(tmp_path):
     assert parsed.qualification_pass is False
     assert [case.case_id for case in parsed.cases] == list(case_ids)
     assert [case.actual_code for case in parsed.cases] == [
-        "COMMITTED", "OWNER_AUTHORIZATION_REVOKED", "NATIVE_SESSION_INACTIVE",
+        "COMMITTED", "OWNER_AUTHORIZATION_REVOKED", "NATIVE_SESSION_INACTIVE", "COMMITTED",
     ]
     assert [case.outcome for case in parsed.cases] == ["PASS"] * len(case_ids)
     hashes = json.loads((output / "hashes.json").read_bytes())
@@ -559,3 +559,37 @@ def test_worker_assertion_count_is_bounded(count):
     else:
         with pytest.raises(p.ProtocolInputError):
             p.parse_observation(raw)
+
+
+def test_real_process_malformed_recovery_recipe(tmp_path):
+    root = tmp_path / "fixtures"
+    root.mkdir()
+    result = ctl._execute(root, ctl.MALFORMED, monotonic_ns() + p.CASE_NS)
+    assert result.actual_code == "COMMITTED"
+    assert result.assertions == dict.fromkeys([
+        "pending-after-loss", "malformed-diagnostic", "derived-unknown", "stable-binding",
+        "fresh-attempts", "no-auto-retry", "one-local-triplet", "cached-no-dispatch",
+        "malformed-no-ledger", "same-receipt", "issuer-effects",
+    ], True)
+
+
+def _offline_only_child(target, *args):
+    from unittest.mock import patch
+
+    from connect_automate import entitlement
+    from connect_automate.automate.host import AutomateHost
+    with patch.object(socket.socket, "connect", forbidden), \
+            patch.object(Path, "home", forbidden), patch.object(os, "getlogin", forbidden), \
+            patch.object(subprocess, "Popen", forbidden), \
+            patch.object(AutomateHost, "from_installation", forbidden), \
+            patch.object(entitlement.EntitlementGate, "from_installation", forbidden), \
+            patch.object(entitlement, "_load_installed_release_keyring", forbidden):
+        ctl._child(target, *args)
+
+
+def test_malformed_workers_cannot_call_live_or_installed_owners(tmp_path, monkeypatch):
+    root = tmp_path / "fixtures"
+    root.mkdir()
+    monkeypatch.setattr(ctl, "_child", _offline_only_child)
+    result = ctl._execute(root, ctl.MALFORMED, monotonic_ns() + p.CASE_NS)
+    assert result.actual_code == "COMMITTED" and all(result.assertions.values())
