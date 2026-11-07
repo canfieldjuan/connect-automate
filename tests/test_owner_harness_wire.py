@@ -502,13 +502,10 @@ def test_renewal_candidate_current_window(wire, boundary, offset):
     p = protocol()
     values = renewal_values(wire)
     now = p._date(values[2][boundary]) + timedelta(seconds=offset)
-    if boundary == "issued_at" and offset < 0:
+    if (boundary == "issued_at" and offset < 0) or (boundary == "expires_at" and offset >= 0):
         with pytest.raises(p.ProtocolInputError) as caught:
             renew(wire, *values, now=now)
         assert type(caught.value) is p.ProtocolInputError
-    elif boundary == "expires_at" and offset >= 0:
-        with pytest.raises(p.ManifestUnavailable):
-            renew(wire, *values, now=now)
     else:
         assert renew(wire, *values, now=now).model_dump() == values[2]
 
@@ -573,8 +570,7 @@ def test_renewal_verifies_all_signed_inputs(wire, side, defect):
     with pytest.raises(p.ProtocolInputError) as caught:
         p.check_manifest_renewal(raw[2], raw[0], raw[1], wire["keys"],
                                  frozenset({"release"}), datetime(2026, 1, 2, 12, tzinfo=UTC))
-    expected = p.ManifestUnavailable if side == 2 and defect == "absent" else p.ProtocolInputError
-    assert type(caught.value) is expected
+    assert type(caught.value) is p.ProtocolInputError
 
 
 @pytest.mark.parametrize("bad_now", [None, False, 0, "", datetime(2026, 1, 2)])

@@ -506,19 +506,27 @@ def verify_signed(raw: bytes, kind: Literal["manifest", "claim", "receipt"],
         raise ProtocolInputError() from None
 
 
-def verify_active_manifest(raw: bytes | None, keys: Mapping[str, bytes],
-                           release_ids: frozenset[str], now: datetime):
-    """Keep availability distinct from corrupt, untrusted or future configuration."""
+def _verify_current_manifest(raw: bytes | None, keys: Mapping[str, bytes],
+                             release_ids: frozenset[str], now: datetime, *,
+                             unavailable_error: type[ProtocolInputError]):
+    """One window rule; the owning entry point supplies its failure category."""
     if type(now) is not datetime or now.tzinfo is not UTC:
         raise ProtocolInputError()
     if raw is None:
-        raise ManifestUnavailable()
+        raise unavailable_error()
     manifest = verify_signed(raw, "manifest", keys, release_ids)
     if now < _date(manifest.issued_at):
         raise ProtocolInputError()
     if now >= _date(manifest.expires_at):
-        raise ManifestUnavailable()
+        raise unavailable_error()
     return manifest
+
+
+def verify_active_manifest(raw: bytes | None, keys: Mapping[str, bytes],
+                           release_ids: frozenset[str], now: datetime):
+    """Only unavailable active configuration receives the availability category."""
+    return _verify_current_manifest(raw, keys, release_ids, now,
+                                    unavailable_error=ManifestUnavailable)
 
 
 def check_manifest_renewal(candidate_raw: bytes, original_raw: bytes, installed_raw: bytes,
@@ -526,7 +534,8 @@ def check_manifest_renewal(candidate_raw: bytes, original_raw: bytes, installed_
     """Verify signed policy and monotonic intervals; no selection or publication effect."""
     original = verify_signed(original_raw, "manifest", keys, release_ids)
     installed = verify_signed(installed_raw, "manifest", keys, release_ids)
-    candidate = verify_active_manifest(candidate_raw, keys, release_ids, now)
+    candidate = _verify_current_manifest(candidate_raw, keys, release_ids, now,
+                                         unavailable_error=ProtocolInputError)
     # Version/purpose are constants in the closed signed manifest model.
     # Historical verification does not require an unexpired original/installed interval.
     for prior in (original, installed):
