@@ -22,7 +22,7 @@ Create the manifest using the existing `run.schema.json`:
 
 - Set `version` to `owner-harness/1`, `evidence_class` to `OFFLINE_CONFORMANCE`
   and `qualification_pass` to literal false.
-- Use the accepted work-order revision `ba7f7cf7db9b14c050d87021fddd7333ff149851`
+- Use the accepted work-order revision `0397e5d611a1ad1c0541897417dab29f720b4d8d`
   and the full harness commit of the checkout under review. Supply a fresh UUIDv4
   `run_id`. Pin `dependency_lock_sha256` to the actual bytes of `uv.lock`.
 - Set `fixtures` to a single alias/digest pair with alias `cases` and the SHA-256
@@ -59,9 +59,13 @@ sanitized offline evidence. Native qualification and a later native run need
 their own accepted work order.
 
 The accepted [offline renewal work order](../../docs/contracts/LEAD-OWNER-MANIFEST-RENEWAL.md)
-is being implemented in reviewed increments. The protocol increment supplies
-the shared signed-manifest renewal validator, typed active-manifest availability
-and closed selection value. Durable host configuration, selected publication,
-writer/crash proof and controller adoption remain pending. These protocol APIs
-do not renew storage or resume a pending operation. The `manifest-renewal` case
-remains blocked, and the runnable packet profile above is unchanged until adoption.
+is being implemented in reviewed increments. Shared protocol validation and the
+versioned disposable host configuration now support explicit selection and
+configuration-only renewal. The pending operation retains its original signed
+manifest; restart reads the installed bytes from the store. A separate explicit
+resume recovers the original receipt. The issuer fixture's explicit candidate
+adoption changes its in-memory configuration without changing its ledger or signers.
+Fresh roots bind `offline-fixture/2` and the accepted profile above; old or wrong
+profiles are refused without migration. Constructor bytes never overwrite an
+existing host configuration. Controller renewal recipe/assertion adoption is
+still pending, so the `manifest-renewal` catalog case remains blocked.

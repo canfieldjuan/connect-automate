@@ -33,7 +33,7 @@ from connect_automate.entitlement import UuidV4, verify_signature
 
 PACKET_BYTES = 1048576
 CASE_NS = 180_000_000_000
-CONTRACT_COMMIT = "ba7f7cf7db9b14c050d87021fddd7333ff149851"
+CONTRACT_COMMIT = "0397e5d611a1ad1c0541897417dab29f720b4d8d"
 Token = Annotated[StrictStr, Field(pattern=r"^[a-z0-9][a-z0-9._-]{0,63}$")]
 Code = Annotated[StrictStr, Field(pattern=r"^[A-Z][A-Z0-9_]{0,63}$")]
 Digest = Annotated[StrictStr, Field(pattern=r"^[0-9a-f]{64}$")]

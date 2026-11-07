@@ -37,7 +37,7 @@
       "uniqueItems": true
     },
     "contract_commit": {
-      "const": "ba7f7cf7db9b14c050d87021fddd7333ff149851",
+      "const": "0397e5d611a1ad1c0541897417dab29f720b4d8d",
       "title": "Contract Commit",
       "type": "string"
     },
