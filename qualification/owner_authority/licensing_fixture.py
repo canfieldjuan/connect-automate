@@ -16,6 +16,8 @@ from pydantic import TypeAdapter
 
 from . import protocol as p
 
+FIXTURE_VERSION = "offline-fixture/2"
+
 
 class FixtureCorrupt(RuntimeError):
     """Missing, wrong-owner or malformed disposable storage; never initialize it."""
@@ -52,10 +54,11 @@ def connect_store(root):
 
 def identity(db, kind):
     try:
-        row = db.execute("SELECT kind, version FROM fixture_identity WHERE singleton=1").fetchone()
+        row = db.execute("SELECT kind,version,contract_commit FROM fixture_identity "
+                         "WHERE singleton=1").fetchone()
     except sqlite3.DatabaseError as exc:
         raise FixtureCorrupt("fixture identity unavailable") from exc
-    if row != (kind, "offline-fixture/1"):
+    if row != (kind, FIXTURE_VERSION, p.CONTRACT_COMMIT):
         raise FixtureCorrupt("wrong fixture owner/version")
 
 
@@ -73,8 +76,12 @@ def create_store(root, kind, ddl, *, restored=False):
         db.executescript("BEGIN IMMEDIATE; CREATE TABLE fixture_identity ("
                          "singleton INTEGER PRIMARY KEY CHECK(singleton=1),"
                          "kind TEXT NOT NULL CHECK(kind IN ('issuer','host')),"
-                         "version TEXT NOT NULL CHECK(version='offline-fixture/1'));" + ddl)
-        db.execute("INSERT INTO fixture_identity VALUES(1,?,?)", (kind, "offline-fixture/1"))
+                         f"version TEXT NOT NULL CHECK(version='{FIXTURE_VERSION}'),"
+                         "contract_commit TEXT NOT NULL "
+                         f"CHECK(contract_commit='{p.CONTRACT_COMMIT}'));"
+                         + ddl)
+        db.execute("INSERT INTO fixture_identity VALUES(1,?,?,?)",
+                   (kind, FIXTURE_VERSION, p.CONTRACT_COMMIT))
         db.commit()
     finally:
         db.close()
@@ -88,12 +95,12 @@ def transaction(root, kind, hook=None, validate=None):
         db.execute("BEGIN IMMEDIATE")
         checkpoint(hook, "writer", db)
         if validate is not None:
-            validate()  # After writer waits, before any state lookup.
+            validate(db)  # Actual writer snapshot after waits, before effects.
         identity(db, kind)
         yield db
         checkpoint(hook, "before_commit", db)
         if validate is not None:
-            validate()
+            validate(db)
         db.commit()
         checkpoint(hook, "after_commit", db)
     except BaseException:
@@ -161,6 +168,12 @@ class IssuerFixture:
         create_store(self.root, "issuer", ISSUER_SQL)
         return self
 
+    def adopt_manifest(self, candidate, now):
+        """Explicit synthetic release publication; no issuer ledger or signer changes."""
+        p.check_manifest_renewal(candidate, self.manifest, self.manifest,
+                                 self.keys, self.release_ids, now)
+        self.manifest = candidate
+
     def _claim(self, claim, now):
         claim = p.OwnerClaim.model_validate(claim)
         if type(now) is not datetime or now.tzinfo is not UTC or p._date(claim.issued_at) != now:
@@ -204,7 +217,7 @@ class IssuerFixture:
             raw, self.manifest, self.keys, self.release_ids, clock())
         new = False
 
-        def validate():
+        def validate(db):
             now = clock()
             p.check_consume_request(raw, self.manifest, self.keys, self.release_ids, now)
             if new:
@@ -231,7 +244,7 @@ class IssuerFixture:
                 if row[1] != "ACTIVE":
                     raise Refused("OWNER_AUTHORIZATION_REVOKED")
                 new = True
-                validate()
+                validate(db)
                 payload = p.ConsumedReceipt.model_validate({
                     "version": "owner-bootstrap/1", "purpose": "owner-bootstrap-receipt",
                     "state": "CONSUMED", "receipt_id": str(uuid4()),

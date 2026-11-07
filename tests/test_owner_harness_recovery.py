@@ -693,7 +693,7 @@ def transport(connection):
 
 
 def _host_child(root, manifest, public, host_seed, claim, principal, operation,
-                mode, endpoint, channel, start, release, pause, fault):
+                mode, endpoint, channel, start, release, pause, fault, renewal, now):
     from qualification.owner_authority.host_fixture import HostFixture
 
     def hook(name, db):
@@ -708,7 +708,7 @@ def _host_child(root, manifest, public, host_seed, claim, principal, operation,
 
     host = HostFixture(root, manifest, public, frozenset({"release"}),
                        Ed25519PrivateKey.from_private_bytes(host_seed), hook=hook)
-    state, clock = {"active": True}, [NOW]
+    state, clock = {"active": True}, [now]
 
     def native():
         return observation(principal_ref=principal, active=state["active"])
@@ -736,10 +736,13 @@ def _host_child(root, manifest, public, host_seed, claim, principal, operation,
     if not start.wait(30):
         return
     try:
-        if mode != "bootstrap":
-            binding = host.prepare(claim, uid(operation), native, NOW)
-        result = (binding if mode == "prepare" else
-                  host.bootstrap(consume, native, lambda: clock[0]))
+        if mode == "renew":
+            result = host.renew_manifest(renewal[0], renewal[1], native, lambda: clock[0])
+        else:
+            if mode != "bootstrap":
+                binding = host.prepare(claim, uid(operation), native, NOW)
+            result = (binding if mode == "prepare" else
+                      host.bootstrap(consume, native, lambda: clock[0]))
         channel.send(("result", result.model_dump()))
     except Exception as exc:
         channel.send(("error", type(exc).__name__, str(exc)))
@@ -749,13 +752,13 @@ def _host_child(root, manifest, public, host_seed, claim, principal, operation,
 
 @contextmanager
 def host_worker(wire, root, claim, endpoint=None, *, mode="bootstrap", principal="owner",
-                operation=4, pause=None, fault=None):
+                operation=4, pause=None, fault=None, renewal=None, now=NOW):
     context = multiprocessing.get_context("spawn")
     receiving, sending = context.Pipe(duplex=False)
     start, release = context.Event(), context.Event()
     child = context.Process(target=_host_child, args=(
         root, wire.manifest, wire.public, wire.seeds["host"], claim, principal, operation,
-        mode, endpoint, sending, start, release, pause, fault))
+        mode, endpoint, sending, start, release, pause, fault, renewal, now))
     child.start()
     sending.close()
 
@@ -1803,3 +1806,404 @@ def test_issuer_active_manifest_unavailable_precedes_any_ledger_effect(tmp_path,
     with pytest.raises(p.ManifestUnavailable):
         issuer.issue(wire.claim(issued=now), now)
     assert issuer.snapshot() == before
+
+
+def test_renewal_selection_reads_durable_original_and_installed(tmp_path):
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    claim = issuer.issue(wire.claim(), START)
+    host = wire.host(tmp_path / "host", create=True)
+    binding = host.prepare(claim, uid(4), observation, NOW)
+    selected = host.select_renewal()
+    assert selected.operation_id == binding.operation_id
+    assert selected.pending_binding_sha256 == hashlib.sha256(
+        p.canonical(binding.model_dump())).hexdigest()
+    assert selected.original_manifest_sha256 == hashlib.sha256(wire.manifest).hexdigest()
+    assert selected.installed_manifest_sha256 == selected.original_manifest_sha256
+    wire.manifest = b"invalid constructor input ignored on restart"
+    assert wire.host(host.root).select_renewal() == selected
+
+
+def renewal_fixture(tmp_path, *, short=False):
+    wire = SyntheticWire()
+    if short:
+        value = p.verify_signed(wire.manifest, "manifest", wire.public, frozenset({"release"}))
+        wire.manifest = wire.sign("manifest", value.model_dump() | {
+            "expires_at": instant(NOW + timedelta(seconds=1))}, "release")
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    claim = issuer.issue(wire.claim(), START)
+    host = wire.host(tmp_path / "host", create=True)
+    host.prepare(claim, uid(4), observation, NOW)
+    return wire, issuer, host, claim
+
+
+def renewal_candidate(wire, *, issued=NOW, expires=START + timedelta(days=3)):
+    value = p.verify_signed(wire.manifest, "manifest", wire.public, frozenset({"release"}))
+    return wire.sign("manifest", value.model_dump() | {
+        "issued_at": instant(issued), "expires_at": instant(expires)}, "release")
+
+
+def test_expired_pending_renewal_changes_only_configuration_then_recovers_original_receipt(
+        tmp_path):
+    wire, issuer, host, _ = renewal_fixture(tmp_path, short=True)
+    requests, receipts = [], []
+    def lost(raw):
+        requests.append(raw)
+        receipts.append(issuer.consume(raw, lambda: NOW))
+        raise TimeoutError("synthetic lost reply")
+    assert host.bootstrap(lost, observation, lambda: NOW).code == "LICENSING_UNAVAILABLE"
+    pending = host.snapshot()
+    late = NOW + timedelta(seconds=2)
+    unavailable = host.bootstrap(lambda _: pytest.fail("expired manifest dispatched"),
+                                 observation, lambda: late)
+    assert unavailable.code == "LICENSING_UNAVAILABLE" and not unavailable.committed
+    assert host.snapshot() == pending and issuer.snapshot()["consumptions"] == 1
+    candidate = renewal_candidate(wire)
+    issuer_before = issuer.snapshot()
+    from qualification.owner_authority.licensing_fixture import read_store
+
+    def retained_rows():
+        with read_store(host.root, "host") as db:
+            # Hash complete structured rows; never retain or print synthetic salts/principals.
+            rows = [db.execute("SELECT * FROM " + table).fetchall()
+                    for table in ("pending", "receipts", "admins", "audit")]
+        return hashlib.sha256(repr(rows).encode()).hexdigest()
+
+    retained = retained_rows()
+    issuer_digest = hashlib.sha256((issuer.root / "fixture.sqlite").read_bytes()).hexdigest()
+    selected = host.select_renewal()
+    after = host.renew_manifest(selected, candidate, observation, lambda: late)
+    expected = pending | {"installed_manifest_sha256": hashlib.sha256(candidate).hexdigest()}
+    assert host.snapshot() == expected and issuer.snapshot() == issuer_before
+    assert after == host.select_renewal() and len(requests) == 1
+    assert retained_rows() == retained
+    issuer.adopt_manifest(candidate, late)
+    assert issuer.snapshot() == issuer_before
+    assert (hashlib.sha256((issuer.root / "fixture.sqlite").read_bytes()).hexdigest()
+            == issuer_digest)
+    wire.manifest = b"constructor cannot overwrite installed configuration"
+    restarted = wire.host(host.root)
+    assert restarted.snapshot() == expected
+    def recover(raw):
+        requests.append(raw)
+        response = issuer.consume(raw, lambda: late)
+        assert response == receipts[0]
+        return response
+    assert restarted.bootstrap(recover, observation, lambda: late).committed
+    assert len(requests) == 2 and requests[0] != requests[1]
+    assert (p.parse_consume_request(requests[0]).binding
+            == p.parse_consume_request(requests[1]).binding)
+    published = restarted.snapshot()
+    assert [published[k] for k in ("pending", "receipts", "admins", "audit")] == [1] * 4
+    assert published["receipt_sha256"] == hashlib.sha256(receipts[0]).hexdigest()
+    assert issuer.snapshot()["consumptions"] == 1
+    assert restarted.bootstrap(lambda _: pytest.fail("cached dispatch"),
+                               observation, lambda: late).committed
+    assert restarted.snapshot() == published
+
+
+@pytest.mark.parametrize("field", ["operation_id", "pending_binding_sha256",
+                                    "original_manifest_sha256", "installed_manifest_sha256"])
+def test_renewal_each_stale_selection_refuses_before_writer(tmp_path, field):
+    from qualification.owner_authority.licensing_fixture import Refused
+
+    wire, issuer, host, _ = renewal_fixture(tmp_path)
+    before, issued = host.snapshot(), issuer.snapshot()
+    selected = host.select_renewal().model_dump() | {
+        field: uid(8) if field == "operation_id" else "d" * 64}
+    host.hook = lambda *args: pytest.fail("stale selection reached writer")
+    with pytest.raises(Refused, match="OWNER_BINDING_CONFLICT"):
+        host.renew_manifest(selected, renewal_candidate(wire), observation, lambda: NOW)
+    assert host.snapshot() == before and issuer.snapshot() == issued
+
+
+@pytest.mark.parametrize("phase", ["renew_writer", "renew_before_commit"])
+@pytest.mark.parametrize("changed", ["operation", "binding", "original", "installed"])
+def test_renewal_rechecks_selected_state_in_writer_and_at_commit(tmp_path, phase, changed):
+    from qualification.owner_authority.licensing_fixture import Refused
+
+    wire, issuer, host, _ = renewal_fixture(tmp_path)
+    before, issued = host.snapshot(), issuer.snapshot()
+    selected = host.select_renewal()
+    candidate = renewal_candidate(wire)
+    other = renewal_candidate(wire, expires=START + timedelta(days=4))
+    writes = []
+    def change(name, db):
+        if name == "renew_manifest_write":
+            writes.append(name)
+        if name != phase:
+            return
+        if changed in ("operation", "binding"):
+            binding = json.loads(db.execute("SELECT binding FROM pending").fetchone()[0])
+            binding["operation_id" if changed == "operation" else "entitlement_id"] = uid(20)
+            binding["initialization_sha256"] = host._initialization(binding)
+            db.execute("UPDATE pending SET operation_id=?,binding=?",
+                       (binding["operation_id"], p.canonical(binding)))
+        elif changed == "original":
+            db.execute("UPDATE pending SET original_manifest=?", (other,))
+        else:
+            db.execute("UPDATE configuration SET manifest=?", (other,))
+    host.hook = change
+    with pytest.raises(Refused, match="OWNER_BINDING_CONFLICT"):
+        host.renew_manifest(selected, candidate, observation, lambda: NOW)
+    assert len(writes) == (0 if phase == "renew_writer" else 1)
+    host.hook = None
+    assert host.snapshot() == before and issuer.snapshot() == issued
+
+
+@pytest.mark.parametrize("phase", ["renew_writer", "renew_before_commit"])
+@pytest.mark.parametrize("changed", ["candidate-expiry", "inactive", "principal", "trust"])
+def test_renewal_revalidates_candidate_and_observation_after_waits(tmp_path, phase, changed):
+    from qualification.owner_authority.licensing_fixture import Refused
+
+    wire, issuer, host, _ = renewal_fixture(tmp_path)
+    before, issued = host.snapshot(), issuer.snapshot()
+    selected, candidate = host.select_renewal(), renewal_candidate(wire)
+    clock, native = [NOW], [observation()]
+    writes = []
+    def change(name, db):
+        if name == "renew_manifest_write":
+            writes.append(name)
+        if name == phase:
+            if changed == "candidate-expiry":
+                clock[0] = START + timedelta(days=3)
+            elif changed == "inactive":
+                native[0] = observation(active=False)
+            elif changed == "principal":
+                native[0] = observation(principal_ref="other")
+            else:
+                host.keys["release"] = wire.public["claim"]
+    host.hook = change
+    expected = Refused if changed in ("inactive", "principal") else p.ProtocolInputError
+    with pytest.raises(expected) as caught:
+        host.renew_manifest(selected, candidate, lambda: native[0], lambda: clock[0])
+    assert type(caught.value) is expected
+    assert len(writes) == (0 if phase == "renew_writer" else 1)
+    host.hook = None
+    host.keys["release"] = wire.public["release"]
+    assert host.snapshot() == before and issuer.snapshot() == issued
+
+
+@pytest.mark.parametrize("where", ["installed", "original"])
+@pytest.mark.parametrize("bad", [None, b"{}"])
+def test_renewal_missing_or_corrupt_configuration_never_dispatches(tmp_path, where, bad):
+    from qualification.owner_authority.licensing_fixture import transaction
+
+    wire, issuer, host, _ = renewal_fixture(tmp_path)
+    before = host.snapshot()
+    if where == "original" and bad is None:
+        with pytest.raises(sqlite3.IntegrityError), transaction(host.root, "host") as db:
+            db.execute("UPDATE pending SET original_manifest=NULL")
+        assert host.snapshot() == before
+        return
+    with transaction(host.root, "host") as db:
+        statement = ("UPDATE configuration SET manifest=?" if where == "installed" else
+                     "UPDATE pending SET original_manifest=?")
+        db.execute(statement, (bad,))
+    broken, issued = host.snapshot(), issuer.snapshot()
+    if where == "installed" and bad is None:
+        result = host.bootstrap(lambda _: pytest.fail("missing config dispatched"),
+                                observation, lambda: NOW)
+        assert result.code == "LICENSING_UNAVAILABLE" and not result.committed
+    else:
+        with pytest.raises(p.ProtocolInputError):
+            host.bootstrap(lambda _: pytest.fail("corrupt config dispatched"),
+                            observation, lambda: NOW)
+    with pytest.raises(p.ProtocolInputError):
+        host.select_renewal()
+    assert host.snapshot() == broken and issuer.snapshot() == issued
+
+
+@pytest.mark.parametrize("field,value", [("version", "offline-fixture/1"),
+                                        ("contract_commit", "a" * 40)])
+def test_renewal_store_refuses_old_or_wrong_profile_without_migration(tmp_path, field, value):
+    from qualification.owner_authority.licensing_fixture import FixtureCorrupt, transaction
+
+    wire, _, host, _ = renewal_fixture(tmp_path)
+    with transaction(host.root, "host") as db:
+        db.execute("PRAGMA ignore_check_constraints=ON")
+        db.execute("UPDATE fixture_identity SET " + field + "=?", (value,))
+    digest = hashlib.sha256((host.root / "fixture.sqlite").read_bytes()).hexdigest()
+    with pytest.raises(FixtureCorrupt):
+        wire.host(host.root).select_renewal()
+    assert hashlib.sha256((host.root / "fixture.sqlite").read_bytes()).hexdigest() == digest
+
+
+@pytest.mark.parametrize("which", ["issue", "expiry"])
+def test_renewal_successive_installed_regression_is_independent(tmp_path, which):
+    wire, _, host, _ = renewal_fixture(tmp_path)
+    first = renewal_candidate(wire, issued=NOW, expires=START + timedelta(days=3))
+    host.renew_manifest(host.select_renewal(), first, observation, lambda: NOW)
+    second = renewal_candidate(wire, issued=NOW + timedelta(seconds=1),
+                               expires=START + timedelta(days=4))
+    later = NOW + timedelta(seconds=1)
+    host.renew_manifest(host.select_renewal(), second, observation, lambda: later)
+    before = host.snapshot()
+    regressed = renewal_candidate(wire,
+        issued=NOW if which == "issue" else later,
+        expires=START + timedelta(days=5 if which == "issue" else 3))
+    with pytest.raises(p.ProtocolInputError):
+        host.renew_manifest(host.select_renewal(), regressed, observation, lambda: later)
+    assert host.snapshot() == before
+
+
+@pytest.mark.parametrize("first", [0, 1])
+@pytest.mark.parametrize("repeat", range(3))
+def test_renewal_real_writer_race_requires_reselection(tmp_path, first, repeat):
+    wire, issuer, host, claim = renewal_fixture(tmp_path)
+    before, issued = host.snapshot(), issuer.snapshot()
+    selected = host.select_renewal().model_dump()
+    candidates = [renewal_candidate(wire, expires=START + timedelta(days=day)) for day in (3, 4)]
+    with host_worker(wire, host.root, claim, mode="renew", renewal=(selected, candidates[first]),
+                     pause="renew_writer") as leader:
+        leader[1].set()
+        assert leader[3]() == ("paused", "renew_writer")
+        with host_worker(wire, host.root, claim, mode="renew",
+                         renewal=(selected, candidates[1-first]),
+                         pause="renew_before_writer") as follower:
+            follower[1].set()
+            assert follower[3]() == ("paused", "renew_before_writer")
+            follower[2].set()
+            leader[2].set()
+            assert leader[3]()[0] == "result"
+            assert follower[3]() == ("error", "Refused", "OWNER_BINDING_CONFLICT")
+    assert host.snapshot() == before | {
+        "installed_manifest_sha256": hashlib.sha256(candidates[first]).hexdigest()}
+    assert issuer.snapshot() == issued
+
+
+@pytest.mark.parametrize("renew_first", [False, True])
+@pytest.mark.parametrize("repeat", range(3))
+def test_renewal_vs_resume_real_writers_preserve_original_receipt(tmp_path, renew_first, repeat):
+    wire, issuer, host, claim = renewal_fixture(tmp_path)
+    selected, candidate = host.select_renewal().model_dump(), renewal_candidate(wire)
+    original = host.snapshot()["original_manifest_sha256"]
+    modes = ["renew", "bootstrap"] if renew_first else ["bootstrap", "renew"]
+    with issuer_service(wire, issuer.root) as (connections, inspect):
+        def worker(mode, leader):
+            phase = "renew" if mode == "renew" else "publish"
+            return host_worker(wire, host.root, claim, connections[0], mode=mode,
+                renewal=(selected, candidate),
+                pause=phase + ("_writer" if leader else "_before_writer"))
+        with worker(modes[0], True) as leader:
+            leader[1].set()
+            assert leader[3]()[0] == "paused"
+            with worker(modes[1], False) as follower:
+                follower[1].set()
+                assert follower[3]()[0] == "paused"
+                follower[2].set()
+                leader[2].set()
+                assert leader[3]()[0] == follower[3]()[0] == "result"
+        state = inspect()
+        assert state["calls"] == 1
+        assert state["receipt_sha256"] == host.snapshot()["receipt_sha256"]
+    current = host.snapshot()
+    assert current["installed_manifest_sha256"] == hashlib.sha256(candidate).hexdigest()
+    assert current["original_manifest_sha256"] == original
+    assert [current[k] for k in ("pending", "receipts", "admins", "audit")] == [1] * 4
+    assert issuer.snapshot()["consumptions"] == 1
+
+
+@pytest.mark.parametrize("point", ["renew_writer", "renew_manifest_write", "renew_before_commit",
+                                   "renew_after_commit"])
+@pytest.mark.parametrize("fault", ["sql", "crash"])
+def test_renewal_sql_and_process_crash_preserve_complete_configuration(tmp_path, point, fault):
+    wire, issuer, host, claim = renewal_fixture(tmp_path)
+    before, issued = host.snapshot(), issuer.snapshot()
+    selected, candidate = host.select_renewal().model_dump(), renewal_candidate(wire)
+    with host_worker(wire, host.root, claim, mode="renew", renewal=(selected, candidate),
+                     fault=(point, fault)) as child:
+        child[1].set()
+        if fault == "sql":
+            assert child[3]()[0:2] == ("error", "OperationalError")
+        else:
+            child[0].join(10)
+            assert child[0].exitcode == 72
+    expected = before | ({"installed_manifest_sha256": hashlib.sha256(candidate).hexdigest()}
+                         if point == "renew_after_commit" else {})
+    assert wire.host(host.root).snapshot() == expected
+    assert issuer.snapshot() == issued
+
+
+@pytest.mark.parametrize("control,code,exchanges", [
+    ("expired-claim", "OWNER_AUTHORIZATION_EXPIRED", 2),
+    ("inactive", "NATIVE_SESSION_INACTIVE", 1),
+    ("lost-again", "LICENSING_UNAVAILABLE", 2),
+])
+def test_renewal_keeps_pending_when_separate_resume_cannot_publish(
+        tmp_path, control, code, exchanges):
+    wire, issuer, host, _ = renewal_fixture(tmp_path, short=True)
+    calls, receipts = [], []
+    def lost(raw):
+        calls.append(raw)
+        receipts.append(issuer.consume(raw, lambda: NOW))
+        raise TimeoutError("first reply lost")
+    assert not host.bootstrap(lost, observation, lambda: NOW).committed
+    now = START + timedelta(hours=13) if control == "expired-claim" else NOW + timedelta(seconds=2)
+    candidate = renewal_candidate(wire)
+    host.renew_manifest(host.select_renewal(), candidate, observation, lambda: now)
+    issuer.adopt_manifest(candidate, now)
+    before = host.snapshot()
+    def consume(raw):
+        calls.append(raw)
+        response = issuer.consume(raw, lambda: now)
+        assert response == receipts[0]
+        if control == "lost-again":
+            raise TimeoutError("recovery reply lost")
+        return response
+    native = (lambda: observation(active=False)) if control == "inactive" else observation
+    result = host.bootstrap(consume, native, lambda: now)
+    assert result.code == code and not result.committed
+    assert host.snapshot() == before and len(calls) == exchanges
+    assert issuer.snapshot()["consumptions"] == 1
+
+
+@pytest.mark.parametrize("defect", ["candidate-future", "candidate-expired", "bad-clock",
+                                    "inactive", "invalid-selection"])
+def test_renewal_invalid_preflight_never_reaches_writer(tmp_path, defect):
+    from pydantic import ValidationError
+
+    from qualification.owner_authority.licensing_fixture import Refused
+
+    wire, issuer, host, _ = renewal_fixture(tmp_path)
+    candidate = renewal_candidate(wire)
+    selected = host.select_renewal().model_dump()
+    now, native = NOW, observation
+    if defect == "candidate-future":
+        candidate = renewal_candidate(wire, issued=NOW + timedelta(seconds=1))
+    elif defect == "candidate-expired":
+        now = START + timedelta(days=3)
+    elif defect == "bad-clock":
+        now = 0
+    elif defect == "inactive":
+        def native():
+            return observation(active=False)
+    else:
+        selected["approved"] = True
+    before, issued = host.snapshot(), issuer.snapshot()
+    host.hook = lambda *args: pytest.fail("invalid preflight entered writer")
+    expected = (ValidationError if defect == "invalid-selection" else
+                Refused if defect == "inactive" else p.ProtocolInputError)
+    with pytest.raises(expected) as caught:
+        host.renew_manifest(selected, candidate, native, lambda: now)
+    assert type(caught.value) is expected
+    assert host.snapshot() == before and issuer.snapshot() == issued
+
+
+@pytest.mark.parametrize("defect", ["future", "expired", "not-extended", "untrusted"])
+def test_issuer_renewal_adoption_refuses_invalid_candidate_without_effects(tmp_path, defect):
+    wire, issuer, _, _ = renewal_fixture(tmp_path)
+    before, manifest = issuer.snapshot(), issuer.manifest
+    candidate, now = renewal_candidate(wire), NOW
+    if defect == "future":
+        candidate = renewal_candidate(wire, issued=NOW + timedelta(seconds=1))
+    elif defect == "expired":
+        now = START + timedelta(days=3)
+    elif defect == "not-extended":
+        candidate = wire.manifest
+    else:
+        candidate = b"{}"
+    with pytest.raises(p.ProtocolInputError) as caught:
+        issuer.adopt_manifest(candidate, now)
+    assert type(caught.value) is p.ProtocolInputError
+    assert issuer.manifest == manifest and issuer.snapshot() == before
