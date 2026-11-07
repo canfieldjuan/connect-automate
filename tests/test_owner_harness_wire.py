@@ -628,3 +628,28 @@ def test_renewal_selection_closed_schema_and_boundaries():
             assert schema["properties"][field]["pattern"] == r"^[0-9a-f]{64}$"
     with pytest.raises(ValidationError):
         p.RenewalSelection.model_validate(values | {"approved": True})
+
+
+@pytest.mark.parametrize("entry", ["active", "consume"])
+@pytest.mark.parametrize("boundary", ["issued_at", "expires_at"])
+@pytest.mark.parametrize("offset", [-1, 0, 1])
+def test_active_manifest_window_has_exact_category(wire, entry, boundary, offset):
+    p = protocol()
+    now = p._date(wire["manifest"][boundary]) + timedelta(seconds=offset)
+    manifest = wire["sign"]("manifest", wire["manifest"], "release")
+    wire["request"]["requested_at"] = now.isoformat(timespec="seconds").replace("+00:00", "Z")
+    def verify():
+        if entry == "active":
+            return p.verify_active_manifest(manifest, wire["keys"], frozenset({"release"}), now)
+        return p.check_consume_request(wire["request_bytes"](), manifest, wire["keys"],
+                                        frozenset({"release"}), now)
+    future = boundary == "issued_at" and offset < 0
+    expired = boundary == "expires_at" and offset >= 0
+    if future or expired:
+        with pytest.raises(p.ProtocolInputError) as caught:
+            verify()
+        assert type(caught.value) is (p.ProtocolInputError if future else p.ManifestUnavailable)
+    elif entry == "active":
+        assert verify().model_dump() == wire["manifest"]
+    else:
+        assert verify()[0].requested_at == wire["request"]["requested_at"]
