@@ -20,6 +20,27 @@ def protocol():
     return importlib.import_module("qualification.owner_authority.protocol")
 
 
+def renewal_values(wire):
+    original = wire["manifest"].copy()
+    installed = original | {"issued_at": "2026-01-02T00:00:00Z",
+                            "expires_at": "2026-01-04T00:00:00Z"}
+    candidate = installed | {"expires_at": "2026-01-05T00:00:00Z"}
+    return original, installed, candidate
+
+
+def renew(wire, original, installed, candidate, now=None):
+    raw = [wire["sign"]("manifest", value, "release")
+           for value in (candidate, original, installed)]
+    return protocol().check_manifest_renewal(
+        *raw, wire["keys"], frozenset({"release"}),
+        datetime(2026, 1, 2, 12, tzinfo=UTC) if now is None else now)
+
+
+def test_manifest_renewal_signed_forward_control(wire):
+    original, installed, candidate = renewal_values(wire)
+    assert renew(wire, original, installed, candidate).model_dump() == candidate
+
+
 def b64(raw):
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
 
@@ -442,3 +463,193 @@ def test_decoded_budget_is_implied_by_earlier_encoded_schema(wire, model_name, b
                               "signature_base64url": b64(b"\0" * 64)})
     with pytest.raises(ValueError):
         p._decoded(value, budget.payload)
+
+
+@pytest.mark.parametrize("side", [0, 1])
+@pytest.mark.parametrize("field,value", [
+    ("origin", "https://other.example"), ("claim_key_ids", ["host"]),
+    ("receipt_key_ids", ["host"]),
+])
+def test_renewal_each_historical_policy_is_independently_checked(wire, side, field, value):
+    p = protocol()
+    values = list(renewal_values(wire))
+    values[side] = values[side] | {field: value}
+    with pytest.raises(p.ProtocolInputError):
+        renew(wire, *values)
+
+
+@pytest.mark.parametrize("side", [0, 1])
+@pytest.mark.parametrize("field", ["issued_at", "expires_at"])
+@pytest.mark.parametrize("offset", [-1, 0, 1])
+def test_renewal_each_interval_half_and_equality(wire, side, field, offset):
+    p = protocol()
+    original, installed, candidate = renewal_values(wire)
+    # Only the selected prior imposes the tighter bound: removing either reader
+    # cannot be masked by the other historical comparison.
+    values = [original, installed] if side == 1 else [installed, original]
+    stamp = p._date(installed[field]) + timedelta(seconds=offset)
+    candidate[field] = stamp.isoformat(timespec="seconds").replace("+00:00", "Z")
+    if offset < 0 or (field == "expires_at" and offset == 0):
+        with pytest.raises(p.ProtocolInputError):
+            renew(wire, *values, candidate)
+    else:
+        assert renew(wire, *values, candidate).model_dump() == candidate
+
+
+@pytest.mark.parametrize("offset", [-1, 0, 1])
+@pytest.mark.parametrize("boundary", ["issued_at", "expires_at"])
+def test_renewal_candidate_current_window(wire, boundary, offset):
+    p = protocol()
+    values = renewal_values(wire)
+    now = p._date(values[2][boundary]) + timedelta(seconds=offset)
+    if (boundary == "issued_at" and offset < 0) or (boundary == "expires_at" and offset >= 0):
+        with pytest.raises(p.ProtocolInputError) as caught:
+            renew(wire, *values, now=now)
+        assert type(caught.value) is p.ProtocolInputError
+    else:
+        assert renew(wire, *values, now=now).model_dump() == values[2]
+
+
+@pytest.mark.parametrize("seconds", [2591999, 2592000, 2592001])
+def test_renewal_uses_existing_maximum_interval(wire, seconds):
+    p = protocol()
+    original, installed, candidate = renewal_values(wire)
+    end = p._date(candidate["issued_at"]) + timedelta(seconds=seconds)
+    candidate["expires_at"] = end.isoformat(timespec="seconds").replace("+00:00", "Z")
+    if seconds > 2592000:
+        with pytest.raises(p.ProtocolInputError):
+            renew(wire, original, installed, candidate)
+    else:
+        assert renew(wire, original, installed, candidate).model_dump() == candidate
+
+
+def test_renewal_reordered_key_sets_and_expired_history(wire):
+    original, installed, candidate = renewal_values(wire)
+    for value in (original, installed, candidate):
+        value.update(claim_key_ids=["host", "claim"], receipt_key_ids=["release", "receipt"])
+    candidate["claim_key_ids"].reverse()
+    candidate["receipt_key_ids"].reverse()
+    assert renew(wire, original, installed, candidate,
+                 now=datetime(2026, 1, 4, 12, tzinfo=UTC)).model_dump() == candidate
+    later = candidate | {"issued_at": "2026-01-04T12:00:00Z",
+                         "expires_at": "2026-01-06T00:00:00Z"}
+    assert renew(wire, original, candidate, later,
+                 now=datetime(2026, 1, 5, tzinfo=UTC)).model_dump() == later
+
+
+@pytest.mark.parametrize("side", [0, 1, 2])
+@pytest.mark.parametrize("defect", ["absent", "empty", "wrong-signer", "bad-signature",
+                                    "missing", "extra", "falsy", "purpose", "version", "oversize"])
+def test_renewal_verifies_all_signed_inputs(wire, side, defect):
+    p = protocol()
+    values = list(renewal_values(wire))
+    if defect == "missing":
+        del values[side]["origin"]
+    elif defect == "extra":
+        values[side]["approved"] = True
+    elif defect == "falsy":
+        values[side]["claim_key_ids"] = []
+    elif defect == "purpose":
+        values[side]["purpose"] = "owner-bootstrap"
+    elif defect == "version":
+        values[side]["version"] = "owner-bootstrap/2"
+    raw = [wire["sign"]("manifest", value, "release") for value in values]
+    if defect == "absent":
+        raw[side] = None
+    elif defect == "empty":
+        raw[side] = b""
+    elif defect == "wrong-signer":
+        raw[side] = wire["sign"]("manifest", values[side], "claim")
+    elif defect == "bad-signature":
+        import json
+        envelope = json.loads(raw[side])
+        envelope["signature_base64url"] = b64(bytes(64))
+        raw[side] = p.canonical(envelope)
+    elif defect == "oversize":
+        raw[side] = b" " * (p.MANIFEST.envelope + 1)
+    with pytest.raises(p.ProtocolInputError) as caught:
+        p.check_manifest_renewal(raw[2], raw[0], raw[1], wire["keys"],
+                                 frozenset({"release"}), datetime(2026, 1, 2, 12, tzinfo=UTC))
+    assert type(caught.value) is p.ProtocolInputError
+
+
+@pytest.mark.parametrize("bad_now", [None, False, 0, "", datetime(2026, 1, 2)])
+def test_active_manifest_rejects_invalid_clock_before_absence(wire, bad_now):
+    p = protocol()
+    with pytest.raises(p.ProtocolInputError) as caught:
+        p.verify_active_manifest(None, wire["keys"], frozenset({"release"}), bad_now)
+    assert type(caught.value) is p.ProtocolInputError
+
+
+@pytest.mark.parametrize("missing", [False, True])
+def test_active_manifest_availability_survives_consume_admission(wire, missing):
+    p = protocol()
+    now = datetime(2026, 1, 2, tzinfo=UTC)
+    wire["request"]["requested_at"] = "2026-01-02T00:00:00Z"
+    manifest = None if missing else wire["sign"]("manifest", wire["manifest"], "release")
+    with pytest.raises(p.ManifestUnavailable):
+        p.check_consume_request(wire["request_bytes"](), manifest, wire["keys"],
+                                frozenset({"release"}), now)
+    with pytest.raises(p.MalformedConsumeRequest):
+        p.check_consume_request(b"{}", manifest, wire["keys"], frozenset({"release"}), now)
+
+
+def test_active_manifest_untrusted_expired_bytes_are_not_unavailability(wire):
+    p = protocol()
+    raw = wire["sign"]("manifest", wire["manifest"], "claim")
+    with pytest.raises(p.ProtocolInputError) as caught:
+        p.verify_active_manifest(raw, wire["keys"], frozenset({"release"}),
+                                 datetime(2026, 1, 2, tzinfo=UTC))
+    assert type(caught.value) is p.ProtocolInputError
+
+
+def test_renewal_selection_closed_schema_and_boundaries():
+    from pydantic import ValidationError
+
+    p = protocol()
+    values = {"operation_id": uid(4), "pending_binding_sha256": "a" * 64,
+              "original_manifest_sha256": "b" * 64, "installed_manifest_sha256": "c" * 64}
+    selection = p.RenewalSelection.model_validate(values)
+    assert selection.model_dump() == values
+    schema = p.RenewalSelection.model_json_schema()
+    assert schema["additionalProperties"] is False
+    assert set(schema["required"]) == set(values) == set(schema["properties"])
+    with pytest.raises(ValidationError):
+        selection.operation_id = uid(5)
+    for field in values:
+        missing = values.copy()
+        del missing[field]
+        with pytest.raises(ValidationError):
+            p.RenewalSelection.model_validate(missing)
+        for invalid in (None, False, 0, "", "a" * 63, "a" * 65, "g" * 64, "a" * 64 + "\n"):
+            with pytest.raises(ValidationError):
+                p.RenewalSelection.model_validate(values | {field: invalid})
+        if field != "operation_id":
+            assert schema["properties"][field]["pattern"] == r"^[0-9a-f]{64}$"
+    with pytest.raises(ValidationError):
+        p.RenewalSelection.model_validate(values | {"approved": True})
+
+
+@pytest.mark.parametrize("entry", ["active", "consume"])
+@pytest.mark.parametrize("boundary", ["issued_at", "expires_at"])
+@pytest.mark.parametrize("offset", [-1, 0, 1])
+def test_active_manifest_window_has_exact_category(wire, entry, boundary, offset):
+    p = protocol()
+    now = p._date(wire["manifest"][boundary]) + timedelta(seconds=offset)
+    manifest = wire["sign"]("manifest", wire["manifest"], "release")
+    wire["request"]["requested_at"] = now.isoformat(timespec="seconds").replace("+00:00", "Z")
+    def verify():
+        if entry == "active":
+            return p.verify_active_manifest(manifest, wire["keys"], frozenset({"release"}), now)
+        return p.check_consume_request(wire["request_bytes"](), manifest, wire["keys"],
+                                        frozenset({"release"}), now)
+    future = boundary == "issued_at" and offset < 0
+    expired = boundary == "expires_at" and offset >= 0
+    if future or expired:
+        with pytest.raises(p.ProtocolInputError) as caught:
+            verify()
+        assert type(caught.value) is (p.ProtocolInputError if future else p.ManifestUnavailable)
+    elif entry == "active":
+        assert verify().model_dump() == wire["manifest"]
+    else:
+        assert verify()[0].requested_at == wire["request"]["requested_at"]

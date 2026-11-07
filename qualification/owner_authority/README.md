@@ -57,3 +57,11 @@ diagnostic. Native sign-in, Hello, Gmail and live activation stay on hold.
 Each run uses ephemeral test keys in the disposable processes and stores only
 sanitized offline evidence. Native qualification and a later native run need
 their own accepted work order.
+
+The accepted [offline renewal work order](../../docs/contracts/LEAD-OWNER-MANIFEST-RENEWAL.md)
+is being implemented in reviewed increments. The protocol increment supplies
+the shared signed-manifest renewal validator, typed active-manifest availability
+and closed selection value. Durable host configuration, selected publication,
+writer/crash proof and controller adoption remain pending. These protocol APIs
+do not renew storage or resume a pending operation. The `manifest-renewal` case
+remains blocked, and the runnable packet profile above is unchanged until adoption.

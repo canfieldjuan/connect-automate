@@ -1790,3 +1790,16 @@ def test_refusal_metadata_mapping_and_pending_state(tmp_path, code, status, mism
     assert not result.committed
     assert host.snapshot() == before  # Full binding digest and zero publication retained.
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize("missing", [False, True])
+def test_issuer_active_manifest_unavailable_precedes_any_ledger_effect(tmp_path, missing):
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    before = issuer.snapshot()
+    now = START + timedelta(days=2)
+    if missing:
+        issuer.manifest = None
+    with pytest.raises(p.ManifestUnavailable):
+        issuer.issue(wire.claim(issued=now), now)
+    assert issuer.snapshot() == before

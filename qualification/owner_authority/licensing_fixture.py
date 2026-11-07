@@ -165,9 +165,7 @@ class IssuerFixture:
         claim = p.OwnerClaim.model_validate(claim)
         if type(now) is not datetime or now.tzinfo is not UTC or p._date(claim.issued_at) != now:
             raise p.ProtocolInputError()
-        manifest = p.verify_signed(self.manifest, "manifest", self.keys, self.release_ids)
-        if not p._date(manifest.issued_at) <= now < p._date(manifest.expires_at):
-            raise p.ProtocolInputError()
+        p.verify_active_manifest(self.manifest, self.keys, self.release_ids, now)
         return claim, signed("claim", claim.model_dump(), self.claim_signer)
 
     def _insert(self, db, claim, raw):
