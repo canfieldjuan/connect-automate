@@ -432,6 +432,32 @@ def _changed_first_receipt(monkeypatch):
     monkeypatch.setattr(ctl.IssuerFixture, "consume", changed)
 
 
+def _extra_issuer_consumption(monkeypatch):
+    from test_owner_harness_recovery import START, SyntheticWire
+
+    consume = ctl.IssuerFixture.consume
+    first = True
+
+    def changed(issuer, raw, clock):
+        nonlocal first
+        receipt = consume(issuer, raw, clock)
+        if first:
+            first = False
+            # Commit another real signed consumption through the fixture owner,
+            # rather than fabricating its snapshot count or cross-store SQL.
+            wire = SyntheticWire()
+            wire.public.update(issuer.keys)
+            claim = issuer.issue(wire.claim(index=20).model_copy(update={
+                "entitlement_id": ctl._uid(21),
+            }), START)
+            assert issuer.snapshot()["consumptions"] == 1
+            consume(issuer, wire.request(claim, operation=20), clock)
+            assert issuer.snapshot()["consumptions"] == 2
+        return receipt
+
+    monkeypatch.setattr(ctl.IssuerFixture, "consume", changed)
+
+
 def _faulted_host(monkeypatch, fault):
     from qualification.owner_authority.licensing_fixture import read_store, transaction
 
@@ -449,7 +475,8 @@ def _faulted_host(monkeypatch, fault):
             with suppress(TimeoutError):
                 consume(host._request(binding, claim, clock()))
 
-        result = bootstrap(host, twice if fault == "issuer-effects" else consume, observe, clock)
+        result = bootstrap(host, twice if fault in ("issuer-effects", "no-auto-retry") else consume,
+                           observe, clock)
         if fault == "pending-after-loss" and result.code == "LICENSING_UNAVAILABLE":
             return p.FixtureHostResult.model_validate(result.model_dump() | {"code": "PENDING"})
         if fault == "no-publication":
@@ -471,6 +498,8 @@ def _faulted_child(fault, target, *args):
     with pytest.MonkeyPatch.context() as patch:
         if target is ctl._issuer and fault == "same-receipt":
             _changed_first_receipt(patch)
+        if target is ctl._issuer and fault == "extra-consumption":
+            _extra_issuer_consumption(patch)
         if target is ctl._host:
             _faulted_host(patch, fault)
         ctl._child(target, *args)
@@ -482,6 +511,7 @@ def _faulted_child(fault, target, *args):
     ("issuer-effects", ctl.REPLAY), ("same-receipt", ctl.REPLAY),
     ("pending-after-loss", ctl.REPLAY), ("cached-no-dispatch", ctl.REPLAY),
     ("no-publication", ctl.INACTIVE), ("child-exit", ctl.REPLAY),
+    ("no-auto-retry", ctl.MALFORMED), ("extra-consumption", ctl.MALFORMED),
 ])
 def test_real_child_fault_reaches_evidence_verdict(tmp_path, monkeypatch, capfd, fault, case_id):
     path = manifest(tmp_path, packet(case_id))
@@ -500,7 +530,10 @@ def test_real_child_fault_reaches_evidence_verdict(tmp_path, monkeypatch, capfd,
     else:
         assert case.outcome == "FAIL"
         assert case.actual_code == case.expected_code
-        assert evidence["assertions"] == {key: key != fault for key in case.assertion_ids}
+        failed = {"issuer-effects"} if fault == "extra-consumption" else {fault}
+        if fault == "no-auto-retry":
+            failed.add("issuer-effects")
+        assert evidence["assertions"] == {key: key not in failed for key in case.assertion_ids}
 
 
 def test_same_size_input_modified_in_place_during_read(tmp_path, monkeypatch):

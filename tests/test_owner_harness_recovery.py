@@ -1755,3 +1755,38 @@ def test_metadata_receipt_requires_admitted_metadata(tmp_path, status, media, co
     assert result.committed is commits
     assert result.code == ("COMMITTED" if commits else "LICENSING_UNAVAILABLE")
     assert [host.snapshot()[k] for k in ("receipts", "admins", "audit")] == [int(commits)] * 3
+
+
+@pytest.mark.parametrize("code,status", [
+    ("OWNER_AUTHORIZATION_INVALID", 403), ("OWNER_AUTHORIZATION_REVOKED", 403),
+    ("OWNER_BINDING_CONFLICT", 409), ("OWNER_AUTHORIZATION_EXPIRED", 410),
+    ("OWNER_CLOCK_SKEW", 422), ("LICENSING_UNAVAILABLE", 503),
+])
+@pytest.mark.parametrize("mismatch", [False, True])
+def test_refusal_metadata_mapping_and_pending_state(tmp_path, code, status, mismatch):
+    wire = SyntheticWire()
+    claim = wire.sign("claim", wire.claim().model_dump(), "claim")
+    host = wire.host(tmp_path / "host", create=True)
+    binding = host.prepare(claim, uid(4), observation, NOW)
+    before = host.snapshot()
+    body = p.canonical(p.Refusal(version="owner-bootstrap/1", code=code,
+                                 operation_id=binding.operation_id,
+                                 completion="NOT_COMMITTED").model_dump())
+    response = p.fixture_response((409 if status == 403 else 403) if mismatch else status,
+                                  "application/json", body)
+    if mismatch:
+        with pytest.raises(p.ProtocolInputError) as error:
+            p.admit_fixture_response(response)
+        assert type(error.value) is p.ProtocolInputError
+    else:
+        assert p.admit_fixture_response(response) == body
+
+    calls = []
+    def exchange(request):
+        calls.append(request)
+        return response
+    result = host.bootstrap_exchange(exchange, observation, lambda: NOW)
+    assert result.code == ("LICENSING_UNAVAILABLE" if mismatch else code)
+    assert not result.committed
+    assert host.snapshot() == before  # Full binding digest and zero publication retained.
+    assert len(calls) == 1
