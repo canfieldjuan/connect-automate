@@ -59,6 +59,10 @@ class MalformedConsumeResponse(ProtocolInputError):
     """Recognized fixed diagnostic; no operation or completion claim."""
 
 
+class ManifestUnavailable(ProtocolInputError):
+    """Absent active configuration or a verified expired manifest only."""
+
+
 def _unique(values):
     if len(values) != len(set(values)):
         raise ValueError("duplicate identity")
@@ -386,6 +390,15 @@ class ConsumeBinding(Closed):
     installation_public_key: PublicKey
 
 
+class RenewalSelection(Closed):
+    """Host-derived selection; equality must be rechecked by the store writer."""
+
+    operation_id: UuidV4
+    pending_binding_sha256: Digest
+    original_manifest_sha256: Digest
+    installed_manifest_sha256: Digest
+
+
 class SmallEnvelope(Closed):
     version: Literal["owner-bootstrap/1"]
     key_id: KeyId
@@ -493,16 +506,45 @@ def verify_signed(raw: bytes, kind: Literal["manifest", "claim", "receipt"],
         raise ProtocolInputError() from None
 
 
+def verify_active_manifest(raw: bytes | None, keys: Mapping[str, bytes],
+                           release_ids: frozenset[str], now: datetime):
+    """Keep availability distinct from corrupt, untrusted or future configuration."""
+    if type(now) is not datetime or now.tzinfo is not UTC:
+        raise ProtocolInputError()
+    if raw is None:
+        raise ManifestUnavailable()
+    manifest = verify_signed(raw, "manifest", keys, release_ids)
+    if now < _date(manifest.issued_at):
+        raise ProtocolInputError()
+    if now >= _date(manifest.expires_at):
+        raise ManifestUnavailable()
+    return manifest
+
+
+def check_manifest_renewal(candidate_raw: bytes, original_raw: bytes, installed_raw: bytes,
+                           keys: Mapping[str, bytes], release_ids: frozenset[str], now: datetime):
+    """Verify signed policy and monotonic intervals; no selection or publication effect."""
+    original = verify_signed(original_raw, "manifest", keys, release_ids)
+    installed = verify_signed(installed_raw, "manifest", keys, release_ids)
+    candidate = verify_active_manifest(candidate_raw, keys, release_ids, now)
+    # Version/purpose are constants in the closed signed manifest model.
+    # Historical verification does not require an unexpired original/installed interval.
+    for prior in (original, installed):
+        if (candidate.origin != prior.origin
+                or set(candidate.claim_key_ids) != set(prior.claim_key_ids)
+                or set(candidate.receipt_key_ids) != set(prior.receipt_key_ids)
+                or _date(candidate.issued_at) < _date(prior.issued_at)
+                or _date(candidate.expires_at) <= _date(prior.expires_at)):
+            raise ProtocolInputError()
+    return candidate
+
+
 def check_consume_request(raw: bytes, manifest_raw: bytes, keys: Mapping[str, bytes],
                           release_ids: frozenset[str], issuer_now: datetime):
     """Check signed wire/attempt time only; expiry/new-consume decisions need a ledger."""
     request = parse_consume_request(raw)
     try:
-        if type(issuer_now) is not datetime or issuer_now.tzinfo is not UTC:
-            raise ProtocolInputError()
-        manifest = verify_signed(manifest_raw, "manifest", keys, release_ids)
-        if not _date(manifest.issued_at) <= issuer_now < _date(manifest.expires_at):
-            raise ProtocolInputError()
+        manifest = verify_active_manifest(manifest_raw, keys, release_ids, issuer_now)
         claim_raw = canonical(request.owner_claim.model_dump())
         claim = verify_signed(claim_raw, "claim", keys, frozenset(manifest.claim_key_ids))
         binding = request.binding
@@ -518,6 +560,8 @@ def check_consume_request(raw: bytes, manifest_raw: bytes, keys: Mapping[str, by
         if abs((issuer_now - _date(request.requested_at)).total_seconds()) > 60:
             raise ClockSkewError()
         return request, claim
+    except ManifestUnavailable:
+        raise
     except (ValueError, TypeError, KeyError, RecursionError, InvalidSignature):
         raise ProtocolInputError() from None
 
