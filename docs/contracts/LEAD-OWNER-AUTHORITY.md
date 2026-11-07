@@ -574,22 +574,34 @@ a health call or an automatic retry. If the licensing owner has no accepted
 renewal operation, recovery stays `LICENSING_UNAVAILABLE`.
 
 This bounded renewal changes the validity interval of the previously admitted
-`ActivationManifest`. It retains its version, purpose, HTTPS origin and
-claim/receipt key-ID sets. Validation uses the installed release authority and
+`ActivationManifest`. Its version, purpose, HTTPS origin and claim/receipt
+key-ID sets must match both the original retained and currently installed
+manifests. Validation uses the installed release authority and
 the existing closed manifest schema, wire budget and key-purpose rules. The
 replacement must satisfy `issued_at <= now < expires_at`, have an expiry later
-than the retained manifest's expiry, and have an issue time no earlier than
-the retained manifest's issue time. The existing maximum validity interval
-still applies. Endpoint migration, claim/receipt key-policy changes and trust
+than both the original retained manifest's expiry and the currently installed
+manifest's expiry, and have an issue time no earlier than either manifest's
+issue time. The existing maximum validity interval still applies. These bounds
+apply on every renewal, including successive renewals. Read the installed signed
+manifest from the protected configuration owner, never from a caller assertion
+or a stale in-memory copy. A missing or unverifiable installed manifest blocks
+this renewal path. Endpoint migration, claim/receipt key-policy changes and trust
 installation require their own accepted work order.
+
+The installed-state comparison is a proposed contract refinement for issue #73;
+its exact revision requires Juan's acceptance before implementation. The bounded
+[offline renewal work order](LEAD-OWNER-MANIFEST-RENEWAL.md) proposes its later
+synthetic proof without authorizing a production or native renewal path.
 
 Retain the previously admitted signed manifest with the saved operation so
 that its policy can be compared without treating its expired interval as
 current authority. An absent or unverifiable retained manifest blocks this
 renewal path. Publish the fully verified replacement through the protected
-configuration writer atomically. Recheck that the pending operation and its
-retained manifest are still the ones the user selected, under the same
-protected-host writer serialization as publication.
+configuration writer atomically. Recheck that the pending operation, its
+original retained manifest and the currently installed signed manifest are still
+the ones the user selected, under the same protected-host writer serialization
+as publication. A changed installed selection requires explicit reselection;
+never silently rebase or retry a renewal against another configuration.
 A validation, write or concurrent-state failure preserves the saved operation
 and its last complete configuration.
 
@@ -615,7 +627,9 @@ Synthetic acceptance examples for a later implementation:
 | Expired manifest and a saved pending operation, without a user renewal action | `LICENSING_UNAVAILABLE`, retained binding and receipt, and no renewal or consume call. |
 | Explicit renewal with the same policy and a valid later interval | Protected configuration publication only. A separate explicit resume makes one fresh authenticated attempt for the saved binding. |
 | Wrong release authority, missing key purpose, changed origin/key-ID sets, future issue time, expired replacement or non-advancing expiry | Refusal before configuration publication, with the pending operation retained. |
-| Renewal failure or a different pending operation appearing before publication | Preserve the last complete configuration and the selected pending operation's evidence. Require a new explicit selection before another attempt. |
+| A second candidate is later than the original retained manifest but regresses the installed issue time or fails to advance its expiry | Refuse configuration publication; preserve the newer installed manifest and original pending evidence. |
+| Otherwise valid candidate with regressed issue time or a validity interval over the existing maximum | Refuse before publication; do not replace or reinterpret the saved operation. |
+| Renewal failure or a different pending operation, retained manifest or installed configuration appearing before publication | Preserve the last complete configuration and the selected pending operation's evidence. Require a new explicit selection before another attempt. |
 | Issuer commit, response loss, manifest expiry, then successful renewal and explicit replay | Recover the same signed consumed receipt. Publish only after the original local validity and fresh native checks pass. |
 | The same sequence with an expired claim, invalid native proof or another lost response | Preserve the original binding and receipt evidence with no local authority publication or automatic retry. |
 
@@ -963,6 +977,7 @@ fresh-account verification and Linux lock-spoof resistance remain proof gates.
 | --- | --- | --- |
 | Licensing/release owner, using existing issuer trust chain | Issue a business-scoped companion claim; bind installation/key proof and opaque native/payload commitment at consumption; own revoke/reissue and bound receipts under B0-I; own replacement approval under [PC recovery](#failed-or-replaced-pc-recovery) | Native employee authentication, lead data, granting ownership from installer privilege or a new identity cloud service |
 | Existing Connect/Automate protected host seam | Own installation identity, immutable org scope, employee enrollment/role, bootstrap consumption, host sessions and authority versions; own retirement proof and local replacement publication under [PC recovery](#failed-or-replaced-pc-recovery) | Source/custody/workflow SQL or a second scheduler/lead store |
+| Protected activation-configuration owner under the existing host seam | Own the installed signed manifest and immutable original retained manifest for a pending operation; validate interval-only renewal under [pending recovery](#expired-activation-manifests-during-pending-recovery), recheck selected state and publish through the same protected-host writer | Issuing a manifest, changing issuer trust or claim/receipt key policy, source/custody SQL, granting admin authority or implementing native proof in an offline fixture |
 | Native adapter under that host | Verify current caller/person/session and perform fresh native authentication using pinned mechanisms | Trusting webview JSON, an account name/PID alone, a copied result or a transport bearer |
 | Qualification operator and native preflight owner | Juan establishes and preserves the isolation boundary; the preflight owner admits only the exact reviewed evidence under [non-test-disk isolation](#non-test-disk-isolation-evidence) | Inferring physical isolation from a caller flag, discovering non-test disks or changing their state |
 | Existing policy evaluator | Evaluate the existing closed human-operation catalog using host-acquired facts | Becoming a native credential verifier or accepting a machine as an employee |
