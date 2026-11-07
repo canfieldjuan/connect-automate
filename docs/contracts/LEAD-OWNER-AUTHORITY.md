@@ -588,9 +588,8 @@ or a stale in-memory copy. A missing or unverifiable installed manifest blocks
 this renewal path. Endpoint migration, claim/receipt key-policy changes and trust
 installation require their own accepted work order.
 
-The installed-state comparison is a proposed contract refinement for issue #73;
-its exact revision requires Juan's acceptance before implementation. The bounded
-[offline renewal work order](LEAD-OWNER-MANIFEST-RENEWAL.md) proposes its later
+The installed-state comparison is a contract refinement for issue #73. The bounded
+[offline renewal work order](LEAD-OWNER-MANIFEST-RENEWAL.md) specifies its
 synthetic proof without authorizing a production or native renewal path.
 
 Retain the previously admitted signed manifest with the saved operation so
