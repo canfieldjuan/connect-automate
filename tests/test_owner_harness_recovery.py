@@ -1560,3 +1560,233 @@ def test_result_reconciliation_refuses_coherent_pending_replacement(tmp_path):
     with pytest.raises(FixtureCorrupt, match="pending identity changed"):
         host.bootstrap(lost, observation, lambda: NOW)
     assert host.snapshot()["admins"] == 0 and issuer.snapshot()["consumptions"] == 1
+
+
+@pytest.mark.parametrize("revoked", [False, True])
+def test_metadata_exchange_parity(tmp_path, revoked):
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    claim = issuer.issue(wire.claim(), START)
+    host = wire.host(tmp_path / "host", create=True)
+    binding = host.prepare(claim, uid(4), observation, NOW)
+    if revoked:
+        issuer.revoke(uid(1))
+    replies, requests = [], []
+
+    def exchange(request):
+        requests.append(request)
+        reply = issuer.exchange(request, lambda: NOW)
+        replies.append(reply)
+        # Compare new metadata body with the original API in the same run.
+        assert p.admit_fixture_response(reply) == issuer.consume(request, lambda: NOW)
+        return reply
+
+    def lost(request):
+        exchange(request)
+        raise TimeoutError
+
+    pending = host.snapshot()
+    assert pending["pending_binding_sha256"] == hashlib.sha256(
+        p.canonical(binding.model_dump())).hexdigest()
+    failed = host.bootstrap_exchange(lost, observation, lambda: NOW)
+    assert failed.code == "LICENSING_UNAVAILABLE" and not failed.committed
+    assert host.snapshot() == pending
+    result = host.bootstrap_exchange(exchange, observation, lambda: NOW)
+    assert result.code == ("OWNER_AUTHORIZATION_REVOKED" if revoked else "COMMITTED")
+    assert result.committed is (not revoked)
+    assert len(requests) == 2
+    assert replies[0] == replies[1]
+    if not revoked:
+        def forbidden(_):
+            pytest.fail("cached metadata adapter dispatched")
+        assert host.bootstrap_exchange(forbidden, observation, lambda: NOW) == result
+        assert host.snapshot()["receipt_sha256"] == hashlib.sha256(
+            p.admit_fixture_response(replies[0])).hexdigest()
+
+
+@pytest.mark.parametrize("bad", [
+    "empty", "truncated", "utf8", "duplicate", "noncanonical", "8191", "8192", "8193",
+    "version", "owner_claim", "binding", "attempt_id", "requested_at", "installation_signature",
+    "operation_id", "extra", "false", "zero", "blank", "mixed",
+])
+def test_malformed_exchange_never_enters_ledger(tmp_path, monkeypatch, bad):
+    from qualification.owner_authority import licensing_fixture as lf
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("malformed request entered issuer ledger")
+
+    monkeypatch.setattr(lf, "connect_store", forbidden)
+    monkeypatch.setattr(lf, "transaction", forbidden)
+    claim = wire.sign("claim", wire.claim().model_dump(), "claim")
+    data = json.loads(wire.request(claim))
+    raw = {"empty": b"{}", "truncated": b"{", "utf8": b"\xff",
+           "duplicate": p.canonical(data).replace(
+               b'"attempt_id":', b'"attempt_id":0,"attempt_id":'),
+           "noncanonical": p.canonical(data) + b" "}
+    if bad.isdecimal():
+        raw[bad] = b" " * int(bad)
+    elif bad in data:
+        del data[bad]
+    elif bad == "operation_id":
+        del data["binding"]["operation_id"]
+    elif bad == "extra":
+        data["extra"] = True
+    elif bad in ("false", "zero", "blank", "mixed"):
+        data["attempt_id"] = {"false": False, "zero": 0, "blank": "", "mixed": False}[bad]
+        if bad == "mixed":
+            data["binding"]["generation"] = 0
+    reply = p.parse_fixture_response(issuer.exchange(raw.get(bad, p.canonical(data)), lambda: NOW))
+    assert reply.status == 400
+    assert reply.content_type == "application/json"
+    assert reply.body == b'{"code":"MALFORMED_CONSUME_REQUEST","version":"owner-bootstrap/1"}'
+
+
+@pytest.mark.parametrize("bad", ["installation", "claim-signature", "purpose", "binding", "trust"])
+def test_verification_failure_is_not_malformed_or_clock_skew(tmp_path, monkeypatch, bad):
+    from qualification.owner_authority import licensing_fixture as lf
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    claim = wire.sign("claim", wire.claim().model_dump(), "claim")
+    data = json.loads(wire.request(claim, now=NOW - timedelta(seconds=61)))
+    if bad == "claim-signature":
+        data["owner_claim"]["signature_base64url"] = b64(bytes(64))
+    elif bad == "purpose":
+        data["owner_claim"] = json.loads(wire.sign(
+            "claim", wire.claim().model_dump() | {"purpose": "other"}, "claim"))
+    if bad == "installation":
+        data["installation_signature"] = b64(bytes(64))
+    elif bad == "binding":
+        data["binding"]["organization_id"] = uid(99)
+    elif bad == "trust":
+        issuer.release_ids = frozenset({"other"})
+    def forbidden(*args, **kwargs):
+        pytest.fail("unverified request entered ledger")
+    monkeypatch.setattr(lf, "connect_store", forbidden)
+    monkeypatch.setattr(lf, "transaction", forbidden)
+    with pytest.raises(p.ProtocolInputError) as error:
+        issuer.exchange(p.canonical(data), lambda: NOW)
+    assert type(error.value) is p.ProtocolInputError
+
+
+def test_diagnostic_model_is_closed_and_required():
+    from pydantic import ValidationError
+    expected = {"code": "MALFORMED_CONSUME_REQUEST", "version": "owner-bootstrap/1"}
+    assert p.canonical(p.MalformedConsumeDiagnostic.model_validate(expected).model_dump()) == (
+        b'{"code":"MALFORMED_CONSUME_REQUEST","version":"owner-bootstrap/1"}')
+    schema = p.MalformedConsumeDiagnostic.model_json_schema()
+    assert schema["additionalProperties"] is False
+    assert set(schema["required"]) == set(expected)
+    assert {k: v["const"] for k, v in schema["properties"].items()} == expected
+    for data in ({}, {"code": expected["code"]}, {"version": expected["version"]},
+                 expected | {"operation_id": uid(4)}, expected | {"completion": "UNKNOWN"},
+                 expected | {"code": "other"}, expected | {"version": False}):
+        with pytest.raises(ValidationError):
+            p.MalformedConsumeDiagnostic.model_validate(data)
+
+
+@pytest.mark.parametrize("change", [
+    "good", "status", "success-status", "media", "missing-media", "empty-media", "extra",
+    "completion", "missing", "literal", "duplicate", "whitespace", "order", "partial",
+    "arbitrary", "body-cap", "frame-cap", "raw-body",
+])
+def test_metadata_diagnostic_classification_and_pending_preservation(tmp_path, change):
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    claim = issuer.issue(wire.claim(), START)
+    seen, calls = [], []
+    host = wire.host(tmp_path / "host", create=True,
+                     hook=lambda name, db: seen.extend(
+                         [name] if name == "malformed_response" else []))
+    host.prepare(claim, uid(4), observation, NOW)
+    before = host.snapshot()
+    body = b'{"code":"MALFORMED_CONSUME_REQUEST","version":"owner-bootstrap/1"}'
+    variants = {
+        "extra": body[:-1] + b',"operation_id":"' + uid(4).encode() + b'"}',
+        "completion": body[:-1] + b',"completion":"UNKNOWN"}',
+        "missing": b'{"code":"MALFORMED_CONSUME_REQUEST"}',
+        "literal": body.replace(b"owner-bootstrap/1", b"owner-bootstrap/2"),
+        "duplicate": body.replace(b'"code":', b'"code":"other","code":'),
+        "whitespace": body + b" ", "order": b'{"version":"owner-bootstrap/1",'
+            b'"code":"MALFORMED_CONSUME_REQUEST"}', "partial": body[:-1],
+        "arbitrary": b"\xff", "body-cap": b"x" * 4097,
+    }
+    data = {"status": 200 if change == "success-status" else 403 if change == "status" else 400,
+            "content_type": {"media": "text/plain", "missing-media": None,
+                             "empty-media": ""}.get(change, "application/json"),
+            "body_base64url": b64(variants.get(change, body))}
+    raw = p.canonical(data)
+    if change == "frame-cap":
+        raw = b" " * 8193
+    elif change == "raw-body":
+        raw = body
+    if change == "good":
+        with pytest.raises(p.MalformedConsumeResponse):
+            p.admit_fixture_response(raw)
+    else:
+        try:
+            p.admit_fixture_response(raw)
+        except p.ProtocolInputError as error:
+            assert type(error) is p.ProtocolInputError
+    def exchange(request):
+        calls.append(True)
+        return raw
+    result = host.bootstrap_exchange(exchange, observation, lambda: NOW)
+    assert result.code == "LICENSING_UNAVAILABLE" and not result.committed
+    assert host.snapshot() == before
+    assert calls == [True]
+    assert seen == (["malformed_response"] if change == "good" else [])
+
+
+@pytest.mark.parametrize("status,media,commits", [
+    (200, "application/json", True), (403, "application/json", False),
+    (400, "application/json", False), (200, "text/plain", False), (200, None, False),
+])
+def test_metadata_receipt_requires_admitted_metadata(tmp_path, status, media, commits):
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    claim = issuer.issue(wire.claim(), START)
+    host = wire.host(tmp_path / "host", create=True)
+    host.prepare(claim, uid(4), observation, NOW)
+    def exchange(raw):
+        return p.fixture_response(status, media, issuer.consume(raw, lambda: NOW))
+    result = host.bootstrap_exchange(exchange, observation, lambda: NOW)
+    assert result.committed is commits
+    assert result.code == ("COMMITTED" if commits else "LICENSING_UNAVAILABLE")
+    assert [host.snapshot()[k] for k in ("receipts", "admins", "audit")] == [int(commits)] * 3
+
+
+@pytest.mark.parametrize("code,status", [
+    ("OWNER_AUTHORIZATION_INVALID", 403), ("OWNER_AUTHORIZATION_REVOKED", 403),
+    ("OWNER_BINDING_CONFLICT", 409), ("OWNER_AUTHORIZATION_EXPIRED", 410),
+    ("OWNER_CLOCK_SKEW", 422), ("LICENSING_UNAVAILABLE", 503),
+])
+@pytest.mark.parametrize("mismatch", [False, True])
+def test_refusal_metadata_mapping_and_pending_state(tmp_path, code, status, mismatch):
+    wire = SyntheticWire()
+    claim = wire.sign("claim", wire.claim().model_dump(), "claim")
+    host = wire.host(tmp_path / "host", create=True)
+    binding = host.prepare(claim, uid(4), observation, NOW)
+    before = host.snapshot()
+    body = p.canonical(p.Refusal(version="owner-bootstrap/1", code=code,
+                                 operation_id=binding.operation_id,
+                                 completion="NOT_COMMITTED").model_dump())
+    response = p.fixture_response((409 if status == 403 else 403) if mismatch else status,
+                                  "application/json", body)
+    if mismatch:
+        with pytest.raises(p.ProtocolInputError) as error:
+            p.admit_fixture_response(response)
+        assert type(error.value) is p.ProtocolInputError
+    else:
+        assert p.admit_fixture_response(response) == body
+
+    calls = []
+    def exchange(request):
+        calls.append(request)
+        return response
+    result = host.bootstrap_exchange(exchange, observation, lambda: NOW)
+    assert result.code == ("LICENSING_UNAVAILABLE" if mismatch else code)
+    assert not result.committed
+    assert host.snapshot() == before  # Full binding digest and zero publication retained.
+    assert len(calls) == 1

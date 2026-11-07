@@ -22,7 +22,7 @@ Create the manifest using the existing `run.schema.json`:
 
 - Set `version` to `owner-harness/1`, `evidence_class` to `OFFLINE_CONFORMANCE`
   and `qualification_pass` to literal false.
-- Use the parent contract revision `314b43a6a8d4860fd6ca0f17bab1427059f7dea7`
+- Use the accepted work-order revision `ba7f7cf7db9b14c050d87021fddd7333ff149851`
   and the full harness commit of the checkout under review. Supply a fresh UUIDv4
   `run_id`. Pin `dependency_lock_sha256` to the actual bytes of `uv.lock`.
 - Set `fixtures` to a single alias/digest pair with alias `cases` and the SHA-256
@@ -30,8 +30,17 @@ Create the manifest using the existing `run.schema.json`:
   The caller declares the harness commit. The per-case receipts also hash the
   actual executing harness source and record the Python version.
 - Runnable cases cover signed replay after a lost response, revoked claims and
-  denial with no dispatch. The catalog lists native cases as `NOT_RUN` and
-  the outstanding issue #73 decisions as `BLOCKED`.
+  denial with no dispatch, and malformed-consume recovery. The latter performs
+  three explicit exchanges: a committed but lost reply, a malformed recovery
+  request with zero issuer-ledger entry, then fresh authenticated recovery of
+  the original receipt. It proves complete pending-binding preservation and
+  derived unresolved state (`UNKNOWN`), not a stored completion column.
+  A cached invocation dispatches nothing. Metadata is canonical fixture IPC;
+  it does not qualify HTTP/TLS or a live endpoint. Other issue #73 cases stay
+  `BLOCKED`; native cases remain `NOT_RUN`.
+- The closed models and derived schemas enforce this exact work-order profile.
+  Historical evidence keeps its original schema/harness bytes and pin; do not
+  relabel archived packets or feed an old profile to this controller.
 
 Inspect validates the entire selection and prints it. Offline writes the
 validated run, sanitized case receipts and `hashes.json`, then publishes

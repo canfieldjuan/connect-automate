@@ -25,7 +25,7 @@ def fixture(kind="result"):
         "version": "owner-harness/1",
         "evidence_class": "OFFLINE_CONFORMANCE",
         "qualification_pass": False,
-        "contract_commit": "a" * 40,
+        "contract_commit": protocol().CONTRACT_COMMIT,
         "harness_commit": "b" * 40,
         "run_id": "11111111-1111-4111-8111-111111111111",
         "dependency_lock_sha256": "c" * 64,
@@ -236,3 +236,92 @@ def test_generated_schema_bytes_survive_autocrlf_checkout(tmp_path, kind):
         check=True, capture_output=True,
     )
     assert (tmp_path / relative).read_bytes() == protocol().schemas()[kind + ".schema.json"]
+
+
+@pytest.mark.parametrize("kind", ["run", "result"])
+def test_exact_profile_is_owned_by_schema_and_mixed_errors_stay_invalid(kind):
+    p = protocol()
+    model = p.OfflineRun if kind == "run" else p.OfflineResult
+    pin = "ba7f7cf7db9b14c050d87021fddd7333ff149851"
+    assert model.model_json_schema()["properties"]["contract_commit"]["const"] == pin
+    wrong = fixture(kind) | {"contract_commit": "a" * 40}
+    with pytest.raises(ValidationError):
+        model.model_validate(wrong)
+    with pytest.raises(p.ContractMismatchError):
+        p.parse_packet(p.canonical(wrong), kind)
+    for change in ({"qualification_pass": 0}, {"unexpected": True},
+                   {"fixtures" if kind == "run" else "cases":
+                    wrong["fixtures" if kind == "run" else "cases"] * 2},
+                   {"contract_commit": False}, {"contract_commit": ""}):
+        with pytest.raises(p.ProtocolInputError) as error:
+            p.parse_packet(p.canonical(wrong | change), kind)
+        assert type(error.value) is p.ProtocolInputError
+    del wrong["run_id"]
+    with pytest.raises(p.ProtocolInputError) as error:
+        p.parse_packet(p.canonical(wrong), kind)
+    assert type(error.value) is p.ProtocolInputError
+
+
+def test_response_frame_schema_and_maximal_canonical_shape():
+    p = protocol()
+    schema = p.FixtureResponse.model_json_schema()
+    assert schema["additionalProperties"] is False
+    assert set(schema["required"]) == {"status", "content_type", "body_base64url"}
+    assert schema["properties"]["status"]["minimum"] == 100
+    assert schema["properties"]["status"]["maximum"] == 599
+    assert schema["properties"]["body_base64url"]["maxLength"] == 5462
+    assert schema["properties"]["body_base64url"]["pattern"] == r"^[A-Za-z0-9_-]*$"
+    assert schema["properties"]["content_type"]["anyOf"][0]["maxLength"] == 256
+    raw = p.fixture_response(599, chr(0) * 256, b"x" * 4096)
+    assert len(raw) == 7050 < p.FRAME_BYTES
+    assert p.parse_fixture_response(raw).body == b"x" * 4096
+    for status in (100, 101, 598, 599):
+        for media in (None, "", "x" * 255, "x" * 256):
+            assert p.parse_fixture_response(p.fixture_response(status, media, b"")).body == b""
+    value = p.parse_fixture_response(raw)
+    with pytest.raises(ValidationError):
+        value.status = 200
+    for field in value.model_dump():
+        data = value.model_dump()
+        del data[field]
+        with pytest.raises(ValidationError):
+            p.FixtureResponse.model_validate(data)
+
+
+@pytest.mark.parametrize("change", [
+    {"status": v} for v in (99, 600, 0, False, "", "200", None)
+] + [{"content_type": v} for v in (0, False, "x" * 257)] + [
+    {"body_base64url": v} for v in (0, False, None, "!", "AA=", "AA+", "AB", "A" * 5463)
+] + [{"extra": True}, {"status": False, "body_base64url": "!"}])
+def test_response_frame_rejects_falsy_mixed_and_noncanonical_encoding(change):
+    p = protocol()
+    good = {"status": 200, "content_type": "application/json", "body_base64url": "eA"}
+    with pytest.raises(ValidationError):
+        p.FixtureResponse.model_validate(good | change)
+    with pytest.raises(p.ProtocolInputError):
+        p.parse_fixture_response(p.canonical(good | change))
+
+
+def test_frame_cap_precedes_json_and_whole_frame_admission(monkeypatch):
+    p = protocol()
+    good = p.fixture_response(200, "application/json", b"x")
+    for raw in (good + b" ", good[:-1], b"\xff", good.replace(b'"status":200',
+                b'"status":400,"status":200')):
+        with pytest.raises(p.ProtocolInputError):
+            p.parse_fixture_response(raw)
+    for size in (4095, 4096):
+        raw = p.fixture_response(200, None, b"x" * size)
+        assert len(p.parse_fixture_response(raw).body) == size
+    with pytest.raises(p.ProtocolInputError):
+        p.fixture_response(200, None, b"x" * 4097)
+    original = p.json.loads
+    calls = []
+    def loads(*args, **kwargs):
+        calls.append(True)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(p.json, "loads", loads)
+    for size in (8191, 8192, 8193):
+        calls.clear()
+        with pytest.raises(p.ProtocolInputError):
+            p.parse_fixture_response(b" " * size)
+        assert len(calls) == (0 if size == 8193 else 1)

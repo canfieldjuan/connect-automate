@@ -24,6 +24,8 @@ from pydantic import (
     StrictInt,
     StrictStr,
     TypeAdapter,
+    ValidationError,
+    field_validator,
     model_validator,
 )
 
@@ -31,6 +33,7 @@ from connect_automate.entitlement import UuidV4, verify_signature
 
 PACKET_BYTES = 1048576
 CASE_NS = 180_000_000_000
+CONTRACT_COMMIT = "ba7f7cf7db9b14c050d87021fddd7333ff149851"
 Token = Annotated[StrictStr, Field(pattern=r"^[a-z0-9][a-z0-9._-]{0,63}$")]
 Code = Annotated[StrictStr, Field(pattern=r"^[A-Z][A-Z0-9_]{0,63}$")]
 Digest = Annotated[StrictStr, Field(pattern=r"^[0-9a-f]{64}$")]
@@ -42,6 +45,18 @@ FalseOnly = Annotated[Literal[False], BeforeValidator(TypeAdapter(StrictBool).va
 class ProtocolInputError(ValueError):
     def __init__(self):
         super().__init__("invalid offline protocol input")
+
+
+class ContractMismatchError(ProtocolInputError):
+    """Sole schema error is an otherwise valid but different profile."""
+
+
+class MalformedConsumeRequest(ProtocolInputError):
+    """Structural request wire rejection only; never a verification failure."""
+
+
+class MalformedConsumeResponse(ProtocolInputError):
+    """Recognized fixed diagnostic; no operation or completion claim."""
 
 
 def _unique(values):
@@ -89,7 +104,9 @@ class Packet(Closed):
     version: Literal["owner-harness/1"]
     evidence_class: Literal["OFFLINE_CONFORMANCE"]
     qualification_pass: FalseOnly
-    contract_commit: Commit
+    contract_commit: Annotated[
+        Literal[CONTRACT_COMMIT], BeforeValidator(TypeAdapter(Commit).validate_python),
+    ]
     harness_commit: Commit
     run_id: UuidV4
     dependency_lock_sha256: Digest
@@ -99,19 +116,21 @@ class OfflineRun(Packet):
     case_ids: Identifiers
     fixtures: Annotated[list[Artifact], Field(min_length=1, max_length=64)]
 
-    @model_validator(mode="after")
-    def unique_fixtures(self):
-        _unique([a.alias for a in self.fixtures])
-        return self
+    @field_validator("fixtures")
+    @classmethod
+    def unique_fixtures(cls, values):
+        _unique([a.alias for a in values])
+        return values
 
 
 class OfflineResult(Packet):
     cases: Annotated[list[OfflineCase], Field(min_length=1, max_length=64)]
 
-    @model_validator(mode="after")
-    def unique_cases(self):
-        _unique([c.case_id for c in self.cases])
-        return self
+    @field_validator("cases")
+    @classmethod
+    def unique_cases(cls, values):
+        _unique([c.case_id for c in values])
+        return values
 
 
 def canonical(value) -> bytes:
@@ -143,6 +162,11 @@ def parse_packet(raw: bytes, kind: Literal["run", "result"]):
     try:
         model = {"run": OfflineRun, "result": OfflineResult}[kind]
         return model.model_validate(_json(raw, PACKET_BYTES))
+    except ValidationError as error:
+        errors = error.errors(include_input=False, include_url=False)
+        if all(e["loc"] == ("contract_commit",) and e["type"] == "literal_error" for e in errors):
+            raise ContractMismatchError() from None
+        raise ProtocolInputError() from None
     except (ValueError, TypeError, KeyError, RecursionError):
         raise ProtocolInputError() from None
 
@@ -198,6 +222,65 @@ def _decoded(value: str, limit: int) -> bytes:
     if len(decoded) > limit or base64.urlsafe_b64encode(decoded).rstrip(b"=").decode() != value:
         raise ValueError("invalid canonical encoding")
     return decoded
+
+
+RESPONSE_BYTES = 4096
+FRAME_BYTES = 8192
+MEDIA_CHARS = 256
+BODY_CHARS = (RESPONSE_BYTES * 4 + 2) // 3
+
+
+class FixtureResponse(Closed):
+    """Private synthetic metadata, never an HTTP transport qualification."""
+
+    status: Annotated[StrictInt, Field(ge=100, le=599)]
+    content_type: Annotated[StrictStr, Field(max_length=MEDIA_CHARS)] | None
+    body_base64url: Annotated[
+        StrictStr, Field(max_length=BODY_CHARS, pattern=r"^[A-Za-z0-9_-]*$"),
+        AfterValidator(lambda value: (_decoded(value, RESPONSE_BYTES), value)[1]),
+    ]
+
+    @property
+    def body(self):
+        return _decoded(self.body_base64url, RESPONSE_BYTES)
+
+
+def fixture_response(status, content_type, body):
+    try:
+        value = FixtureResponse(status=status, content_type=content_type,
+                                body_base64url=base64.urlsafe_b64encode(body).rstrip(b"=").decode())
+        return canonical(value.model_dump())
+    except (ValueError, TypeError):
+        raise ProtocolInputError() from None
+
+
+def parse_fixture_response(raw):
+    try:
+        return _wire(raw, FixtureResponse, FRAME_BYTES)
+    except (ValueError, TypeError, RecursionError):
+        raise ProtocolInputError() from None
+
+
+REFUSAL_STATUS = {
+    "OWNER_AUTHORIZATION_INVALID": 403, "OWNER_AUTHORIZATION_REVOKED": 403,
+    "OWNER_BINDING_CONFLICT": 409, "OWNER_AUTHORIZATION_EXPIRED": 410,
+    "OWNER_CLOCK_SKEW": 422, "LICENSING_UNAVAILABLE": 503,
+}
+
+
+def admit_fixture_response(raw):
+    """Admit metadata before the existing receipt/refusal verification owner."""
+    response = parse_fixture_response(raw)
+    if (response.status == 400 and response.content_type == "application/json"
+            and response.body == MALFORMED_BODY):
+        raise MalformedConsumeResponse()
+    if response.content_type != "application/json":
+        raise ProtocolInputError()
+    if response.status != 200:
+        refusal = parse_refusal(response.body)
+        if response.status != REFUSAL_STATUS[refusal.code]:
+            raise ProtocolInputError()
+    return response.body
 
 
 Signature = Annotated[
@@ -325,6 +408,22 @@ class ConsumeRequest(Closed):
     installation_signature: Signature
 
 
+class MalformedConsumeDiagnostic(Closed):
+    code: Literal["MALFORMED_CONSUME_REQUEST"]
+    version: Literal["owner-bootstrap/1"]
+
+
+MALFORMED_BODY = canonical(MalformedConsumeDiagnostic(
+    code="MALFORMED_CONSUME_REQUEST", version="owner-bootstrap/1").model_dump())
+
+
+def parse_consume_request(raw):
+    try:
+        return _wire(raw, ConsumeRequest, 8192)
+    except (ValueError, TypeError, RecursionError):
+        raise MalformedConsumeRequest() from None
+
+
 class ConsumedReceipt(Closed):
     version: Literal["owner-bootstrap/1"]
     purpose: Literal["owner-bootstrap-receipt"]
@@ -397,13 +496,13 @@ def verify_signed(raw: bytes, kind: Literal["manifest", "claim", "receipt"],
 def check_consume_request(raw: bytes, manifest_raw: bytes, keys: Mapping[str, bytes],
                           release_ids: frozenset[str], issuer_now: datetime):
     """Check signed wire/attempt time only; expiry/new-consume decisions need a ledger."""
+    request = parse_consume_request(raw)
     try:
         if type(issuer_now) is not datetime or issuer_now.tzinfo is not UTC:
             raise ProtocolInputError()
         manifest = verify_signed(manifest_raw, "manifest", keys, release_ids)
         if not _date(manifest.issued_at) <= issuer_now < _date(manifest.expires_at):
             raise ProtocolInputError()
-        request = _wire(raw, ConsumeRequest, 8192)
         claim_raw = canonical(request.owner_claim.model_dump())
         claim = verify_signed(claim_raw, "claim", keys, frozenset(manifest.claim_key_ids))
         binding = request.binding
@@ -474,7 +573,8 @@ class FixtureHostResult(Closed):
 
 class RunnableCase(Closed):
     kind: Literal["OFFLINE_CONFORMANCE"]
-    case_id: Literal["lost-response-replay", "revoked-claim", "inactive-session"]
+    case_id: Literal["lost-response-replay", "revoked-claim", "inactive-session",
+                     "malformed-request-refusal"]
     requirement: Token
     expected_code: Code
     assertion_ids: Identifiers
