@@ -2405,6 +2405,35 @@ def test_recovery_corrupt_predecessor_is_not_unavailable(tmp_path, field):
     assert (issuer.recovery_snapshot(), issuer.snapshot()) == before
 
 
+@pytest.mark.parametrize("damage", ["missing", "rekeyed"])
+@pytest.mark.parametrize("action", ["select", "admit"])
+def test_recovery_existing_case_with_lost_predecessor_stops(tmp_path, damage, action):
+    from qualification.owner_authority.licensing_fixture import FixtureCorrupt
+
+    _, issuer, host, _, _, case, selected, evidence = recovery_ready(tmp_path)
+    # Deliberately damage disposable storage outside the FK-enforcing owner.
+    db = sqlite3.connect(issuer.root / "fixture.sqlite", isolation_level=None)
+    try:
+        db.execute("PRAGMA foreign_keys=OFF")
+        assert db.execute("PRAGMA foreign_keys").fetchone() == (0,)
+        if damage == "missing":
+            changed = db.execute("DELETE FROM consumptions WHERE operation_id=?",
+                                 (case.predecessor_binding.operation_id,))
+        else:
+            changed = db.execute("UPDATE consumptions SET operation_id=? WHERE operation_id=?",
+                                 (uid(99), case.predecessor_binding.operation_id))
+        assert changed.rowcount == 1
+    finally:
+        db.close()
+    before = issuer.snapshot(), issuer.recovery_snapshot(), host.snapshot()
+    with pytest.raises(FixtureCorrupt, match="recovery case predecessor missing or changed"):
+        if action == "select":
+            issuer.select_recovery_evidence(case.case_id, lambda: NOW)
+        else:
+            issuer.admit_recovery_evidence(selected, evidence, lambda: NOW)
+    assert (issuer.snapshot(), issuer.recovery_snapshot(), host.snapshot()) == before
+
+
 @pytest.mark.parametrize("field", ["case_id", "receipt_digest", "binding", "malformed"])
 def test_recovery_corrupt_case_cannot_supply_selection_or_admission(tmp_path, field):
     from qualification.owner_authority.licensing_fixture import FixtureCorrupt, transaction
