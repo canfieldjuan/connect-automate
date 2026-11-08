@@ -26,11 +26,12 @@ from .licensing_fixture import (
 HOST_SQL = """
 CREATE TABLE configuration (
  singleton INTEGER PRIMARY KEY CHECK(singleton=1), installation_id TEXT NOT NULL,
- host_id TEXT NOT NULL, organization_id TEXT NOT NULL, public_key TEXT NOT NULL);
+ host_id TEXT NOT NULL, organization_id TEXT NOT NULL, public_key TEXT NOT NULL,
+ manifest BLOB);
 CREATE TABLE pending (
  singleton INTEGER PRIMARY KEY CHECK(singleton=1), operation_id TEXT NOT NULL UNIQUE,
  binding BLOB NOT NULL, claim BLOB NOT NULL, salt BLOB NOT NULL CHECK(length(salt)=32),
- principal BLOB NOT NULL);
+ principal BLOB NOT NULL, original_manifest BLOB NOT NULL);
 CREATE TABLE receipts (
  singleton INTEGER PRIMARY KEY CHECK(singleton=1), operation_id TEXT NOT NULL UNIQUE
  REFERENCES pending(operation_id), envelope BLOB NOT NULL);
@@ -46,7 +47,7 @@ CREATE TABLE audit (
 
 class HostFixture:
     def __init__(self, root, manifest, keys, release_ids, installation_key, *, hook=None):
-        self.root, self.manifest = Path(root), manifest
+        self.root, self._initial_manifest = Path(root), manifest
         self.keys, self.release_ids = dict(keys), frozenset(release_ids)
         self.key, self.hook = installation_key, hook
 
@@ -57,9 +58,11 @@ class HostFixture:
     def create(self, installation_id, host_id, organization_id):
         ids = [TypeAdapter(p.UuidV4).validate_python(v)
                for v in (installation_id, host_id, organization_id)]
+        p.verify_signed(self._initial_manifest, "manifest", self.keys, self.release_ids)
         create_store(self.root, "host", HOST_SQL)
         with transaction(self.root, "host") as db:
-            db.execute("INSERT INTO configuration VALUES(1,?,?,?,?)", (*ids, self._public_key()))
+            db.execute("INSERT INTO configuration VALUES(1,?,?,?,?,?)",
+                       (*ids, self._public_key(), self._initial_manifest))
         return self
 
     def _hook(self, phase):
@@ -84,12 +87,30 @@ class HostFixture:
             raise FixtureCorrupt("missing deployment or changed installation key")
         return value
 
+    def _manifest(self, db):
+        row = db.execute("SELECT manifest FROM configuration WHERE singleton=1").fetchone()
+        if row is None:
+            raise FixtureCorrupt("missing deployment configuration")
+        return row[0]
+
+    def _current_manifest(self):
+        with read_store(self.root, "host") as db:
+            return self._manifest(db)
+
+    def _original_manifest(self, db):
+        row = db.execute("SELECT original_manifest FROM pending WHERE singleton=1").fetchone()
+        if row is None:
+            raise FixtureCorrupt("no original pending manifest")
+        p.verify_signed(row[0], "manifest", self.keys, self.release_ids)
+        return row[0]
+
     def _pending(self, db, expected=None):
         configuration = self._configuration(db)
         row = db.execute("SELECT operation_id,binding,claim,salt,principal FROM pending "
                          "WHERE singleton=1").fetchone()
         if row is None:
             raise FixtureCorrupt("no frozen pending operation")
+        self._original_manifest(db)
         binding = p._wire(row[1], p.ConsumeBinding, p.SMALL.payload)
         if ((binding.installation_id, binding.host_id, binding.organization_id,
              binding.installation_public_key) != configuration or binding.operation_id != row[0]
@@ -123,7 +144,7 @@ class HostFixture:
             raise FixtureCorrupt("partial or conflicting stored bootstrap")
         return receipt[1]
 
-    def _request(self, binding, claim, now):
+    def _request(self, binding, claim, now, db=None):
         if type(now) is not datetime or now.tzinfo is not UTC:
             raise p.ProtocolInputError()
         envelope = p._wire(claim, p.SmallEnvelope, p.SMALL.envelope)
@@ -133,18 +154,23 @@ class HostFixture:
         signature = self.key.sign(p.prefix("consume") + p.canonical(data))
         raw = p.canonical(data | {"owner_claim": envelope.model_dump(),
             "installation_signature": base64.urlsafe_b64encode(signature).rstrip(b"=").decode()})
-        p.check_consume_request(raw, self.manifest, self.keys, self.release_ids, now)
+        manifest = self._current_manifest() if db is None else self._manifest(db)
+        p.check_consume_request(raw, manifest, self.keys, self.release_ids, now)
         return raw
 
     def prepare(self, claim, operation_id, observe, now):
         if claim is None:
             raise Refused("OWNER_AUTHORIZATION_REQUIRED")
         operation_id = TypeAdapter(p.UuidV4).validate_python(operation_id)
-        manifest = p.verify_signed(self.manifest, "manifest", self.keys, self.release_ids)
+        manifest = p.verify_active_manifest(
+            self._current_manifest(), self.keys, self.release_ids, now)
         value = p.verify_signed(claim, "claim", self.keys, frozenset(manifest.claim_key_ids))
         principal = self._observe(observe)
-        def validate():
+        def validate(db):
             self._observe(observe, principal)
+            current = p.verify_active_manifest(
+                self._manifest(db), self.keys, self.release_ids, now)
+            p.verify_signed(claim, "claim", self.keys, frozenset(current.claim_key_ids))
         with transaction(self.root, "host", self._hook("prepare"), validate) as db:
             installation, host, organization, key = self._configuration(db)
             if organization != value.organization_id:
@@ -170,9 +196,10 @@ class HostFixture:
                 "initialization_sha256": self._initialization(initialization),
                 "installation_public_key": key,
             })
-            self._request(binding, claim, now)
-            db.execute("INSERT INTO pending VALUES(1,?,?,?,?,?)", (
-                operation_id, p.canonical(binding.model_dump()), claim, salt, principal))
+            self._request(binding, claim, now, db)
+            db.execute("INSERT INTO pending VALUES(1,?,?,?,?,?,?)", (
+                operation_id, p.canonical(binding.model_dump()), claim, salt, principal,
+                self._manifest(db)))
             checkpoint(self.hook, "pending_write", db)
             return binding
 
@@ -211,7 +238,7 @@ class HostFixture:
             self._observe(observe, principal)
             request = self._request(binding, claim, clock())
             if stored is not None:
-                p.check_receipt(stored, request, self.manifest, self.keys,
+                p.check_receipt(stored, request, self._current_manifest(), self.keys,
                                 self.release_ids, clock())
                 return self._result(binding, "COMMITTED", observe, principal)
             checkpoint(self.hook, "before_dispatch", None)
@@ -221,7 +248,7 @@ class HostFixture:
                 return self._result(binding, "LICENSING_UNAVAILABLE", observe, principal)
             checkpoint(self.hook, "after_response", None)
             try:
-                p.check_receipt(response, request, self.manifest, self.keys,
+                p.check_receipt(response, request, self._current_manifest(), self.keys,
                                 self.release_ids, clock())
             except p.ProtocolInputError:
                 try:
@@ -233,19 +260,20 @@ class HostFixture:
                 # An unsigned refusal never clears even an apparently uncommitted intent.
                 return self._result(binding, refusal.code, observe, principal)
 
-            def validate():
+            def validate(db):
                 self._observe(observe, principal)
+                self._pending(db, binding)
+                manifest = self._manifest(db)
                 _, owner_claim = p.check_consume_request(
-                    request, self.manifest, self.keys, self.release_ids, clock())
+                    request, manifest, self.keys, self.release_ids, clock())
                 if clock() < p._date(owner_claim.not_before):
                     raise Refused("OWNER_AUTHORIZATION_INVALID")
                 if clock() >= p._date(owner_claim.expires_at):
                     raise Refused("OWNER_AUTHORIZATION_EXPIRED")
-                p.check_receipt(response, request, self.manifest, self.keys,
+                p.check_receipt(response, request, manifest, self.keys,
                                 self.release_ids, clock())
 
             with transaction(self.root, "host", self._hook("publish"), validate) as db:
-                self._pending(db, binding)
                 old = self._stored_commit(db, binding)
                 if old is None:
                     db.execute("INSERT INTO receipts VALUES(1,?,?)",
@@ -262,17 +290,71 @@ class HostFixture:
             return self._result(binding, "COMMITTED", observe, principal)
         except Refused as exc:
             return self._result(binding, exc.code, observe, principal)
+        except p.ManifestUnavailable:
+            return self._result(binding, "LICENSING_UNAVAILABLE", observe, principal)
         except p.ClockSkewError:
             return self._result(binding, "OWNER_CLOCK_SKEW", observe, principal)
+
+    def _renewal_state(self, db):
+        binding, _, _, principal = self._pending(db)
+        original, installed = self._original_manifest(db), self._manifest(db)
+        p.verify_signed(installed, "manifest", self.keys, self.release_ids)
+        selection = p.RenewalSelection(
+            operation_id=binding.operation_id,
+            pending_binding_sha256=hashlib.sha256(p.canonical(binding.model_dump())).hexdigest(),
+            original_manifest_sha256=hashlib.sha256(original).hexdigest(),
+            installed_manifest_sha256=hashlib.sha256(installed).hexdigest())
+        return selection, principal, original, installed
+
+    def select_renewal(self):
+        with read_store(self.root, "host") as db:
+            return self._renewal_state(db)[0]
+
+    def renew_manifest(self, selected, candidate, observe, clock):
+        selected = p.RenewalSelection.model_validate(selected)
+        with read_store(self.root, "host") as db:
+            actual, principal, original, installed = self._renewal_state(db)
+        if actual != selected:
+            raise Refused("OWNER_BINDING_CONFLICT")
+        self._observe(observe, principal)
+        p.check_manifest_renewal(candidate, original, installed,
+                                 self.keys, self.release_ids, clock())
+        published, prior_installed = False, None
+        after = p.RenewalSelection.model_validate(selected.model_dump() | {
+            "installed_manifest_sha256": hashlib.sha256(candidate).hexdigest()})
+
+        def validate(db):
+            nonlocal prior_installed
+            actual, current_principal, original, installed = self._renewal_state(db)
+            if actual != (after if published else selected):
+                raise Refused("OWNER_BINDING_CONFLICT")
+            self._observe(observe, current_principal)
+            if not published:
+                prior_installed = installed  # Actual pre-write bytes in this writer snapshot.
+            p.check_manifest_renewal(candidate, original, prior_installed,
+                                     self.keys, self.release_ids, clock())
+
+        with transaction(self.root, "host", self._hook("renew"), validate) as db:
+            db.execute("UPDATE configuration SET manifest=? WHERE singleton=1", (candidate,))
+            published = True
+            checkpoint(self.hook, "renew_manifest_write", db)
+        return after
 
     def snapshot(self):
         with read_store(self.root, "host") as db:
             counts = {name: db.execute("SELECT count(*) FROM " + name).fetchone()[0]
                       for name in ("pending", "receipts", "admins", "audit")}
-            row = db.execute("SELECT operation_id,binding FROM pending "
+            row = db.execute("SELECT operation_id,binding,claim,original_manifest FROM pending "
                              "WHERE singleton=1").fetchone()
             receipt = db.execute("SELECT envelope FROM receipts WHERE singleton=1").fetchone()
-            return counts | {"operation_id": None if row is None else row[0],
+            installed = self._manifest(db)
+            return counts | {"installed_manifest_sha256": None if installed is None else
+                             hashlib.sha256(installed).hexdigest(),
+                             "original_manifest_sha256": None if row is None else
+                             hashlib.sha256(row[3]).hexdigest(),
+                             "claim_sha256": None if row is None else
+                             hashlib.sha256(row[2]).hexdigest(),
+                             "operation_id": None if row is None else row[0],
                              "pending_binding_sha256": None if row is None else
                              hashlib.sha256(row[1]).hexdigest(),
                              "receipt_sha256": None if receipt is None else
