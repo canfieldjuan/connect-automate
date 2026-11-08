@@ -73,7 +73,7 @@ configuration-only renewal. The pending operation retains its original signed
 manifest; restart reads the installed bytes from the store. A separate explicit
 resume recovers the original receipt. The issuer fixture's explicit candidate
 adoption changes its in-memory configuration without changing its ledger or signers.
-Fresh roots bind `offline-fixture/3` and the accepted profile above; old or wrong
+Fresh roots bind `offline-fixture/4` and the accepted profile above; old or wrong
 profiles are refused without migration. Constructor bytes never overwrite an
 existing host configuration. The `manifest-renewal` case uses these owners and
 records fixed assertions from stored digests and actual exchange/consumption
@@ -86,17 +86,35 @@ is implemented in separately reviewed increments. The first increment supplies
 closed recovery-only values and `recovery-evidence.schema.json`, bounded canonical
 parsing, the predecessor-key signature check, complete case/target digests and
 case/evidence time-window checks. The caller selects the expected type before
-decoding. The issuer's later durable admission owner must establish the original
-consumption/receipt trust and revalidate the selected case in its writer; passing
+decoding. The issuer's durable admission owner establishes the original
+consumption/receipt trust and revalidates the selected case in its writer; passing
 a caller-constructed case to the pure validator grants no authority.
 
-This protocol increment adds no durable recovery APIs or tables. Only usable
-synthetic predecessor keys can sign its fixtures. Such a signature proves key
-possession and exact evidence binding, not retirement of an actual host. The
+Durable issuer admission now implements `open_recovery_case`,
+`select_recovery_evidence` and `admit_recovery_evidence`. Each returns a bounded
+canonical recovery value or a typed refusal; corruption and restored-store
+errors remain distinct. Only usable synthetic predecessor keys can sign its
+fixtures. Such a signature proves key possession and exact evidence binding, not retirement of an actual host. The
 unreachable/failed-PC path stays blocked under the canonical recovery policy.
-`EVIDENCE_RECORDED_ONLY` is a future evidence-admission result, never replacement
+`EVIDENCE_RECORDED_ONLY` is an evidence-admission result, never replacement
 admin eligibility; the `device-replacement` catalog case remains BLOCKED.
 The original claim/receipt purposes, controller recipes and host APIs are unchanged.
 The new fixture profile refuses old roots without migration; historical packets
 retain their original bytes and profile. Native sign-in, Hello, Gmail and live
 activation remain on hold.
+
+Case opening derives predecessor trust from the issuer's consumed row and the
+shared stored-receipt verifier, reserves one immutable case per predecessor,
+and returns the same bytes on an exact retry. Selection is derived from that
+stored case. Admission validates selection, signature and windows before writes,
+again in the writer after waits, and before commit. It records evidence and its
+local receipt atomically in recovery-only tables; explicit retries return the
+same receipt. Expired retries refuse while preserving history. Changed cases,
+competing targets and reused evidence IDs cannot overwrite an admission.
+`recovery_snapshot` reports owner digests and counts; the original issuer
+snapshot continues to cover only claims, consumptions and journal. No host
+state or original consumption row is written by these recovery APIs.
+New tables require fixture version4 and fresh roots; version3 protocol-only
+roots are refused without migration. No controller recipe or case promotion is
+included. Business verification, qualified old-host retirement and replacement
+authorization remain separate gates.

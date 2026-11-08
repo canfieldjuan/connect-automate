@@ -550,6 +550,13 @@ def check_manifest_renewal(candidate_raw: bytes, original_raw: bytes, installed_
     return candidate
 
 
+def _check_claim_binding(binding, claim, claim_raw):
+    if (any(getattr(binding, k) != getattr(claim, k)
+            for k in ("claim_id", "organization_id", "entitlement_id", "generation"))
+            or binding.claim_sha256 != hashlib.sha256(claim_raw).hexdigest()):
+        raise ProtocolInputError()
+
+
 def check_consume_request(raw: bytes, manifest_raw: bytes, keys: Mapping[str, bytes],
                           release_ids: frozenset[str], issuer_now: datetime):
     """Check signed wire/attempt time only; expiry/new-consume decisions need a ledger."""
@@ -559,10 +566,7 @@ def check_consume_request(raw: bytes, manifest_raw: bytes, keys: Mapping[str, by
         claim_raw = canonical(request.owner_claim.model_dump())
         claim = verify_signed(claim_raw, "claim", keys, frozenset(manifest.claim_key_ids))
         binding = request.binding
-        if (any(getattr(binding, k) != getattr(claim, k)
-                for k in ("claim_id", "organization_id", "entitlement_id", "generation"))
-                or binding.claim_sha256 != hashlib.sha256(claim_raw).hexdigest()):
-            raise ProtocolInputError()
+        _check_claim_binding(binding, claim, claim_raw)
         signed = {k: getattr(request, k) for k in ("version", "attempt_id", "requested_at")}
         signed["binding"] = binding.model_dump()
         verify_signature({"installation": _decoded(binding.installation_public_key, 32)},
@@ -580,10 +584,21 @@ def check_consume_request(raw: bytes, manifest_raw: bytes, keys: Mapping[str, by
 def check_receipt(raw: bytes, request_raw: bytes, manifest_raw: bytes,
                   keys: Mapping[str, bytes], release_ids: frozenset[str], issuer_now: datetime):
     """Recheck the request instead of trusting a copied checked value. No publication."""
-    request, claim = check_consume_request(request_raw, manifest_raw, keys, release_ids, issuer_now)
-    manifest = verify_signed(manifest_raw, "manifest", keys, release_ids)
+    request, _ = check_consume_request(request_raw, manifest_raw, keys, release_ids, issuer_now)
+    return check_stored_receipt(raw, request.binding, canonical(request.owner_claim.model_dump()),
+                                manifest_raw, keys, release_ids, issuer_now)
+
+
+def check_stored_receipt(raw: bytes, binding: ConsumeBinding, claim_raw: bytes,
+                         manifest_raw: bytes, keys: Mapping[str, bytes],
+                         release_ids: frozenset[str], now: datetime):
+    """One receipt/binding/claim relation owner, also used for stored consumption evidence."""
+    binding = ConsumeBinding.model_validate(binding)
+    manifest = verify_active_manifest(manifest_raw, keys, release_ids, now)
+    claim = verify_signed(claim_raw, "claim", keys, frozenset(manifest.claim_key_ids))
+    _check_claim_binding(binding, claim, claim_raw)
     receipt = verify_signed(raw, "receipt", keys, frozenset(manifest.receipt_key_ids))
-    if (receipt.binding != request.binding
+    if (receipt.binding != binding
             or not _date(claim.not_before) <= _date(receipt.consumed_at) < _date(claim.expires_at)):
         raise ProtocolInputError()
     return receipt
