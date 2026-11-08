@@ -2015,6 +2015,9 @@ def test_renewal_missing_or_corrupt_configuration_never_dispatches(tmp_path, whe
 
 
 @pytest.mark.parametrize("field,value", [("version", "offline-fixture/1"),
+                                        ("version", "offline-fixture/2"),
+                                        ("contract_commit",
+                                         "0397e5d611a1ad1c0541897417dab29f720b4d8d"),
                                         ("contract_commit", "a" * 40)])
 def test_renewal_store_refuses_old_or_wrong_profile_without_migration(tmp_path, field, value):
     from qualification.owner_authority.licensing_fixture import FixtureCorrupt, transaction

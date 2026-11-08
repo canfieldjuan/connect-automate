@@ -17,7 +17,7 @@ from pydantic import TypeAdapter
 
 from . import protocol as p
 
-FIXTURE_VERSION = "offline-fixture/2"
+FIXTURE_VERSION = "offline-fixture/3"
 
 
 class FixtureCorrupt(RuntimeError):

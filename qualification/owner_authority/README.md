@@ -22,7 +22,7 @@ Create the manifest using the existing `run.schema.json`:
 
 - Set `version` to `owner-harness/1`, `evidence_class` to `OFFLINE_CONFORMANCE`
   and `qualification_pass` to literal false.
-- Use the accepted work-order revision `0397e5d611a1ad1c0541897417dab29f720b4d8d`
+- Use the accepted work-order revision `5b7c73d48b943290eb22d49b43e68fb17921a00c`
   and the full harness commit of the checkout under review. Supply a fresh UUIDv4
   `run_id`. Pin `dependency_lock_sha256` to the actual bytes of `uv.lock`.
 - Set `fixtures` to a single alias/digest pair with alias `cases` and the SHA-256
@@ -73,10 +73,30 @@ configuration-only renewal. The pending operation retains its original signed
 manifest; restart reads the installed bytes from the store. A separate explicit
 resume recovers the original receipt. The issuer fixture's explicit candidate
 adoption changes its in-memory configuration without changing its ledger or signers.
-Fresh roots bind `offline-fixture/2` and the accepted profile above; old or wrong
+Fresh roots bind `offline-fixture/3` and the accepted profile above; old or wrong
 profiles are refused without migration. Constructor bytes never overwrite an
 existing host configuration. The `manifest-renewal` case uses these owners and
 records fixed assertions from stored digests and actual exchange/consumption
 counts. Real worker fault controls require exact false assertion flags and a
 recorded FAIL; stopped workers do not count as assertion-sensitivity proof.
 A failed recovery never triggers the cached step as an implicit retry.
+
+The accepted [device-recovery evidence work order](../../docs/contracts/LEAD-OWNER-DEVICE-RECOVERY.md)
+is implemented in separately reviewed increments. The first increment supplies
+closed recovery-only values and `recovery-evidence.schema.json`, bounded canonical
+parsing, the predecessor-key signature check, complete case/target digests and
+case/evidence time-window checks. The caller selects the expected type before
+decoding. The issuer's later durable admission owner must establish the original
+consumption/receipt trust and revalidate the selected case in its writer; passing
+a caller-constructed case to the pure validator grants no authority.
+
+This protocol increment adds no durable recovery APIs or tables. Only usable
+synthetic predecessor keys can sign its fixtures. Such a signature proves key
+possession and exact evidence binding, not retirement of an actual host. The
+unreachable/failed-PC path stays blocked under the canonical recovery policy.
+`EVIDENCE_RECORDED_ONLY` is a future evidence-admission result, never replacement
+admin eligibility; the `device-replacement` catalog case remains BLOCKED.
+The original claim/receipt purposes, controller recipes and host APIs are unchanged.
+The new fixture profile refuses old roots without migration; historical packets
+retain their original bytes and profile. Native sign-in, Hello, Gmail and live
+activation remain on hold.
