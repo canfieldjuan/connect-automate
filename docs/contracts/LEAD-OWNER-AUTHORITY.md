@@ -724,6 +724,11 @@ path. Licensing implementation and an offline recovery fixture need their
 own accepted work orders. The H1 device-replacement case remains blocked.
 Native sign-in, Hello, Gmail and live activation remain on hold.
 
+The proposed [offline device-recovery evidence work order](LEAD-OWNER-DEVICE-RECOVERY.md)
+specifies a separate synthetic evidence-admission prerequisite. It does not
+supply replacement authorization or satisfy the business-verification and
+retirement gates above; the device-replacement case remains blocked.
+
 ## Native mechanism pins and protected ownership
 
 ### B1: selected native qualification profile
