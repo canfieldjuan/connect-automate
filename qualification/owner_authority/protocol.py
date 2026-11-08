@@ -33,7 +33,7 @@ from connect_automate.entitlement import UuidV4, verify_signature
 
 PACKET_BYTES = 1048576
 CASE_NS = 180_000_000_000
-CONTRACT_COMMIT = "0397e5d611a1ad1c0541897417dab29f720b4d8d"
+CONTRACT_COMMIT = "5b7c73d48b943290eb22d49b43e68fb17921a00c"
 Token = Annotated[StrictStr, Field(pattern=r"^[a-z0-9][a-z0-9._-]{0,63}$")]
 Code = Annotated[StrictStr, Field(pattern=r"^[A-Z][A-Z0-9_]{0,63}$")]
 Digest = Annotated[StrictStr, Field(pattern=r"^[0-9a-f]{64}$")]
@@ -193,11 +193,13 @@ def schemas() -> dict[str, bytes]:
         name + ".schema.json": (json.dumps(
             {
                 "$schema": "https://json-schema.org/draft/2020-12/schema",
-                **model.model_json_schema(),
+                **schema,
             },
             indent=2, sort_keys=True,
         ) + "\n").encode("utf-8")
-        for name, model in (("run", OfflineRun), ("result", OfflineResult))
+        for name, schema in (("run", OfflineRun.model_json_schema()),
+                             ("result", OfflineResult.model_json_schema()),
+                             ("recovery-evidence", TypeAdapter(RecoveryDocument).json_schema()))
     }
 
 
@@ -593,6 +595,202 @@ def parse_refusal(raw: bytes):
         return _wire(raw, Refusal, 4096)
     except (ValueError, TypeError, RecursionError):
         raise ProtocolInputError() from None
+
+
+class RecoveryValue(Closed):
+    """Synthetic evidence only; no field can claim native qualification."""
+
+    version: Literal["offline-recovery-evidence/1"]
+    evidence_class: Literal["OFFLINE_CONFORMANCE"]
+    qualification_pass: FalseOnly
+
+
+class ReplacementTarget(RecoveryValue):
+    operation_id: UuidV4
+    installation_id: UuidV4
+    host_id: UuidV4
+    organization_id: UuidV4
+    entitlement_id: UuidV4
+    installation_public_key: PublicKey
+    principal_commitment: Digest
+    initialization_sha256: Digest
+
+
+class RecoveryEvidenceCase(RecoveryValue):
+    case_id: UuidV4
+    predecessor_binding: ConsumeBinding
+    predecessor_receipt_sha256: Digest
+    replacement: ReplacementTarget
+    opened_at: Instant
+    expires_at: Instant
+
+    @model_validator(mode="after")
+    def relations(self):
+        if not 0 < (_date(self.expires_at) - _date(self.opened_at)).total_seconds() <= 86400:
+            raise ValueError("invalid recovery case interval")
+        prior, target = self.predecessor_binding, self.replacement
+        if (any(getattr(prior, k) != getattr(target, k)
+                for k in ("organization_id", "entitlement_id"))
+                or any(getattr(prior, k) == getattr(target, k)
+                       for k in ("operation_id", "installation_id", "host_id",
+                                 "installation_public_key"))):
+            raise ValueError("invalid recovery target relation")
+        return self
+
+
+class RetirementEvidence(RecoveryValue):
+    purpose: Literal["offline-predecessor-retirement-evidence"]
+    evidence_id: UuidV4
+    case_id: UuidV4
+    case_sha256: Digest
+    predecessor_receipt_sha256: Digest
+    replacement_sha256: Digest
+    asserted_at: Instant
+    expires_at: Instant
+    assertion: Literal["SYNTHETIC_RETIREMENT_ONLY"]
+
+    @model_validator(mode="after")
+    def validity(self):
+        if not 0 < (_date(self.expires_at) - _date(self.asserted_at)).total_seconds() <= 3600:
+            raise ValueError("invalid retirement evidence interval")
+        return self
+
+
+RETIREMENT = WireBudget(1536, 2560)
+
+
+class RetirementEvidenceEnvelope(RecoveryValue):
+    payload_base64url: Annotated[
+        StrictStr, Field(min_length=1, max_length=RETIREMENT.encoded,
+                         pattern=r"^[A-Za-z0-9_-]+$"),
+        AfterValidator(lambda value: (_decoded(value, RETIREMENT.payload), value)[1]),
+    ]
+    signature_base64url: Signature
+
+
+class RecoveryEvidenceSelection(RecoveryValue):
+    case_id: UuidV4
+    case_sha256: Digest
+    predecessor_receipt_sha256: Digest
+
+
+class RecoveryEvidenceAdmission(RecoveryValue):
+    admission_id: UuidV4
+    case_id: UuidV4
+    evidence_id: UuidV4
+    case_sha256: Digest
+    evidence_sha256: Digest
+    predecessor_receipt_sha256: Digest
+    replacement_sha256: Digest
+    admitted_at: Instant
+    state: Literal["EVIDENCE_RECORDED_ONLY"]
+
+
+class RecoveryEvidenceRefusal(RecoveryValue):
+    case_id: UuidV4
+    code: Literal["RECOVERY_PREDECESSOR_UNAVAILABLE", "RECOVERY_BINDING_CONFLICT",
+                  "RECOVERY_EVIDENCE_INVALID", "RECOVERY_EVIDENCE_EXPIRED",
+                  "RECOVERY_CONFIGURATION_UNAVAILABLE"]
+
+
+RecoveryDocument = (ReplacementTarget | RecoveryEvidenceCase | RetirementEvidence
+                    | RetirementEvidenceEnvelope | RecoveryEvidenceSelection
+                    | RecoveryEvidenceAdmission | RecoveryEvidenceRefusal)
+RECOVERY_TYPES = {
+    "target": (ReplacementTarget, 1536),
+    "case": (RecoveryEvidenceCase, 4096),
+    "evidence": (RetirementEvidence, RETIREMENT.payload),
+    "envelope": (RetirementEvidenceEnvelope, RETIREMENT.envelope),
+    "selection": (RecoveryEvidenceSelection, 1536),
+    "admission": (RecoveryEvidenceAdmission, 1536),
+    "refusal": (RecoveryEvidenceRefusal, 1536),
+}
+RETIREMENT_PREFIX = b"local-connect.offline-predecessor-retirement-evidence.v1\0"
+
+
+class RecoveryEvidenceInvalid(ProtocolInputError):
+    """Candidate evidence/selection is invalid; never a storage-corruption verdict."""
+
+
+class RecoveryEvidenceExpired(ProtocolInputError):
+    """Otherwise validated recovery case or evidence has expired."""
+
+
+def parse_recovery(raw: bytes, kind: str) -> RecoveryDocument:
+    """The enclosing operation selects a bounded type before decoding input."""
+    try:
+        model, budget = RECOVERY_TYPES[kind]
+        return _wire(raw, model, budget)
+    except (ValueError, TypeError, KeyError, RecursionError):
+        raise ProtocolInputError() from None
+
+
+def recovery_bytes(value: RecoveryDocument) -> bytes:
+    try:
+        kind = next(k for k, (model, _) in RECOVERY_TYPES.items() if type(value) is model)
+        validated = RECOVERY_TYPES[kind][0].model_validate(value)
+        raw = canonical(validated.model_dump())
+        parse_recovery(raw, kind)
+        return raw
+    except (ValueError, TypeError, StopIteration, RecursionError):
+        raise ProtocolInputError() from None
+
+
+def recovery_selection(case: RecoveryEvidenceCase) -> RecoveryEvidenceSelection:
+    """A value derived from the owner's case; the writer must rederive it."""
+    case = RecoveryEvidenceCase.model_validate(case)
+    return RecoveryEvidenceSelection(
+        version=case.version, evidence_class=case.evidence_class,
+        qualification_pass=case.qualification_pass, case_id=case.case_id,
+        case_sha256=hashlib.sha256(recovery_bytes(case)).hexdigest(),
+        predecessor_receipt_sha256=case.predecessor_receipt_sha256)
+
+
+def check_recovery_case(case: RecoveryEvidenceCase, now: datetime) -> RecoveryEvidenceCase:
+    """One current-window check for creation/retry and evidence admission."""
+    try:
+        case = RecoveryEvidenceCase.model_validate(case)
+        if type(now) is not datetime or now.tzinfo is not UTC or now < _date(case.opened_at):
+            raise RecoveryEvidenceInvalid()
+    except (ValueError, TypeError, RecursionError):
+        raise RecoveryEvidenceInvalid() from None
+    if now >= _date(case.expires_at):
+        raise RecoveryEvidenceExpired()
+    return case
+
+
+def check_recovery_evidence(raw: bytes, case: RecoveryEvidenceCase,
+                            selected: RecoveryEvidenceSelection, now: datetime):
+    """Signature/binding proof only. Ledger trust and every write stay with the issuer."""
+    try:
+        case = RecoveryEvidenceCase.model_validate(case)
+        selected = RecoveryEvidenceSelection.model_validate(selected)
+        envelope = parse_recovery(raw, "envelope")
+        payload = _decoded(envelope.payload_base64url, RETIREMENT.payload)
+        evidence = parse_recovery(payload, "evidence")
+        verify_signature(
+            {"predecessor": _decoded(case.predecessor_binding.installation_public_key, 32)},
+            "predecessor", RETIREMENT_PREFIX + payload,
+            _decoded(envelope.signature_base64url, 64))
+        if (selected != recovery_selection(case)
+                or evidence.case_id != case.case_id
+                or evidence.case_sha256 != selected.case_sha256
+                or evidence.predecessor_receipt_sha256 != case.predecessor_receipt_sha256
+                or evidence.replacement_sha256 != hashlib.sha256(
+                    recovery_bytes(case.replacement)).hexdigest()
+                or _date(evidence.asserted_at) < _date(case.opened_at)
+                or _date(evidence.expires_at) > _date(case.expires_at)):
+            raise RecoveryEvidenceInvalid()
+        check_recovery_case(case, now)
+        if now < _date(evidence.asserted_at):
+            raise RecoveryEvidenceInvalid()
+    except RecoveryEvidenceExpired:
+        raise
+    except (ValueError, TypeError, KeyError, RecursionError, InvalidSignature):
+        raise RecoveryEvidenceInvalid() from None
+    if now >= _date(evidence.expires_at):
+        raise RecoveryEvidenceExpired()
+    return evidence
 
 
 class FixtureObservation(Closed):

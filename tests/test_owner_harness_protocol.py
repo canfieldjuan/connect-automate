@@ -19,6 +19,27 @@ def protocol():
     return importlib.import_module("qualification.owner_authority.protocol")
 
 
+def test_recovery_evidence_schema_is_closed_and_has_separate_profile():
+    p = protocol()
+    raw = p.schemas()["recovery-evidence.schema.json"]
+    schema = json.loads(raw)
+    path = ROOT / "qualification/owner_authority/recovery-evidence.schema.json"
+    assert path.read_bytes() == raw
+    assert len(schema["anyOf"]) == 7
+    for model in schema["$defs"].values():
+        if model.get("type") == "object":
+            assert model["additionalProperties"] is False
+            assert set(model["required"]) == set(model["properties"])
+            if model["title"] != "ConsumeBinding":
+                assert model["properties"]["version"]["const"] == "offline-recovery-evidence/1"
+                assert model["properties"]["qualification_pass"]["type"] == "boolean"
+                assert model["properties"]["qualification_pass"]["const"] is False
+    envelope = schema["$defs"]["RetirementEvidenceEnvelope"]
+    assert envelope["properties"]["payload_base64url"]["minLength"] == 1
+    assert envelope["properties"]["payload_base64url"]["maxLength"] == 2048
+    assert "key_id" not in envelope["properties"]
+
+
 def fixture(kind="result"):
     artifact = {"alias": "fixture-one", "sha256": "a" * 64}
     packet = {
@@ -226,7 +247,7 @@ def test_models_are_revalidated_on_serialization_and_no_io(monkeypatch):
     assert p.parse_packet(p.canonical(fixture()), "result").qualification_pass is False
 
 
-@pytest.mark.parametrize("kind", ["run", "result"])
+@pytest.mark.parametrize("kind", ["run", "result", "recovery-evidence"])
 def test_generated_schema_bytes_survive_autocrlf_checkout(tmp_path, kind):
     """Exercise Git's artifact owner, not a newline-normalizing reader."""
     relative = "qualification/owner_authority/" + kind + ".schema.json"
@@ -242,7 +263,7 @@ def test_generated_schema_bytes_survive_autocrlf_checkout(tmp_path, kind):
 def test_exact_profile_is_owned_by_schema_and_mixed_errors_stay_invalid(kind):
     p = protocol()
     model = p.OfflineRun if kind == "run" else p.OfflineResult
-    pin = "0397e5d611a1ad1c0541897417dab29f720b4d8d"
+    pin = "5b7c73d48b943290eb22d49b43e68fb17921a00c"
     assert model.model_json_schema()["properties"]["contract_commit"]["const"] == pin
     wrong = fixture(kind) | {"contract_commit": "a" * 40}
     with pytest.raises(ValidationError):

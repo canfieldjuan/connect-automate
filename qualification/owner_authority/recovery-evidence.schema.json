@@ -1,0 +1,558 @@
+{
+  "$defs": {
+    "ConsumeBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "claim_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "title": "Claim Id",
+          "type": "string"
+        },
+        "claim_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Claim Sha256",
+          "type": "string"
+        },
+        "entitlement_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "title": "Entitlement Id",
+          "type": "string"
+        },
+        "generation": {
+          "maximum": 2147483647,
+          "minimum": 1,
+          "title": "Generation",
+          "type": "integer"
+        },
+        "host_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "title": "Host Id",
+          "type": "string"
+        },
+        "initialization_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Initialization Sha256",
+          "type": "string"
+        },
+        "installation_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "title": "Installation Id",
+          "type": "string"
+        },
+        "installation_public_key": {
+          "maxLength": 43,
+          "minLength": 43,
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "title": "Installation Public Key",
+          "type": "string"
+        },
+        "operation_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "title": "Operation Id",
+          "type": "string"
+        },
+        "organization_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "title": "Organization Id",
+          "type": "string"
+        },
+        "principal_commitment": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Principal Commitment",
+          "type": "string"
+        },
+        "version": {
+          "const": "owner-bootstrap/1",
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "operation_id",
+        "installation_id",
+        "host_id",
+        "organization_id",
+        "claim_id",
+        "entitlement_id",
+        "generation",
+        "claim_sha256",
+        "principal_commitment",
+        "initialization_sha256",
+        "installation_public_key"
+      ],
+      "title": "ConsumeBinding",
+      "type": "object"
+    },
+    "RecoveryEvidenceAdmission": {
+      "additionalProperties": false,
+      "properties": {
+        "admission_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "title": "Admission Id",
+          "type": "string"
+        },
+        "admitted_at": {
+          "format": "date-time",
+          "maxLength": 20,
+          "minLength": 20,
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
+          "title": "Admitted At",
+          "type": "string"
+        },
+        "case_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "title": "Case Id",
+          "type": "string"
+        },
+        "case_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Case Sha256",
+          "type": "string"
+        },
+        "evidence_class": {
+          "const": "OFFLINE_CONFORMANCE",
+          "title": "Evidence Class",
+          "type": "string"
+        },
+        "evidence_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "title": "Evidence Id",
+          "type": "string"
+        },
+        "evidence_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Evidence Sha256",
+          "type": "string"
+        },
+        "predecessor_receipt_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Predecessor Receipt Sha256",
+          "type": "string"
+        },
+        "qualification_pass": {
+          "const": false,
+          "title": "Qualification Pass",
+          "type": "boolean"
+        },
+        "replacement_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Replacement Sha256",
+          "type": "string"
+        },
+        "state": {
+          "const": "EVIDENCE_RECORDED_ONLY",
+          "title": "State",
+          "type": "string"
+        },
+        "version": {
+          "const": "offline-recovery-evidence/1",
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "evidence_class",
+        "qualification_pass",
+        "admission_id",
+        "case_id",
+        "evidence_id",
+        "case_sha256",
+        "evidence_sha256",
+        "predecessor_receipt_sha256",
+        "replacement_sha256",
+        "admitted_at",
+        "state"
+      ],
+      "title": "RecoveryEvidenceAdmission",
+      "type": "object"
+    },
+    "RecoveryEvidenceCase": {
+      "additionalProperties": false,
+      "properties": {
+        "case_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "title": "Case Id",
+          "type": "string"
+        },
+        "evidence_class": {
+          "const": "OFFLINE_CONFORMANCE",
+          "title": "Evidence Class",
+          "type": "string"
+        },
+        "expires_at": {
+          "format": "date-time",
+          "maxLength": 20,
+          "minLength": 20,
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
+          "title": "Expires At",
+          "type": "string"
+        },
+        "opened_at": {
+          "format": "date-time",
+          "maxLength": 20,
+          "minLength": 20,
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
+          "title": "Opened At",
+          "type": "string"
+        },
+        "predecessor_binding": {
+          "$ref": "#/$defs/ConsumeBinding"
+        },
+        "predecessor_receipt_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Predecessor Receipt Sha256",
+          "type": "string"
+        },
+        "qualification_pass": {
+          "const": false,
+          "title": "Qualification Pass",
+          "type": "boolean"
+        },
+        "replacement": {
+          "$ref": "#/$defs/ReplacementTarget"
+        },
+        "version": {
+          "const": "offline-recovery-evidence/1",
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "evidence_class",
+        "qualification_pass",
+        "case_id",
+        "predecessor_binding",
+        "predecessor_receipt_sha256",
+        "replacement",
+        "opened_at",
+        "expires_at"
+      ],
+      "title": "RecoveryEvidenceCase",
+      "type": "object"
+    },
+    "RecoveryEvidenceRefusal": {
+      "additionalProperties": false,
+      "properties": {
+        "case_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "title": "Case Id",
+          "type": "string"
+        },
+        "code": {
+          "enum": [
+            "RECOVERY_PREDECESSOR_UNAVAILABLE",
+            "RECOVERY_BINDING_CONFLICT",
+            "RECOVERY_EVIDENCE_INVALID",
+            "RECOVERY_EVIDENCE_EXPIRED",
+            "RECOVERY_CONFIGURATION_UNAVAILABLE"
+          ],
+          "title": "Code",
+          "type": "string"
+        },
+        "evidence_class": {
+          "const": "OFFLINE_CONFORMANCE",
+          "title": "Evidence Class",
+          "type": "string"
+        },
+        "qualification_pass": {
+          "const": false,
+          "title": "Qualification Pass",
+          "type": "boolean"
+        },
+        "version": {
+          "const": "offline-recovery-evidence/1",
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "evidence_class",
+        "qualification_pass",
+        "case_id",
+        "code"
+      ],
+      "title": "RecoveryEvidenceRefusal",
+      "type": "object"
+    },
+    "RecoveryEvidenceSelection": {
+      "additionalProperties": false,
+      "properties": {
+        "case_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "title": "Case Id",
+          "type": "string"
+        },
+        "case_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Case Sha256",
+          "type": "string"
+        },
+        "evidence_class": {
+          "const": "OFFLINE_CONFORMANCE",
+          "title": "Evidence Class",
+          "type": "string"
+        },
+        "predecessor_receipt_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Predecessor Receipt Sha256",
+          "type": "string"
+        },
+        "qualification_pass": {
+          "const": false,
+          "title": "Qualification Pass",
+          "type": "boolean"
+        },
+        "version": {
+          "const": "offline-recovery-evidence/1",
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "evidence_class",
+        "qualification_pass",
+        "case_id",
+        "case_sha256",
+        "predecessor_receipt_sha256"
+      ],
+      "title": "RecoveryEvidenceSelection",
+      "type": "object"
+    },
+    "ReplacementTarget": {
+      "additionalProperties": false,
+      "properties": {
+        "entitlement_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "title": "Entitlement Id",
+          "type": "string"
+        },
+        "evidence_class": {
+          "const": "OFFLINE_CONFORMANCE",
+          "title": "Evidence Class",
+          "type": "string"
+        },
+        "host_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "title": "Host Id",
+          "type": "string"
+        },
+        "initialization_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Initialization Sha256",
+          "type": "string"
+        },
+        "installation_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "title": "Installation Id",
+          "type": "string"
+        },
+        "installation_public_key": {
+          "maxLength": 43,
+          "minLength": 43,
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "title": "Installation Public Key",
+          "type": "string"
+        },
+        "operation_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "title": "Operation Id",
+          "type": "string"
+        },
+        "organization_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "title": "Organization Id",
+          "type": "string"
+        },
+        "principal_commitment": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Principal Commitment",
+          "type": "string"
+        },
+        "qualification_pass": {
+          "const": false,
+          "title": "Qualification Pass",
+          "type": "boolean"
+        },
+        "version": {
+          "const": "offline-recovery-evidence/1",
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "evidence_class",
+        "qualification_pass",
+        "operation_id",
+        "installation_id",
+        "host_id",
+        "organization_id",
+        "entitlement_id",
+        "installation_public_key",
+        "principal_commitment",
+        "initialization_sha256"
+      ],
+      "title": "ReplacementTarget",
+      "type": "object"
+    },
+    "RetirementEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "asserted_at": {
+          "format": "date-time",
+          "maxLength": 20,
+          "minLength": 20,
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
+          "title": "Asserted At",
+          "type": "string"
+        },
+        "assertion": {
+          "const": "SYNTHETIC_RETIREMENT_ONLY",
+          "title": "Assertion",
+          "type": "string"
+        },
+        "case_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "title": "Case Id",
+          "type": "string"
+        },
+        "case_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Case Sha256",
+          "type": "string"
+        },
+        "evidence_class": {
+          "const": "OFFLINE_CONFORMANCE",
+          "title": "Evidence Class",
+          "type": "string"
+        },
+        "evidence_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "title": "Evidence Id",
+          "type": "string"
+        },
+        "expires_at": {
+          "format": "date-time",
+          "maxLength": 20,
+          "minLength": 20,
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
+          "title": "Expires At",
+          "type": "string"
+        },
+        "predecessor_receipt_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Predecessor Receipt Sha256",
+          "type": "string"
+        },
+        "purpose": {
+          "const": "offline-predecessor-retirement-evidence",
+          "title": "Purpose",
+          "type": "string"
+        },
+        "qualification_pass": {
+          "const": false,
+          "title": "Qualification Pass",
+          "type": "boolean"
+        },
+        "replacement_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Replacement Sha256",
+          "type": "string"
+        },
+        "version": {
+          "const": "offline-recovery-evidence/1",
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "evidence_class",
+        "qualification_pass",
+        "purpose",
+        "evidence_id",
+        "case_id",
+        "case_sha256",
+        "predecessor_receipt_sha256",
+        "replacement_sha256",
+        "asserted_at",
+        "expires_at",
+        "assertion"
+      ],
+      "title": "RetirementEvidence",
+      "type": "object"
+    },
+    "RetirementEvidenceEnvelope": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_class": {
+          "const": "OFFLINE_CONFORMANCE",
+          "title": "Evidence Class",
+          "type": "string"
+        },
+        "payload_base64url": {
+          "maxLength": 2048,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "title": "Payload Base64Url",
+          "type": "string"
+        },
+        "qualification_pass": {
+          "const": false,
+          "title": "Qualification Pass",
+          "type": "boolean"
+        },
+        "signature_base64url": {
+          "maxLength": 86,
+          "minLength": 86,
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "title": "Signature Base64Url",
+          "type": "string"
+        },
+        "version": {
+          "const": "offline-recovery-evidence/1",
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "evidence_class",
+        "qualification_pass",
+        "payload_base64url",
+        "signature_base64url"
+      ],
+      "title": "RetirementEvidenceEnvelope",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "anyOf": [
+    {
+      "$ref": "#/$defs/ReplacementTarget"
+    },
+    {
+      "$ref": "#/$defs/RecoveryEvidenceCase"
+    },
+    {
+      "$ref": "#/$defs/RetirementEvidence"
+    },
+    {
+      "$ref": "#/$defs/RetirementEvidenceEnvelope"
+    },
+    {
+      "$ref": "#/$defs/RecoveryEvidenceSelection"
+    },
+    {
+      "$ref": "#/$defs/RecoveryEvidenceAdmission"
+    },
+    {
+      "$ref": "#/$defs/RecoveryEvidenceRefusal"
+    }
+  ]
+}

@@ -653,3 +653,406 @@ def test_active_manifest_window_has_exact_category(wire, entry, boundary, offset
         assert verify().model_dump() == wire["manifest"]
     else:
         assert verify()[0].requested_at == wire["request"]["requested_at"]
+
+
+@pytest.fixture
+def recovery_wire(wire):
+    p = protocol()
+    signer = Ed25519PrivateKey.generate()
+    common = {"version": "offline-recovery-evidence/1",
+              "evidence_class": "OFFLINE_CONFORMANCE", "qualification_pass": False}
+    predecessor = wire["request"]["binding"] | {
+        "installation_public_key": b64(signer.public_key().public_bytes_raw())}
+    target = common | {k: predecessor[k] for k in (
+        "organization_id", "entitlement_id", "principal_commitment", "initialization_sha256")}
+    target.update(operation_id=uid(20), installation_id=uid(21), host_id=uid(22),
+                  installation_public_key=b64(wire["keys"]["host"]))
+    case = common | {"case_id": uid(23), "predecessor_binding": predecessor,
+                     "predecessor_receipt_sha256": "d" * 64, "replacement": target,
+                     "opened_at": "2026-01-01T00:00:00Z", "expires_at": "2026-01-01T02:00:00Z"}
+    evidence = common | {"purpose": "offline-predecessor-retirement-evidence",
+                         "evidence_id": uid(24), "case_id": uid(23),
+                         "case_sha256": hashlib.sha256(p.canonical(case)).hexdigest(),
+                         "predecessor_receipt_sha256": "d" * 64,
+                         "replacement_sha256": hashlib.sha256(p.canonical(target)).hexdigest(),
+                         "asserted_at": "2026-01-01T01:00:00Z",
+                         "expires_at": "2026-01-01T01:30:00Z",
+                         "assertion": "SYNTHETIC_RETIREMENT_ONLY"}
+
+    def sign(payload=None, key=None, prefix=None):
+        raw = p.canonical(evidence if payload is None else payload)
+        domain = (b"local-connect.offline-predecessor-retirement-evidence.v1\0"
+                  if prefix is None else prefix)
+        return p.canonical(common | {"payload_base64url": b64(raw),
+            "signature_base64url": b64((signer if key is None else key).sign(domain + raw))})
+
+    return {"case": case, "target": target, "evidence": evidence, "sign": sign,
+            "common": common, "now": datetime(2026, 1, 1, 1, tzinfo=UTC)}
+
+
+def recovery_check(values, *, evidence=None, now=None, case=None, selected=None):
+    p = protocol()
+    case = p.RecoveryEvidenceCase.model_validate(values["case"] if case is None else case)
+    return p.check_recovery_evidence(
+        values["sign"]() if evidence is None else evidence, case,
+        p.recovery_selection(case) if selected is None else selected,
+        values["now"] if now is None else now)
+
+
+def test_recovery_evidence_signature_and_equal_principal_positive(recovery_wire):
+    p = protocol()
+    value = recovery_check(recovery_wire)
+    assert value.model_dump() == recovery_wire["evidence"]
+    case = p.parse_recovery(p.canonical(recovery_wire["case"]), "case")
+    assert p.recovery_bytes(case) == p.canonical(recovery_wire["case"])
+    assert case.replacement.principal_commitment == case.predecessor_binding.principal_commitment
+    assert p.check_recovery_case(case, recovery_wire["now"]) == case
+
+
+@pytest.mark.parametrize("field", ["case_id", "case_sha256", "predecessor_receipt_sha256",
+                                   "replacement_sha256"])
+def test_recovery_signed_cross_record_mismatch_is_invalid(recovery_wire, field):
+    bad = recovery_wire["evidence"] | {field: uid(99) if field == "case_id" else "e" * 64}
+    with pytest.raises(protocol().RecoveryEvidenceInvalid):
+        recovery_check(recovery_wire, evidence=recovery_wire["sign"](bad))
+
+
+@pytest.mark.parametrize("field", ["case_id", "case_sha256", "predecessor_receipt_sha256"])
+def test_recovery_selection_mismatch_is_independent(recovery_wire, field):
+    p = protocol()
+    case = p.RecoveryEvidenceCase.model_validate(recovery_wire["case"])
+    selected = p.recovery_selection(case).model_dump()
+    selected[field] = uid(99) if field == "case_id" else "e" * 64
+    with pytest.raises(p.RecoveryEvidenceInvalid):
+        recovery_check(recovery_wire, selected=p.RecoveryEvidenceSelection.model_validate(selected))
+
+
+@pytest.mark.parametrize("prefix", [b"", b"local-connect.owner-consume.v1\0",
+                                     b"local-connect.owner-receipt.v1\0"])
+def test_recovery_wrong_domain_is_invalid(recovery_wire, prefix):
+    with pytest.raises(protocol().RecoveryEvidenceInvalid):
+        recovery_check(recovery_wire, evidence=recovery_wire["sign"](prefix=prefix))
+
+
+def test_recovery_wrong_signer_is_invalid(recovery_wire):
+    with pytest.raises(protocol().RecoveryEvidenceInvalid):
+        recovery_check(recovery_wire,
+                       evidence=recovery_wire["sign"](key=Ed25519PrivateKey.generate()))
+
+
+@pytest.mark.parametrize("field", ["operation_id", "installation_id", "host_id",
+                                   "installation_public_key", "organization_id", "entitlement_id"])
+def test_recovery_case_target_relation_is_owned_by_closed_model(recovery_wire, field):
+    from pydantic import ValidationError
+
+    case = deepcopy(recovery_wire["case"])
+    case["replacement"][field] = (uid(99) if field in ("organization_id", "entitlement_id")
+                                  else case["predecessor_binding"][field])
+    with pytest.raises(ValidationError):
+        protocol().RecoveryEvidenceCase.model_validate(case)
+
+
+@pytest.mark.parametrize("when,expected", [
+    ("2026-01-01T00:59:59Z", "invalid"), ("2026-01-01T01:00:00Z", "pass"),
+    ("2026-01-01T01:29:59Z", "pass"), ("2026-01-01T01:30:00Z", "expired"),
+    ("2026-01-01T01:30:01Z", "expired"), ("2026-01-01T02:00:00Z", "expired"),
+])
+def test_recovery_evidence_current_window_boundaries(recovery_wire, when, expected):
+    p = protocol()
+    now = datetime.fromisoformat(when.replace("Z", "+00:00"))
+    if expected == "pass":
+        assert recovery_check(recovery_wire, now=now).case_id == uid(23)
+    else:
+        error = p.RecoveryEvidenceExpired if expected == "expired" else p.RecoveryEvidenceInvalid
+        with pytest.raises(error) as caught:
+            recovery_check(recovery_wire, now=now)
+        assert type(caught.value) is error
+
+
+@pytest.mark.parametrize("when,expected", [
+    ("2025-12-31T23:59:59Z", "invalid"), ("2026-01-01T00:00:00Z", "pass"),
+    ("2026-01-01T01:59:59Z", "pass"), ("2026-01-01T02:00:00Z", "expired"),
+])
+def test_recovery_case_current_window_boundaries(recovery_wire, when, expected):
+    p = protocol()
+    case = p.RecoveryEvidenceCase.model_validate(recovery_wire["case"])
+    now = datetime.fromisoformat(when.replace("Z", "+00:00"))
+    if expected == "pass":
+        assert p.check_recovery_case(case, now) == case
+    else:
+        error = p.RecoveryEvidenceExpired if expected == "expired" else p.RecoveryEvidenceInvalid
+        with pytest.raises(error) as caught:
+            p.check_recovery_case(case, now)
+        assert type(caught.value) is error
+
+
+@pytest.mark.parametrize("kind,start,end,valid", [
+    ("case", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", False),
+    ("case", "2026-01-01T00:00:00Z", "2026-01-01T00:00:01Z", True),
+    ("case", "2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z", True),
+    ("case", "2026-01-01T00:00:00Z", "2026-01-02T00:00:01Z", False),
+    ("evidence", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", False),
+    ("evidence", "2026-01-01T00:00:00Z", "2026-01-01T00:00:01Z", True),
+    ("evidence", "2026-01-01T00:00:00Z", "2026-01-01T01:00:00Z", True),
+    ("evidence", "2026-01-01T00:00:00Z", "2026-01-01T01:00:01Z", False),
+])
+def test_recovery_model_interval_boundaries(recovery_wire, kind, start, end, valid):
+    p = protocol()
+    value = recovery_wire[kind] | {"opened_at" if kind == "case" else "asserted_at": start,
+                                  "expires_at": end}
+    if valid:
+        assert p.parse_recovery(p.canonical(value), kind).expires_at == end
+    else:
+        with pytest.raises(p.ProtocolInputError):
+            p.parse_recovery(p.canonical(value), kind)
+
+
+@pytest.mark.parametrize("edge", ["start", "end"])
+def test_recovery_evidence_window_must_fit_case(recovery_wire, edge):
+    case = deepcopy(recovery_wire["case"])
+    case["opened_at" if edge == "start" else "expires_at"] = (
+        "2026-01-01T01:00:01Z" if edge == "start" else "2026-01-01T01:29:59Z")
+    evidence = recovery_wire["evidence"] | {
+        "case_sha256": hashlib.sha256(protocol().canonical(case)).hexdigest()}
+    with pytest.raises(protocol().RecoveryEvidenceInvalid):
+        recovery_check(recovery_wire, case=case, evidence=recovery_wire["sign"](evidence),
+                       now=datetime(2026, 1, 1, 1, 1, tzinfo=UTC))
+
+
+@pytest.mark.parametrize("kind", ["manifest", "claim", "receipt"])
+def test_recovery_envelope_never_decodes_as_bootstrap_authority(recovery_wire, wire, kind):
+    with pytest.raises(protocol().ProtocolInputError):
+        protocol().verify_signed(recovery_wire["sign"](), kind, wire["keys"],
+                                 frozenset(wire["keys"]))
+
+
+def recovery_documents(values):
+    import json
+
+    p = protocol()
+    case = p.RecoveryEvidenceCase.model_validate(values["case"])
+    return {
+        "case": values["case"], "target": values["target"], "evidence": values["evidence"],
+        "envelope": json.loads(values["sign"]()),
+        "selection": p.recovery_selection(case).model_dump(),
+        "admission": values["common"] | {
+            "admission_id": uid(30), "case_id": uid(23), "evidence_id": uid(24),
+            "case_sha256": values["evidence"]["case_sha256"],
+            "evidence_sha256": hashlib.sha256(values["sign"]()).hexdigest(),
+            "predecessor_receipt_sha256": "d" * 64,
+            "replacement_sha256": values["evidence"]["replacement_sha256"],
+            "admitted_at": "2026-01-01T01:00:00Z", "state": "EVIDENCE_RECORDED_ONLY"},
+        "refusal": values["common"] | {"case_id": uid(23), "code": "RECOVERY_EVIDENCE_INVALID"},
+    }
+
+
+@pytest.mark.parametrize("kind", ["case", "target", "evidence", "envelope", "selection",
+                                  "admission", "refusal"])
+def test_recovery_every_model_roundtrip_missing_extra_and_qualification(recovery_wire, kind):
+    p = protocol()
+    data = recovery_documents(recovery_wire)[kind]
+    raw = p.canonical(data)
+    value = p.parse_recovery(raw, kind)
+    assert p.recovery_bytes(value) == raw
+    for key in data:
+        missing = {k: v for k, v in data.items() if k != key}
+        with pytest.raises(p.ProtocolInputError):
+            p.parse_recovery(p.canonical(missing), kind)
+    for bad in [data | {"unexpected": True}, data | {"version": "owner-bootstrap/1"},
+                data | {"evidence_class": "NATIVE"}]:
+        with pytest.raises(p.ProtocolInputError):
+            p.parse_recovery(p.canonical(bad), kind)
+    for falsy in [0, 1, "", "false", True, None]:
+        with pytest.raises(p.ProtocolInputError):
+            p.parse_recovery(p.canonical(data | {"qualification_pass": falsy}), kind)
+    for key in data:
+        with pytest.raises(p.ProtocolInputError):
+            p.parse_recovery(p.canonical(data | {key: None}), kind)
+
+
+@pytest.mark.parametrize("kind", ["case", "target", "evidence", "envelope", "selection",
+                                  "admission", "refusal"])
+def test_recovery_canonical_parser_rejects_mixed_and_oversized_input(recovery_wire, kind):
+    import json
+
+    p = protocol()
+    data = recovery_documents(recovery_wire)[kind]
+    raw = p.canonical(data)
+    for bad in [raw + b" ", json.dumps(data, indent=2).encode(), raw[:-1] + b',"version":0}',
+                raw[:-1] + b',"extra":NaN}', b"", b"[]", b"null", b"\xff", raw.decode(),
+                b" " * 4097 + raw, p.canonical(data | {"unexpected": False,
+                                                      "qualification_pass": 0})]:
+        with pytest.raises(p.ProtocolInputError):
+            p.parse_recovery(bad, kind)
+
+
+@pytest.mark.parametrize("bad", ["", "=", "a" * 2049, "a" * 2048, "A", "AAAA=", "é"])
+def test_recovery_envelope_decoding_limits_and_canonical_encoding(recovery_wire, bad):
+    import json
+
+    envelope = json.loads(recovery_wire["sign"]()) | {"payload_base64url": bad}
+    with pytest.raises(protocol().RecoveryEvidenceInvalid):
+        recovery_check(recovery_wire, evidence=protocol().canonical(envelope))
+
+
+@pytest.mark.parametrize("field,value", [
+    ("signature_base64url", "A" * 85), ("signature_base64url", "A" * 87),
+    ("signature_base64url", "A" * 85 + "B"), ("key_id", "predecessor"),
+    ("installation_public_key", "A" * 43),
+])
+def test_recovery_envelope_cannot_supply_trust_or_noncanonical_signature(
+    recovery_wire, field, value,
+):
+    import json
+
+    envelope = json.loads(recovery_wire["sign"]()) | {field: value}
+    with pytest.raises(protocol().RecoveryEvidenceInvalid):
+        recovery_check(recovery_wire, evidence=protocol().canonical(envelope))
+
+
+@pytest.mark.parametrize("field,value", [
+    ("purpose", "owner-bootstrap-receipt"), ("assertion", "RETIRED"),
+    ("asserted_at", "2026-02-30T01:00:00Z"), ("expires_at", "2026-01-01T01:00:00Z"),
+    ("case_sha256", "A" * 64), ("case_id", ""),
+])
+def test_recovery_signed_malformed_payload_is_not_admitted(recovery_wire, field, value):
+    with pytest.raises(protocol().RecoveryEvidenceInvalid):
+        recovery_check(recovery_wire,
+                       evidence=recovery_wire["sign"](recovery_wire["evidence"] | {field: value}))
+
+
+def test_recovery_forged_model_copy_and_subclass_do_not_bypass_admission(recovery_wire):
+    p = protocol()
+    case = p.RecoveryEvidenceCase.model_validate(recovery_wire["case"])
+    invalid_target = case.replacement.model_copy(update={"installation_id":
+                                                        case.predecessor_binding.installation_id})
+    invalid = case.model_copy(update={"replacement": invalid_target})
+    with pytest.raises(p.ProtocolInputError):
+        p.recovery_bytes(invalid)
+    with pytest.raises(p.RecoveryEvidenceInvalid):
+        p.check_recovery_evidence(recovery_wire["sign"](), invalid, p.recovery_selection(case),
+                                  recovery_wire["now"])
+
+    class CopiedCase(p.RecoveryEvidenceCase):
+        pass
+
+    with pytest.raises(p.ProtocolInputError):
+        p.recovery_bytes(CopiedCase.model_validate(case.model_dump()))
+
+
+@pytest.mark.parametrize("clock", [None, False, "2026-01-01T01:00:00Z",
+                                   datetime(2026, 1, 1, 1)])
+def test_recovery_clock_rejects_non_utc_observation(recovery_wire, clock):
+    p = protocol()
+    case = p.RecoveryEvidenceCase.model_validate(recovery_wire["case"])
+    with pytest.raises(p.RecoveryEvidenceInvalid):
+        p.check_recovery_evidence(recovery_wire["sign"](), case, p.recovery_selection(case), clock)
+
+
+@pytest.mark.parametrize("kind", ["admission", "refusal", "case", "target", "selection"])
+def test_recovery_unsigned_objects_never_decode_as_bootstrap_receipt(recovery_wire, wire, kind):
+    p = protocol()
+    raw = p.canonical(recovery_documents(recovery_wire)[kind])
+    with pytest.raises(p.ProtocolInputError):
+        p.verify_signed(raw, "receipt", wire["keys"], frozenset(wire["keys"]))
+
+
+def test_recovery_signature_covers_complete_case_and_target(recovery_wire):
+    p = protocol()
+    original = recovery_wire["case"]
+    for target_field, new in [("principal_commitment", "e" * 64),
+                              ("initialization_sha256", "e" * 64),
+                              ("installation_id", uid(29)), ("operation_id", uid(29)),
+                              ("host_id", uid(29))]:
+        case = deepcopy(original)
+        case["replacement"][target_field] = new
+        with pytest.raises(p.RecoveryEvidenceInvalid):
+            recovery_check(recovery_wire, case=case)
+    for field, value in [("opened_at", "2026-01-01T00:00:01Z"),
+                         ("expires_at", "2026-01-01T02:00:01Z"),
+                         ("predecessor_receipt_sha256", "e" * 64), ("case_id", uid(29))]:
+        with pytest.raises(p.RecoveryEvidenceInvalid):
+            recovery_check(recovery_wire, case=original | {field: value})
+
+
+@pytest.mark.parametrize("kind,limit", [("target", 1536), ("case", 4096), ("evidence", 1536),
+                                        ("envelope", 2560), ("selection", 1536),
+                                        ("admission", 1536), ("refusal", 1536)])
+def test_recovery_oversize_stops_before_json_decode(monkeypatch, kind, limit):
+    p = protocol()
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("oversized recovery input reached JSON decoder")
+
+    monkeypatch.setattr(p.json, "loads", forbidden)
+    with pytest.raises(p.ProtocolInputError):
+        p.parse_recovery(b" " * (limit + 1), kind)
+
+
+def test_recovery_all_refusal_codes_are_closed(recovery_wire):
+    p = protocol()
+    data = recovery_documents(recovery_wire)["refusal"]
+    for code in ["RECOVERY_PREDECESSOR_UNAVAILABLE", "RECOVERY_BINDING_CONFLICT",
+                 "RECOVERY_EVIDENCE_INVALID", "RECOVERY_EVIDENCE_EXPIRED",
+                 "RECOVERY_CONFIGURATION_UNAVAILABLE"]:
+        assert p.parse_recovery(p.canonical(data | {"code": code}), "refusal").code == code
+    for code in ["COMMITTED", "OWNER_BINDING_CONFLICT", "", 0, False, None]:
+        with pytest.raises(p.ProtocolInputError):
+            p.parse_recovery(p.canonical(data | {"code": code}), "refusal")
+
+
+def test_recovery_maximum_canonical_envelope_and_payload_budget(recovery_wire):
+    p = protocol()
+    # Canonical base64 at the exact payload cap is a valid envelope shape, though
+    # arbitrary payload bytes still cannot pass the closed signed evidence model.
+    data = recovery_documents(recovery_wire)["envelope"]
+    data["payload_base64url"] = b64(b"a" * 1536)
+    raw = p.canonical(data)
+    envelope = p.parse_recovery(raw, "envelope")
+    assert len(envelope.payload_base64url) == 2048
+    assert len(raw) <= 2560
+    with pytest.raises(p.RecoveryEvidenceInvalid):
+        recovery_check(recovery_wire, evidence=raw)
+    data["payload_base64url"] = b64(b"a" * 1537)
+    with pytest.raises(p.ProtocolInputError):
+        p.parse_recovery(p.canonical(data), "envelope")
+
+
+def test_recovery_noncanonical_payload_rejected_even_with_valid_signature(recovery_wire):
+    import json
+
+    p = protocol()
+    # The signer can sign alternate bytes, but admission must require canonical JSON.
+    key = Ed25519PrivateKey.generate()
+    case = deepcopy(recovery_wire["case"])
+    case["predecessor_binding"]["installation_public_key"] = b64(
+        key.public_key().public_bytes_raw())
+    payload = recovery_wire["evidence"] | {
+        "case_sha256": hashlib.sha256(p.canonical(case)).hexdigest()}
+    raw = json.dumps(payload, indent=2).encode()
+    envelope = p.canonical(recovery_wire["common"] | {
+        "payload_base64url": b64(raw),
+        "signature_base64url": b64(key.sign(
+            b"local-connect.offline-predecessor-retirement-evidence.v1\0" + raw))})
+    with pytest.raises(p.RecoveryEvidenceInvalid):
+        recovery_check(recovery_wire, case=case, evidence=envelope)
+
+
+@pytest.mark.parametrize("kind", ["case", "target", "evidence", "envelope", "selection",
+                                  "admission", "refusal"])
+def test_recovery_model_itself_forbids_extra_fields(recovery_wire, kind):
+    from pydantic import ValidationError
+
+    p = protocol()
+    data = recovery_documents(recovery_wire)[kind]
+    model = type(p.parse_recovery(p.canonical(data), kind))
+    with pytest.raises(ValidationError):
+        model.model_validate(data | {"unexpected": "must not disappear"})
+
+
+def test_recovery_case_revalidates_forged_qualification_before_clock(recovery_wire):
+    p = protocol()
+    case = p.RecoveryEvidenceCase.model_validate(recovery_wire["case"])
+    forged = case.model_copy(update={"qualification_pass": True})
+    with pytest.raises(p.RecoveryEvidenceInvalid):
+        p.check_recovery_case(forged, recovery_wire["now"])
