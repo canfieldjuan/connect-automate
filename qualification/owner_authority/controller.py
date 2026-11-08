@@ -28,6 +28,11 @@ REPLAY = "lost-response-replay"
 REVOKED = "revoked-claim"
 INACTIVE = "inactive-session"
 MALFORMED = "malformed-request-refusal"
+RENEWAL = "manifest-renewal"
+CANDIDATES = b"renewal-candidates"
+ADVANCE = b"renewal-clock"
+ADOPT = b"renewal-adopt"
+INSPECT = b"renewal-inspect"
 START = "2026-01-01T00:00:00Z"
 NOW = datetime(2026, 1, 1, 1, tzinfo=UTC)
 SNAPSHOT = b"snapshot"
@@ -118,7 +123,8 @@ def _issuer(root, case_id, channel):
             "version": "owner-bootstrap/1", "purpose": "owner-bootstrap-activation",
             "origin": "https://fixture.example", "claim_key_ids": ["claim"],
             "receipt_key_ids": ["receipt"], "issued_at": START,
-            "expires_at": "2026-01-03T00:00:00Z",
+            "expires_at": ("2026-01-01T01:00:01Z" if case_id == RENEWAL else
+                           "2026-01-03T00:00:00Z"),
         }, ("release", keys["release"]))
         issuer = IssuerFixture(root, manifest, public, frozenset({"release"}),
                                ("claim", keys["claim"]), ("receipt", keys["receipt"])).create()
@@ -131,6 +137,9 @@ def _issuer(root, case_id, channel):
             issuer.revoke(_uid(1))
         channel.send((manifest, public, claim))
         calls = 0
+        clock = [NOW]
+        candidates = _renewal_candidates(issuer, ("release", keys["release"])) \
+            if case_id == RENEWAL else None
         first_receipt = receipt_hash = None
         malformed_entries = 0
         connect = lf.connect_store
@@ -141,6 +150,21 @@ def _issuer(root, case_id, channel):
             return connect(*args, **kwargs)
 
         while (request := channel.recv_bytes()) != SNAPSHOT:
+            if case_id == RENEWAL:
+                if request == CANDIDATES:
+                    channel.send(candidates)
+                    continue
+                if request == ADVANCE:
+                    clock[0] = NOW + timedelta(seconds=2)
+                    channel.send(None)
+                    continue
+                if request == ADOPT:
+                    issuer.adopt_manifest(candidates[1], clock[0])
+                    channel.send(None)
+                    continue
+                if request == INSPECT:
+                    channel.send((calls, issuer.snapshot()))
+                    continue
             calls += 1
             if case_id == MALFORMED:
                 if calls == 2:
@@ -152,14 +176,26 @@ def _issuer(root, case_id, channel):
                     if calls == 1:
                         first_receipt = receipt_hash
             else:
-                reply = issuer.consume(request, _clock)
-            if case_id == REPLAY:
+                reply = issuer.consume(request, lambda: clock[0])
+            if case_id in (REPLAY, RENEWAL):
                 receipt_hash = digest(reply)
                 if calls == 1:
                     first_receipt = receipt_hash
             channel.send_bytes(reply)
         stats = (calls, issuer.snapshot()["consumptions"], first_receipt, receipt_hash)
         channel.send((*stats, malformed_entries) if case_id == MALFORMED else stats)
+
+
+def _renewal_candidates(issuer, signer):
+    payload = p.verify_signed(issuer.manifest, "manifest", issuer.keys,
+                              issuer.release_ids).model_dump()
+    return tuple(signed("manifest", payload | {"issued_at": issued, "expires_at": expires}, signer)
+                 for issued, expires in (
+                     ("2026-01-01T01:00:00Z", "2026-01-03T00:00:00Z"),
+                     ("2026-01-01T01:00:01Z", "2026-01-04T00:00:00Z"),
+                     ("2026-01-01T01:00:00Z", "2026-01-05T00:00:00Z"),
+                     ("2026-01-01T01:00:01Z", "2026-01-03T00:00:00Z"),
+                 ))
 
 
 def _observe(active=True):
@@ -255,6 +291,88 @@ def _malformed_recovery(host, consume):
     }
 
 
+def _renewal(host, consume, control):
+    clock, requests, counts = [NOW], [], []
+
+    def fresh():
+        tick = int((clock[0] - NOW).total_seconds()) * 1_000_000_000
+        return _observe().model_copy(update={"authenticated_at_ns": tick, "observed_at_ns": tick})
+
+    def exchange(raw):
+        requests.append(p.parse_consume_request(raw))
+        reply = consume(raw)
+        if len(requests) == 1:
+            raise TimeoutError
+        return reply
+
+    original = host.snapshot()
+    failed = host.bootstrap(exchange, fresh, lambda: clock[0])
+    pending = host.snapshot()
+    counts.append(len(requests))
+    issuer_before = control(INSPECT)
+    control(ADVANCE)
+    clock[0] = NOW + timedelta(seconds=2)
+    unavailable = host.bootstrap(exchange, fresh, lambda: clock[0])
+    unresolved = host.snapshot()
+    counts.append(len(requests))
+    first, second, regressed_issue, regressed_expiry = control(CANDIDATES)
+    host.renew_manifest(host.select_renewal(), first, fresh, lambda: clock[0])
+    renewed = host.snapshot()
+    counts.append(len(requests))
+    host.renew_manifest(host.select_renewal(), second, fresh, lambda: clock[0])
+    advanced = host.snapshot()
+    counts.append(len(requests))
+
+    def refuses(candidate):
+        before = host.snapshot()
+        rejected = False
+        try:
+            host.renew_manifest(host.select_renewal(), candidate, fresh, lambda: clock[0])
+        except p.ProtocolInputError as error:
+            rejected = type(error) is p.ProtocolInputError
+        return rejected and host.snapshot() == before
+
+    issue_refused = refuses(regressed_issue)
+    expiry_refused = refuses(regressed_expiry)
+    checked = host.snapshot()
+    control(ADOPT)
+    issuer_after = control(INSPECT)
+    # Reopen the same root; constructor input cannot replace durable configuration.
+    host = HostFixture(host.root, b"ignored restart seed", host.keys, host.release_ids, host.key)
+    result = host.bootstrap(exchange, fresh, lambda: clock[0])
+    published = host.snapshot()
+    counts.append(len(requests))
+    cached = host.bootstrap(exchange, fresh, lambda: clock[0]) if result.committed else None
+    counts.append(len(requests))
+    return result.code, {
+        "pending-after-loss": failed.code == "LICENSING_UNAVAILABLE"
+            and not failed.committed and pending == original,
+        "unavailable-no-dispatch": unavailable.code == "LICENSING_UNAVAILABLE"
+            and not unavailable.committed and counts[1] == counts[0],
+        "derived-unknown": unresolved == original and unresolved["pending"] == 1
+            and all(unresolved[k] == 0 for k in ("receipts", "admins", "audit")),
+        "retained-state": all(state["pending_state_sha256"] == original["pending_state_sha256"]
+            for state in (pending, unresolved, renewed, advanced, checked, published,
+                          host.snapshot())),
+        "renewal-only-config-effects": renewed == pending | {
+            "installed_manifest_sha256": digest(first)} and advanced == renewed | {
+            "installed_manifest_sha256": digest(second)},
+        "no-implicit-resume": counts == [1, 1, 1, 1, 2, 2]
+            and issuer_before[0] == issuer_after[0] == 1,
+        "forward-renewals": renewed["installed_manifest_sha256"] == digest(first)
+            and advanced["installed_manifest_sha256"] == digest(second),
+        "installed-issue-monotonic": issue_refused,
+        "installed-expiry-monotonic": expiry_refused,
+        "fresh-attempts": len({r.attempt_id for r in requests}) == 2
+            and len({r.requested_at for r in requests}) == 2,
+        "one-local-triplet": result.committed and all(
+            published[k] == 1 for k in ("pending", "receipts", "admins", "audit")),
+        "cached-no-dispatch": cached == result and host.snapshot() == published
+            and counts[-1] == counts[-2],
+        "issuer-ledger-preserved": issuer_before[1] == issuer_after[1],
+    }
+
+
 def _host(root, case_id, issuer, report):
     with issuer, report:
         manifest, public, claim = issuer.recv()
@@ -266,10 +384,16 @@ def _host(root, case_id, issuer, report):
             issuer.send_bytes(request)
             return issuer.recv_bytes()
 
+        def control(command):
+            issuer.send_bytes(command)
+            return issuer.recv()
+
         if case_id == REPLAY:
             code, assertions = _replay(host, claim, binding, consume)
         elif case_id == MALFORMED:
             code, assertions = _malformed_recovery(host, consume)
+        elif case_id == RENEWAL:
+            code, assertions = _renewal(host, consume, control)
         else:
             result = host.bootstrap(consume, lambda: _observe(case_id != INACTIVE), _clock)
             snapshot = host.snapshot()
@@ -283,13 +407,17 @@ def _host(root, case_id, issuer, report):
         calls, consumed, first, receipt = stats[:4]
         if case_id == MALFORMED:
             assertions["malformed-no-ledger"] = stats[4] == 0
-        if case_id in (REPLAY, MALFORMED):
+        if case_id in (REPLAY, MALFORMED, RENEWAL):
             assertions["same-receipt"] = (
                 first is not None and first == receipt == host.snapshot()["receipt_sha256"]
             )
-        assertions["issuer-effects"] = (calls, consumed) == {
-            REPLAY: (2, 1), REVOKED: (1, 0), INACTIVE: (0, 0), MALFORMED: (3, 1),
-        }[case_id]
+        if case_id == RENEWAL:
+            assertions["issuer-exchanges"] = calls == 2
+            assertions["issuer-consumptions"] = consumed == 1
+        else:
+            assertions["issuer-effects"] = (calls, consumed) == {
+                REPLAY: (2, 1), REVOKED: (1, 0), INACTIVE: (0, 0), MALFORMED: (3, 1),
+            }[case_id]
         report.send_bytes(p.canonical({"actual_code": code, "assertions": assertions}))
 
 

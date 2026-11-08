@@ -20,6 +20,7 @@ from .licensing_fixture import (
     checkpoint,
     create_store,
     read_store,
+    snapshot_digest,
     transaction,
 )
 
@@ -348,7 +349,8 @@ class HostFixture:
                              "WHERE singleton=1").fetchone()
             receipt = db.execute("SELECT envelope FROM receipts WHERE singleton=1").fetchone()
             installed = self._manifest(db)
-            return counts | {"installed_manifest_sha256": None if installed is None else
+            return counts | {"pending_state_sha256": snapshot_digest(db, ("pending",)),
+                             "installed_manifest_sha256": None if installed is None else
                              hashlib.sha256(installed).hexdigest(),
                              "original_manifest_sha256": None if row is None else
                              hashlib.sha256(row[3]).hexdigest(),

@@ -39,7 +39,14 @@
       "assertion_ids": ["pending-after-loss", "malformed-diagnostic", "derived-unknown", "stable-binding", "fresh-attempts", "no-auto-retry", "one-local-triplet", "cached-no-dispatch", "malformed-no-ledger", "same-receipt", "issuer-effects"],
       "capability": "disposable-fixtures"
     },
-    {"kind": "BLOCKED", "case_id": "manifest-renewal", "requirement": "issue-73"},
+    {
+      "kind": "OFFLINE_CONFORMANCE",
+      "case_id": "manifest-renewal",
+      "requirement": "issue-73",
+      "expected_code": "COMMITTED",
+      "assertion_ids": ["pending-after-loss", "unavailable-no-dispatch", "derived-unknown", "retained-state", "renewal-only-config-effects", "no-implicit-resume", "forward-renewals", "installed-issue-monotonic", "installed-expiry-monotonic", "fresh-attempts", "one-local-triplet", "cached-no-dispatch", "same-receipt", "issuer-exchanges", "issuer-consumptions", "issuer-ledger-preserved"],
+      "capability": "disposable-fixtures"
+    },
     {"kind": "BLOCKED", "case_id": "device-replacement", "requirement": "issue-73"},
     {"kind": "BLOCKED", "case_id": "inaccessible-disk-evidence", "requirement": "issue-73"}
   ]

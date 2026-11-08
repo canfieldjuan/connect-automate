@@ -2207,3 +2207,32 @@ def test_issuer_renewal_adoption_refuses_invalid_candidate_without_effects(tmp_p
         issuer.adopt_manifest(candidate, now)
     assert type(caught.value) is p.ProtocolInputError
     assert issuer.manifest == manifest and issuer.snapshot() == before
+
+
+@pytest.mark.parametrize("column", ["salt", "principal", "claim", "original_manifest"])
+def test_pending_snapshot_digest_covers_every_retained_byte(tmp_path, column):
+    from qualification.owner_authority.licensing_fixture import transaction
+
+    _, _, host, _ = renewal_fixture(tmp_path)
+    before = host.snapshot()
+    with transaction(host.root, "host") as db:
+        value = db.execute("SELECT " + column + " FROM pending").fetchone()[0]
+        changed = bytes([value[0] ^ 1]) + value[1:]
+        db.execute("UPDATE pending SET " + column + "=?", (changed,))
+    assert host.snapshot()["pending_state_sha256"] != before["pending_state_sha256"]
+
+
+@pytest.mark.parametrize("table,column", [("claims", "envelope"),
+                                          ("consumptions", "receipt"), ("journal", "event")])
+def test_issuer_snapshot_digest_covers_ledger_contents(tmp_path, table, column):
+    from qualification.owner_authority.licensing_fixture import transaction
+
+    wire, issuer, _, claim = renewal_fixture(tmp_path)
+    issuer.consume(wire.request(claim), lambda: NOW)
+    before = issuer.snapshot()
+    with transaction(issuer.root, "issuer") as db:
+        value = db.execute("SELECT " + column + " FROM " + table + " LIMIT 1").fetchone()[0]
+        changed = "REISSUE" if table == "journal" else value + b" "
+        db.execute("UPDATE " + table + " SET " + column + "=? WHERE rowid=1", (changed,))
+    assert issuer.snapshot()["ledger_sha256"] != before["ledger_sha256"]
+    assert issuer.snapshot()["consumptions"] == before["consumptions"]
