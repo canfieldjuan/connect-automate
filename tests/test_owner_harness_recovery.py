@@ -304,6 +304,10 @@ def _issuer_child(root, seeds, action, argument, channel, start, release, pause,
             result = issuer.revoke(uid(1))
         elif action == "issue":
             result = issuer.issue(wire.claim(), START)
+        elif action == "recovery-open":
+            result = issuer.open_recovery_case(*argument, clock=lambda: NOW)
+        elif action == "recovery-admit":
+            result = issuer.admit_recovery_evidence(*argument, clock=lambda: NOW)
         else:
             result = issuer.reissue(uid(1), wire.claim(index=10, generation=2, issued=NOW), NOW)
         channel.send(("result", result))
@@ -2016,6 +2020,7 @@ def test_renewal_missing_or_corrupt_configuration_never_dispatches(tmp_path, whe
 
 @pytest.mark.parametrize("field,value", [("version", "offline-fixture/1"),
                                         ("version", "offline-fixture/2"),
+                                        ("version", "offline-fixture/3"),
                                         ("contract_commit",
                                          "0397e5d611a1ad1c0541897417dab29f720b4d8d"),
                                         ("contract_commit", "a" * 40)])
@@ -2239,3 +2244,546 @@ def test_issuer_snapshot_digest_covers_ledger_contents(tmp_path, table, column):
         db.execute("UPDATE " + table + " SET " + column + "=? WHERE rowid=1", (changed,))
     assert issuer.snapshot()["ledger_sha256"] != before["ledger_sha256"]
     assert issuer.snapshot()["consumptions"] == before["consumptions"]
+
+
+def recovery_setup(tmp_path):
+    wire = SyntheticWire()
+    issuer = wire.issuer(tmp_path / "issuer", create=True)
+    host = wire.host(tmp_path / "host", create=True)
+    claim = issuer.issue(wire.claim(), START)
+    original = issuer.consume(wire.request(claim), lambda: NOW)
+    common = {"version": "offline-recovery-evidence/1",
+              "evidence_class": "OFFLINE_CONFORMANCE", "qualification_pass": False}
+    target = p.ReplacementTarget.model_validate(common | {
+        "operation_id": uid(20), "installation_id": uid(21), "host_id": uid(22),
+        "organization_id": uid(2), "entitlement_id": uid(3),
+        "installation_public_key": b64(
+            Ed25519PrivateKey.generate().public_key().public_bytes_raw()),
+        "principal_commitment": "b" * 64, "initialization_sha256": "e" * 64})
+    args = (uid(23), uid(1), uid(4), target, instant(START), instant(START+timedelta(hours=3)))
+    return wire, issuer, host, original, args
+
+
+def retirement_bytes(wire, case, *, evidence_id=24, expires=None):
+    data = {"version": "offline-recovery-evidence/1", "evidence_class": "OFFLINE_CONFORMANCE",
+            "qualification_pass": False}
+    payload = data | {
+        "purpose": "offline-predecessor-retirement-evidence", "evidence_id": uid(evidence_id),
+        "case_id": case.case_id, "case_sha256": hashlib.sha256(p.recovery_bytes(case)).hexdigest(),
+        "predecessor_receipt_sha256": case.predecessor_receipt_sha256,
+        "replacement_sha256": hashlib.sha256(p.recovery_bytes(case.replacement)).hexdigest(),
+        "asserted_at": instant(NOW),
+        "expires_at": instant(NOW+timedelta(minutes=30) if expires is None else expires),
+        "assertion": "SYNTHETIC_RETIREMENT_ONLY"}
+    raw = p.canonical(payload)
+    return p.canonical(data | {"payload_base64url": b64(raw), "signature_base64url": b64(
+        wire.private["host"].sign(b"local-connect.offline-predecessor-retirement-evidence.v1\0"+raw))})
+
+
+def test_recovery_admission_records_evidence_only_and_replays_after_restart(tmp_path):
+    wire, issuer, host, original, args = recovery_setup(tmp_path)
+    before, local = issuer.snapshot(), host.snapshot()
+    case_raw = issuer.open_recovery_case(*args, clock=lambda: NOW)
+    case = p.parse_recovery(case_raw, "case")
+    assert case.predecessor_receipt_sha256 == hashlib.sha256(original).hexdigest()
+    selected = p.parse_recovery(issuer.select_recovery_evidence(case.case_id, lambda: NOW),
+                                "selection")
+    evidence = retirement_bytes(wire, case)
+    admitted = issuer.admit_recovery_evidence(selected, evidence, lambda: NOW)
+    assert p.parse_recovery(admitted, "admission").state == "EVIDENCE_RECORDED_ONLY"
+    restart = wire.issuer(issuer.root)
+    snapshot = issuer.recovery_snapshot()
+    assert restart.open_recovery_case(*args, clock=lambda: NOW) == case_raw
+    assert restart.admit_recovery_evidence(selected, evidence, lambda: NOW) == admitted
+    assert restart.recovery_snapshot() == snapshot
+    assert snapshot["cases"] == snapshot["admissions"] == 1
+    assert issuer.snapshot() == before and host.snapshot() == local
+
+
+def recovery_ready(tmp_path):
+    wire, issuer, host, original, args = recovery_setup(tmp_path)
+    case = p.parse_recovery(issuer.open_recovery_case(*args, clock=lambda: NOW), "case")
+    selected = p.parse_recovery(issuer.select_recovery_evidence(case.case_id, lambda: NOW),
+                                "selection")
+    return wire, issuer, host, original, args, case, selected, retirement_bytes(wire, case)
+
+
+def recovery_code(raw):
+    assert "code" in json.loads(raw), "expected a typed recovery refusal"
+    return p.parse_recovery(raw, "refusal").code
+
+
+@pytest.mark.parametrize("claim,operation,code", [
+    (80, 81, "RECOVERY_PREDECESSOR_UNAVAILABLE"),
+    (1, 81, "RECOVERY_BINDING_CONFLICT"), (80, 4, "RECOVERY_BINDING_CONFLICT"),
+])
+def test_recovery_open_resolves_both_predecessor_references(tmp_path, claim, operation, code):
+    _, issuer, host, _, args = recovery_setup(tmp_path)
+    before = issuer.recovery_snapshot(), issuer.snapshot(), host.snapshot()
+    changed = (args[0], uid(claim), uid(operation), *args[3:])
+    assert recovery_code(issuer.open_recovery_case(*changed, clock=lambda: NOW)) == code
+    assert (issuer.recovery_snapshot(), issuer.snapshot(), host.snapshot()) == before
+
+
+@pytest.mark.parametrize("change", ["case", "target", "window"])
+def test_recovery_open_reservation_never_overwrites(tmp_path, change):
+    _, issuer, host, _, args, case, _, _ = recovery_ready(tmp_path)
+    before = issuer.recovery_snapshot(), issuer.snapshot(), host.snapshot()
+    changed = list(args)
+    if change == "case":
+        changed[0] = uid(25)
+    elif change == "target":
+        changed[3] = case.replacement.model_copy(update={"installation_id": uid(26)})
+    else:
+        changed[-1] = instant(START+timedelta(hours=4))
+    assert recovery_code(issuer.open_recovery_case(*changed, clock=lambda: NOW)) == (
+        "RECOVERY_BINDING_CONFLICT")
+    assert (issuer.recovery_snapshot(), issuer.snapshot(), host.snapshot()) == before
+
+
+@pytest.mark.parametrize("which", ["case", "admit", "select"])
+def test_recovery_expired_window_preserves_historical_evidence(tmp_path, which):
+    _, issuer, host, _, args, case, selected, evidence = recovery_ready(tmp_path)
+    admitted = issuer.admit_recovery_evidence(selected, evidence, lambda: NOW)
+    before = issuer.recovery_snapshot(), issuer.snapshot(), host.snapshot()
+    late = NOW+timedelta(hours=3)
+    if which == "case":
+        raw = issuer.open_recovery_case(*args, clock=lambda: late)
+    elif which == "select":
+        raw = issuer.select_recovery_evidence(case.case_id, lambda: late)
+    else:
+        raw = issuer.admit_recovery_evidence(selected, evidence, lambda: late)
+    assert recovery_code(raw) == "RECOVERY_EVIDENCE_EXPIRED"
+    assert (issuer.recovery_snapshot(), issuer.snapshot(), host.snapshot()) == before
+    assert p.parse_recovery(admitted, "admission").qualification_pass is False
+
+
+@pytest.mark.parametrize("field", ["case_sha256", "predecessor_receipt_sha256"])
+def test_recovery_stale_selected_state_is_refused_before_write(tmp_path, field):
+    _, issuer, _, _, _, _, selected, evidence = recovery_ready(tmp_path)
+    before = issuer.recovery_snapshot()
+    selected = selected.model_copy(update={field: "f"*64})
+    assert recovery_code(issuer.admit_recovery_evidence(selected, evidence, lambda: NOW)) == (
+        "RECOVERY_EVIDENCE_INVALID")
+    assert issuer.recovery_snapshot() == before
+
+
+@pytest.mark.parametrize("bad", [b"", b"null", b"{}", b"x"*2561])
+def test_recovery_malformed_evidence_is_correlated_without_admission(tmp_path, bad):
+    _, issuer, _, _, _, _, selected, _ = recovery_ready(tmp_path)
+    before = issuer.recovery_snapshot()
+    refused = p.parse_recovery(issuer.admit_recovery_evidence(selected, bad, lambda: NOW),
+                               "refusal")
+    assert refused.code == "RECOVERY_EVIDENCE_INVALID" and refused.case_id == selected.case_id
+    assert issuer.recovery_snapshot() == before
+
+
+def test_recovery_different_signed_evidence_cannot_replace_admission(tmp_path):
+    wire, issuer, _, _, _, case, selected, evidence = recovery_ready(tmp_path)
+    first = issuer.admit_recovery_evidence(selected, evidence, lambda: NOW)
+    before = issuer.recovery_snapshot()
+    other = retirement_bytes(wire, case, evidence_id=25)
+    assert recovery_code(issuer.admit_recovery_evidence(selected, other, lambda: NOW)) == (
+        "RECOVERY_BINDING_CONFLICT")
+    assert issuer.recovery_snapshot() == before
+    assert issuer.admit_recovery_evidence(selected, evidence, lambda: NOW) == first
+
+
+@pytest.mark.parametrize("field", ["receipt", "binding", "claim"])
+def test_recovery_corrupt_predecessor_is_not_unavailable(tmp_path, field):
+    from qualification.owner_authority.licensing_fixture import FixtureCorrupt, transaction
+
+    _, issuer, _, _, args = recovery_setup(tmp_path)
+    with transaction(issuer.root, "issuer") as db:
+        if field == "claim":
+            db.execute("UPDATE claims SET envelope=?", (b"{}",))
+        else:
+            db.execute("UPDATE consumptions SET " + field + "=?", (b"{}",))
+    before = issuer.recovery_snapshot(), issuer.snapshot()
+    with pytest.raises(FixtureCorrupt):
+        issuer.open_recovery_case(*args, clock=lambda: NOW)
+    assert (issuer.recovery_snapshot(), issuer.snapshot()) == before
+
+
+@pytest.mark.parametrize("damage", ["missing", "rekeyed"])
+@pytest.mark.parametrize("action", ["select", "admit"])
+def test_recovery_existing_case_with_lost_predecessor_stops(tmp_path, damage, action):
+    from qualification.owner_authority.licensing_fixture import FixtureCorrupt
+
+    _, issuer, host, _, _, case, selected, evidence = recovery_ready(tmp_path)
+    # Deliberately damage disposable storage outside the FK-enforcing owner.
+    db = sqlite3.connect(issuer.root / "fixture.sqlite", isolation_level=None)
+    try:
+        db.execute("PRAGMA foreign_keys=OFF")
+        assert db.execute("PRAGMA foreign_keys").fetchone() == (0,)
+        if damage == "missing":
+            changed = db.execute("DELETE FROM consumptions WHERE operation_id=?",
+                                 (case.predecessor_binding.operation_id,))
+        else:
+            changed = db.execute("UPDATE consumptions SET operation_id=? WHERE operation_id=?",
+                                 (uid(99), case.predecessor_binding.operation_id))
+        assert changed.rowcount == 1
+    finally:
+        db.close()
+    before = issuer.snapshot(), issuer.recovery_snapshot(), host.snapshot()
+    with pytest.raises(FixtureCorrupt, match="recovery case predecessor missing or changed"):
+        if action == "select":
+            issuer.select_recovery_evidence(case.case_id, lambda: NOW)
+        else:
+            issuer.admit_recovery_evidence(selected, evidence, lambda: NOW)
+    assert (issuer.snapshot(), issuer.recovery_snapshot(), host.snapshot()) == before
+
+
+@pytest.mark.parametrize("field", ["case_id", "receipt_digest", "binding", "malformed"])
+def test_recovery_corrupt_case_cannot_supply_selection_or_admission(tmp_path, field):
+    from qualification.owner_authority.licensing_fixture import FixtureCorrupt, transaction
+
+    _, issuer, _, _, _, case, selected, evidence = recovery_ready(tmp_path)
+    data = case.model_dump()
+    if field == "case_id":
+        data["case_id"] = uid(90)
+    elif field == "receipt_digest":
+        data["predecessor_receipt_sha256"] = "f"*64
+    elif field == "binding":
+        data["predecessor_binding"]["principal_commitment"] = "f"*64
+    else:
+        data = {}
+    with transaction(issuer.root, "issuer") as db:
+        db.execute("UPDATE recovery_cases SET document=?", (p.canonical(data),))
+    before = issuer.recovery_snapshot()
+    with pytest.raises(FixtureCorrupt):
+        issuer.select_recovery_evidence(case.case_id, lambda: NOW)
+    with pytest.raises(FixtureCorrupt):
+        issuer.admit_recovery_evidence(selected, evidence, lambda: NOW)
+    assert issuer.recovery_snapshot() == before
+
+
+@pytest.mark.parametrize("field", ["case_id", "evidence_id", "case_sha256", "evidence_sha256",
+                                   "predecessor_receipt_sha256", "replacement_sha256",
+                                   "admitted_at", "admitted_expired", "state", "stored_evidence",
+                                   "stored_signature", "stored_id", "row_state"])
+def test_recovery_corrupt_cached_admission_is_never_replayed(tmp_path, field):
+    from qualification.owner_authority.licensing_fixture import FixtureCorrupt, transaction
+
+    _, issuer, _, _, _, _, selected, evidence = recovery_ready(tmp_path)
+    raw = issuer.admit_recovery_evidence(selected, evidence, lambda: NOW)
+    data = json.loads(raw)
+    if field.endswith("_sha256"):
+        data[field] = "f"*64
+    elif field in ("case_id", "evidence_id"):
+        data[field] = uid(90)
+    elif field == "admitted_at":
+        data[field] = instant(NOW-timedelta(seconds=1))
+    elif field == "admitted_expired":
+        data["admitted_at"] = instant(NOW+timedelta(minutes=30))
+    elif field == "state":
+        data[field] = "COMMITTED"
+    with transaction(issuer.root, "issuer") as db:
+        if field == "stored_evidence":
+            db.execute("UPDATE recovery_admissions SET evidence=?", (b"{}",))
+        elif field == "stored_id":
+            db.execute("UPDATE recovery_admissions SET evidence_id=?", (uid(91),))
+        elif field == "row_state":
+            db.execute("PRAGMA ignore_check_constraints=ON")
+            db.execute("UPDATE recovery_admissions SET state='COMMITTED'")
+        elif field == "stored_signature":
+            bad = json.loads(evidence) | {"signature_base64url": b64(bytes(64))}
+            db.execute("UPDATE recovery_admissions SET evidence=?", (p.canonical(bad),))
+        else:
+            db.execute("UPDATE recovery_admissions SET admission=?", (p.canonical(data),))
+    before = issuer.recovery_snapshot()
+    with pytest.raises(FixtureCorrupt):
+        issuer.admit_recovery_evidence(selected, evidence, lambda: NOW)
+    assert issuer.recovery_snapshot() == before
+
+
+@pytest.mark.parametrize("phase", ["writer", "before_commit"])
+@pytest.mark.parametrize("operation", ["open", "admit"])
+def test_recovery_rechecks_clock_after_wait_and_before_commit(tmp_path, phase, operation):
+    if operation == "open":
+        wire, issuer, _, _, args = recovery_setup(tmp_path)
+        selected = evidence = None
+    else:
+        wire, issuer, _, _, args, _, selected, evidence = recovery_ready(tmp_path)
+    before = issuer.recovery_snapshot()
+    clock = [NOW]
+
+    def hook(name, db):
+        if name == phase:
+            clock[0] = NOW+timedelta(hours=3)
+        if phase == "writer" and name in ("recovery_case_write", "recovery_admission_write"):
+            raise AssertionError("expired input reached a recovery write")
+
+    actor = wire.issuer(issuer.root, hook=hook)
+    if operation == "open":
+        raw = actor.open_recovery_case(*args, clock=lambda: clock[0])
+    else:
+        raw = actor.admit_recovery_evidence(selected, evidence, lambda: clock[0])
+    assert recovery_code(raw) == "RECOVERY_EVIDENCE_EXPIRED"
+    assert issuer.recovery_snapshot() == before
+
+
+@pytest.mark.parametrize("phase", ["before_writer", "writer", "before_commit"])
+def test_recovery_rechecks_actual_predecessor_at_every_writer_boundary(tmp_path, phase):
+    from qualification.owner_authority.licensing_fixture import FixtureCorrupt, transaction
+
+    wire, issuer, _, _, _, _, selected, evidence = recovery_ready(tmp_path)
+
+    def damage(db):
+        db.execute("UPDATE consumptions SET receipt=?", (b"{}",))
+
+    def hook(name, db):
+        if phase in ("before_writer", "writer") and name == "recovery_admission_write":
+            raise AssertionError("corrupt predecessor reached an admission write")
+        if name == phase:
+            if phase == "before_writer":
+                with transaction(issuer.root, "issuer") as other:
+                    damage(other)
+            else:
+                damage(db)
+
+    actor = wire.issuer(issuer.root, hook=hook)
+    with pytest.raises(FixtureCorrupt):
+        actor.admit_recovery_evidence(selected, evidence, lambda: NOW)
+    assert issuer.recovery_snapshot()["admissions"] == 0
+
+
+@pytest.mark.parametrize("operation,phase", [
+    ("open", "recovery_case_write"), ("open", "before_commit"), ("open", "after_commit"),
+    ("admit", "recovery_admission_write"), ("admit", "before_commit"), ("admit", "after_commit"),
+])
+@pytest.mark.parametrize("fault", ["sql", "crash"])
+def test_recovery_faults_preserve_atomic_records_and_explicit_replay(
+    tmp_path, operation, phase, fault,
+):
+    wire, issuer, host, _, args = recovery_setup(tmp_path)
+    before, local = issuer.snapshot(), host.snapshot()
+    action, argument = "recovery-open", args
+    if operation == "admit":
+        case = p.parse_recovery(issuer.open_recovery_case(*args, clock=lambda: NOW), "case")
+        selected = p.parse_recovery(issuer.select_recovery_evidence(case.case_id, lambda: NOW),
+                                    "selection")
+        action, argument = "recovery-admit", (selected, retirement_bytes(wire, case))
+    with worker(wire, issuer.root, action, argument, fault=(phase, fault)) as child:
+        child[1].set()
+        if fault == "sql":
+            assert child[3]()[0:2] == ("error", "OperationalError")
+        child[0].join(30)
+        assert child[0].exitcode == (71 if fault == "crash" else 0)
+    restart = wire.issuer(issuer.root)
+    snapshot = restart.recovery_snapshot()
+    assert snapshot["admissions"] == int(operation == "admit" and phase == "after_commit")
+    if action == "recovery-open":
+        assert snapshot["cases"] == int(phase == "after_commit")
+        result = restart.open_recovery_case(*args, clock=lambda: NOW)
+        assert restart.open_recovery_case(*args, clock=lambda: NOW) == result
+    else:
+        assert snapshot["cases"] == 1
+        result = restart.admit_recovery_evidence(*argument, lambda: NOW)
+        assert restart.admit_recovery_evidence(*argument, lambda: NOW) == result
+    assert issuer.snapshot() == before and host.snapshot() == local
+
+
+@pytest.mark.parametrize("scenario", ["two-cases", "two-targets", "same-evidence", "two-evidence"])
+@pytest.mark.parametrize("first", [0, 1])
+@pytest.mark.parametrize("repeat", range(3))
+def test_recovery_real_writer_races_keep_one_binding(tmp_path, scenario, first, repeat):
+    wire, issuer, host, _, args = recovery_setup(tmp_path)
+    before, local = issuer.snapshot(), host.snapshot()
+    if scenario in ("two-cases", "two-targets"):
+        second = list(args)
+        if scenario == "two-cases":
+            second[0] = uid(25)
+        else:
+            second[3] = args[3].model_copy(update={"host_id": uid(26)})
+        actions = [("recovery-open", args), ("recovery-open", tuple(second))]
+    else:
+        case = p.parse_recovery(issuer.open_recovery_case(*args, clock=lambda: NOW), "case")
+        selected = p.parse_recovery(issuer.select_recovery_evidence(case.case_id, lambda: NOW),
+                                    "selection")
+        evidence = retirement_bytes(wire, case)
+        other = evidence if scenario == "same-evidence" else retirement_bytes(wire, case,
+                                                                             evidence_id=25)
+        actions = [("recovery-admit", (selected, evidence)), ("recovery-admit", (selected, other))]
+    if first:
+        actions.reverse()
+    with worker(wire, issuer.root, *actions[0], pause="writer") as leader:
+        leader[1].set()
+        assert leader[3]() == ("paused", "writer")
+        with worker(wire, issuer.root, *actions[1], pause="before_writer") as follower:
+            follower[1].set()
+            assert follower[3]() == ("paused", "before_writer")
+            follower[2].set()
+            leader[2].set()
+            outcomes = leader[3](), follower[3]()
+    assert leader[0].exitcode == follower[0].exitcode == 0
+    assert outcomes[0][0] == outcomes[1][0] == "result"
+    if scenario == "same-evidence":
+        assert outcomes[0][1] == outcomes[1][1]
+    else:
+        assert recovery_code(outcomes[1][1]) == "RECOVERY_BINDING_CONFLICT"
+    snapshot = issuer.recovery_snapshot()
+    assert snapshot["cases"] == 1
+    assert snapshot["admissions"] == int(scenario in ("same-evidence", "two-evidence"))
+    assert issuer.snapshot() == before and host.snapshot() == local
+
+
+def test_recovery_global_evidence_id_and_case_id_cannot_cross_predecessors(tmp_path):
+    wire, issuer, _, _, args, case, selected, evidence = recovery_ready(tmp_path)
+    issuer.admit_recovery_evidence(selected, evidence, lambda: NOW)
+    second_claim = wire.claim(index=30).model_copy(update={"entitlement_id": uid(31)})
+    signed_claim = issuer.issue(second_claim, START)
+    issuer.consume(wire.request(signed_claim, operation=34, installation=35), lambda: NOW)
+    target = args[3].model_copy(update={"entitlement_id": uid(31)})
+    second_args = (uid(43), uid(30), uid(34), target, *args[4:])
+    other = p.parse_recovery(issuer.open_recovery_case(*second_args, clock=lambda: NOW), "case")
+    choice = p.parse_recovery(issuer.select_recovery_evidence(other.case_id, lambda: NOW),
+                              "selection")
+    before = issuer.snapshot(), issuer.recovery_snapshot()
+    assert recovery_code(issuer.admit_recovery_evidence(
+        choice, retirement_bytes(wire, other), lambda: NOW)) == "RECOVERY_BINDING_CONFLICT"
+    assert recovery_code(issuer.open_recovery_case(
+        case.case_id, *second_args[1:], clock=lambda: NOW)) == "RECOVERY_BINDING_CONFLICT"
+    assert (issuer.snapshot(), issuer.recovery_snapshot()) == before
+
+
+@pytest.mark.parametrize("which", ["absent", "expired", "future", "corrupt"])
+@pytest.mark.parametrize("action", ["open", "select", "admit"])
+def test_recovery_configuration_failures_keep_their_categories(tmp_path, which, action):
+    wire, issuer, _, _, args, case, selected, evidence = recovery_ready(tmp_path)
+    before = issuer.recovery_snapshot(), issuer.snapshot()
+    manifest = p.verify_signed(wire.manifest, "manifest", wire.public, frozenset({"release"}))
+    data = manifest.model_dump()
+    if which == "absent":
+        issuer.manifest = None
+    elif which == "corrupt":
+        issuer.manifest = b"{}"
+    else:
+        if which == "expired":
+            data["expires_at"] = instant(NOW)
+        else:
+            data["issued_at"] = instant(NOW+timedelta(seconds=1))
+        issuer.manifest = wire.sign("manifest", data, "release")
+    call = {"open": lambda: issuer.open_recovery_case(*args, clock=lambda: NOW),
+            "select": lambda: issuer.select_recovery_evidence(case.case_id, lambda: NOW),
+            "admit": lambda: issuer.admit_recovery_evidence(selected, evidence, lambda: NOW),
+            }[action]
+    if which in ("absent", "expired"):
+        assert recovery_code(call()) == "RECOVERY_CONFIGURATION_UNAVAILABLE"
+    else:
+        with pytest.raises(p.ProtocolInputError) as caught:
+            call()
+        assert type(caught.value) is p.ProtocolInputError
+    assert (issuer.recovery_snapshot(), issuer.snapshot()) == before
+
+
+def test_recovery_expired_original_claim_does_not_invalidate_historical_consumption(tmp_path):
+    _, issuer, _, _, args = recovery_setup(tmp_path)
+    late = START+timedelta(hours=13)
+    changed = (*args[:4], instant(late), instant(late+timedelta(hours=1)))
+    raw = issuer.open_recovery_case(*changed, clock=lambda: late)
+    assert p.parse_recovery(raw, "case").case_id == args[0]
+    assert issuer.recovery_snapshot()["admissions"] == 0
+
+
+@pytest.mark.parametrize("action", ["open", "select", "admit"])
+def test_recovery_restored_or_missing_stores_never_initialize(tmp_path, action):
+    from qualification.owner_authority.licensing_fixture import FixtureLocked
+
+    wire, issuer, _, _, args, case, selected, evidence = recovery_ready(tmp_path)
+    restored = issuer.restore_to(tmp_path / "restored")
+
+    def call(actor):
+        if action == "open":
+            return actor.open_recovery_case(*args, clock=lambda: NOW)
+        if action == "select":
+            return actor.select_recovery_evidence(case.case_id, lambda: NOW)
+        return actor.admit_recovery_evidence(selected, evidence, lambda: NOW)
+
+    with pytest.raises(FixtureLocked):
+        call(restored)
+    missing = tmp_path / "missing"
+    with pytest.raises(sqlite3.OperationalError):
+        call(wire.issuer(missing))
+    assert not missing.exists()
+
+
+def test_recovery_calls_do_not_dispatch_or_publish_host_authority(tmp_path, monkeypatch):
+    import socket
+
+    from qualification.owner_authority.host_fixture import HostFixture
+    from qualification.owner_authority.licensing_fixture import IssuerFixture
+
+    wire, issuer, host, _, args = recovery_setup(tmp_path)
+    before, local = issuer.snapshot(), host.snapshot()
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("recovery entered a forbidden effect owner")
+
+    for name in ("consume", "exchange", "issue", "reissue", "revoke"):
+        monkeypatch.setattr(IssuerFixture, name, forbidden)
+    for name in ("bootstrap", "bootstrap_exchange", "prepare", "renew_manifest"):
+        monkeypatch.setattr(HostFixture, name, forbidden)
+    monkeypatch.setattr(socket.socket, "connect", forbidden)
+    case = p.parse_recovery(issuer.open_recovery_case(*args, clock=lambda: NOW), "case")
+    selected = p.parse_recovery(issuer.select_recovery_evidence(case.case_id, lambda: NOW),
+                                "selection")
+    raw = issuer.admit_recovery_evidence(selected, retirement_bytes(wire, case), lambda: NOW)
+    assert p.parse_recovery(raw, "admission").state == "EVIDENCE_RECORDED_ONLY"
+    assert issuer.snapshot() == before and host.snapshot() == local
+
+
+@pytest.mark.parametrize("invalid", [None, 0, False, "", "not-a-uuid"])
+def test_recovery_missing_case_identity_never_fabricates_a_refusal(tmp_path, invalid):
+    _, issuer, _, _, args = recovery_setup(tmp_path)
+    before = issuer.recovery_snapshot()
+    with pytest.raises(p.ProtocolInputError):
+        issuer.open_recovery_case(invalid, *args[1:], clock=lambda: NOW)
+    with pytest.raises(p.ProtocolInputError):
+        issuer.select_recovery_evidence(invalid, lambda: NOW)
+    assert issuer.recovery_snapshot() == before
+
+
+@pytest.mark.parametrize("constraint", ["predecessor", "case-admission", "case-state",
+                                        "admission-state", "predecessor-fk"])
+def test_recovery_sql_owner_enforces_closed_unique_records(tmp_path, constraint):
+    from qualification.owner_authority.licensing_fixture import transaction
+
+    _, issuer, _, _, _, case, selected, evidence = recovery_ready(tmp_path)
+    admission = issuer.admit_recovery_evidence(selected, evidence, lambda: NOW)
+    before = issuer.recovery_snapshot()
+    with pytest.raises(sqlite3.IntegrityError), transaction(issuer.root, "issuer") as db:
+        if constraint == "predecessor":
+            other = case.model_copy(update={"case_id": uid(91)})
+            db.execute("INSERT INTO recovery_cases VALUES(?,?,?,'EVIDENCE_CASE_ONLY')",
+                       (other.case_id, case.predecessor_binding.operation_id,
+                        p.recovery_bytes(other)))
+        elif constraint == "case-admission":
+            db.execute("INSERT INTO recovery_admissions "
+                       "VALUES(?,?,?,?,'EVIDENCE_RECORDED_ONLY')",
+                       (case.case_id, uid(91), evidence, admission))
+        elif constraint == "case-state":
+            db.execute("UPDATE recovery_cases SET state='APPROVED'")
+        elif constraint == "admission-state":
+            db.execute("UPDATE recovery_admissions SET state='COMMITTED'")
+        else:
+            db.execute("UPDATE recovery_cases SET predecessor_operation=?", (uid(99),))
+    assert issuer.recovery_snapshot() == before
+
+
+@pytest.mark.parametrize("phase", ["writer", "before_commit"])
+def test_recovery_open_revalidates_source_before_any_commit(tmp_path, phase):
+    from qualification.owner_authority.licensing_fixture import FixtureCorrupt
+
+    wire, issuer, _, _, args = recovery_setup(tmp_path)
+    before = issuer.recovery_snapshot(), issuer.snapshot()
+
+    def hook(name, db):
+        if name == phase:
+            db.execute("UPDATE consumptions SET receipt=?", (b"{}",))
+        if phase == "writer" and name == "recovery_case_write":
+            raise AssertionError("corrupt source reached case publication")
+
+    with pytest.raises(FixtureCorrupt):
+        wire.issuer(issuer.root, hook=hook).open_recovery_case(*args, clock=lambda: NOW)
+    assert (issuer.recovery_snapshot(), issuer.snapshot()) == before

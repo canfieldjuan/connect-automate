@@ -17,7 +17,7 @@ from pydantic import TypeAdapter
 
 from . import protocol as p
 
-FIXTURE_VERSION = "offline-fixture/3"
+FIXTURE_VERSION = "offline-fixture/4"
 
 
 class FixtureCorrupt(RuntimeError):
@@ -157,6 +157,17 @@ CREATE TABLE journal (
  sequence INTEGER PRIMARY KEY,
  event TEXT NOT NULL CHECK(event IN ('ISSUE','CONSUME','REVOKE','REISSUE')),
  claim_id TEXT NOT NULL REFERENCES claims(claim_id));
+CREATE TABLE recovery_cases (
+ case_id TEXT PRIMARY KEY NOT NULL,
+ predecessor_operation TEXT NOT NULL UNIQUE REFERENCES consumptions(operation_id),
+ document BLOB NOT NULL CHECK(typeof(document)='blob'),
+ state TEXT NOT NULL CHECK(state='EVIDENCE_CASE_ONLY'));
+CREATE TABLE recovery_admissions (
+ case_id TEXT PRIMARY KEY NOT NULL REFERENCES recovery_cases(case_id),
+ evidence_id TEXT NOT NULL UNIQUE,
+ evidence BLOB NOT NULL CHECK(typeof(evidence)='blob'),
+ admission BLOB NOT NULL CHECK(typeof(admission)='blob'),
+ state TEXT NOT NULL CHECK(state='EVIDENCE_RECORDED_ONLY'));
 """
 
 
@@ -311,6 +322,215 @@ class IssuerFixture:
             self._insert(db, replacement, raw)
             self._journal(db, "REISSUE", replacement.claim_id)
         return raw
+
+    @staticmethod
+    def _recovery_id(value):
+        try:
+            return TypeAdapter(p.UuidV4).validate_python(value)
+        except (ValueError, TypeError):
+            raise p.ProtocolInputError() from None
+
+    @staticmethod
+    def _recovery_value(model, **fields):
+        return model.model_validate({"version": "offline-recovery-evidence/1",
+                                    "evidence_class": "OFFLINE_CONFORMANCE",
+                                    "qualification_pass": False, **fields})
+
+    def _recovery_result(self, case_id, action):
+        try:
+            return action()
+        except (p.ManifestUnavailable, p.RecoveryEvidenceExpired,
+                p.RecoveryEvidenceInvalid, Refused) as error:
+            if isinstance(error, p.ManifestUnavailable):
+                code = "RECOVERY_CONFIGURATION_UNAVAILABLE"
+            elif isinstance(error, p.RecoveryEvidenceExpired):
+                code = "RECOVERY_EVIDENCE_EXPIRED"
+            elif isinstance(error, p.RecoveryEvidenceInvalid):
+                code = "RECOVERY_EVIDENCE_INVALID"
+            else:
+                code = error.code
+            return p.recovery_bytes(self._recovery_value(
+                p.RecoveryEvidenceRefusal, case_id=case_id, code=code))
+
+    def _recovery_predecessor(self, db, claim_id, operation_id, now):
+        # Configuration/time errors are separate from damaged stored evidence.
+        p.verify_active_manifest(self.manifest, self.keys, self.release_ids, now)
+        rows = db.execute("SELECT claim_id,operation_id,binding,receipt FROM consumptions "
+                          "WHERE claim_id=? OR operation_id=?", (claim_id, operation_id)).fetchall()
+        if not rows:
+            raise Refused("RECOVERY_PREDECESSOR_UNAVAILABLE")
+        if len(rows) != 1 or rows[0][:2] != (claim_id, operation_id):
+            raise Refused("RECOVERY_BINDING_CONFLICT")
+        claim = db.execute("SELECT envelope FROM claims WHERE claim_id=?", (claim_id,)).fetchone()
+        if claim is None:
+            raise FixtureCorrupt("recovery predecessor claim missing")
+        try:
+            binding = p._wire(rows[0][2], p.ConsumeBinding, p.SMALL.payload)
+            if (binding.claim_id, binding.operation_id) != (claim_id, operation_id):
+                raise p.ProtocolInputError()
+            p.check_stored_receipt(rows[0][3], binding, claim[0], self.manifest,
+                                   self.keys, self.release_ids, now)
+        except p.ManifestUnavailable:
+            raise
+        except (ValueError, TypeError):
+            raise FixtureCorrupt("recovery predecessor evidence corrupt") from None
+        return binding, rows[0][3]
+
+    def _recovery_case(self, db, case_id, now):
+        row = db.execute("SELECT predecessor_operation,document,state FROM recovery_cases "
+                         "WHERE case_id=?", (case_id,)).fetchone()
+        if row is None:
+            raise Refused("RECOVERY_PREDECESSOR_UNAVAILABLE")
+        try:
+            case = p.parse_recovery(row[1], "case")
+            if (case.case_id != case_id or row[0] != case.predecessor_binding.operation_id
+                    or row[2] != "EVIDENCE_CASE_ONLY"):
+                raise p.ProtocolInputError()
+        except p.ProtocolInputError:
+            raise FixtureCorrupt("recovery case corrupt") from None
+        try:
+            binding, receipt = self._recovery_predecessor(
+                db, case.predecessor_binding.claim_id, row[0], now)
+        except Refused:
+            raise FixtureCorrupt("recovery case predecessor missing or changed") from None
+        if (binding != case.predecessor_binding
+                or hashlib.sha256(receipt).hexdigest() != case.predecessor_receipt_sha256):
+            raise FixtureCorrupt("recovery case predecessor changed")
+        return case
+
+    def open_recovery_case(self, case_id, predecessor_claim_id, predecessor_operation_id,
+                           replacement, opened_at, expires_at, *, clock):
+        case_id = self._recovery_id(case_id)
+        claim_id = self._recovery_id(predecessor_claim_id)
+        operation_id = self._recovery_id(predecessor_operation_id)
+
+        def build(db, now):
+            binding, receipt = self._recovery_predecessor(db, claim_id, operation_id, now)
+            try:
+                case = self._recovery_value(
+                    p.RecoveryEvidenceCase, case_id=case_id, predecessor_binding=binding,
+                    predecessor_receipt_sha256=hashlib.sha256(receipt).hexdigest(),
+                    replacement=replacement, opened_at=opened_at, expires_at=expires_at)
+            except (ValueError, TypeError):
+                raise p.RecoveryEvidenceInvalid() from None
+            return p.check_recovery_case(case, now)
+
+        def action():
+            with read_store(self.root, "issuer") as db:
+                selected = build(db, clock())
+            raw = p.recovery_bytes(selected)
+
+            def validate(db):
+                now = clock()
+                if build(db, now) != selected:
+                    raise Refused("RECOVERY_BINDING_CONFLICT")
+                rows = db.execute("SELECT case_id FROM recovery_cases "
+                                  "WHERE case_id=? OR predecessor_operation=?",
+                                  (case_id, operation_id)).fetchall()
+                for (existing_id,) in rows:
+                    existing = self._recovery_case(db, existing_id, now)
+                    if p.recovery_bytes(existing) != raw:
+                        raise Refused("RECOVERY_BINDING_CONFLICT")
+
+            with transaction(self.root, "issuer", self.hook, validate) as db:
+                if not db.execute("SELECT 1 FROM recovery_cases WHERE case_id=?",
+                                  (case_id,)).fetchone():
+                    db.execute("INSERT INTO recovery_cases VALUES(?,?,?,'EVIDENCE_CASE_ONLY')",
+                               (case_id, operation_id, raw))
+                    checkpoint(self.hook, "recovery_case_write", db)
+            return raw
+
+        return self._recovery_result(case_id, action)
+
+    def select_recovery_evidence(self, case_id, clock):
+        case_id = self._recovery_id(case_id)
+
+        def action():
+            with read_store(self.root, "issuer") as db:
+                now = clock()
+                case = self._recovery_case(db, case_id, now)
+                p.check_recovery_case(case, now)
+                return p.recovery_bytes(p.recovery_selection(case))
+
+        return self._recovery_result(case_id, action)
+
+    def _recovery_admission(self, db, case, selected, now):
+        row = db.execute("SELECT evidence_id,evidence,admission,state FROM recovery_admissions "
+                         "WHERE case_id=?", (case.case_id,)).fetchone()
+        if row is None:
+            return None
+        try:
+            evidence = p.check_recovery_evidence(row[1], case, selected, now)
+            admission = p.parse_recovery(row[2], "admission")
+            expected = (case.case_id, evidence.evidence_id, selected.case_sha256,
+                        hashlib.sha256(row[1]).hexdigest(), case.predecessor_receipt_sha256,
+                        evidence.replacement_sha256)
+            actual = (admission.case_id, admission.evidence_id, admission.case_sha256,
+                      admission.evidence_sha256, admission.predecessor_receipt_sha256,
+                      admission.replacement_sha256)
+            if (actual != expected or row[0] != evidence.evidence_id
+                    or row[3] != admission.state
+                    or not p._date(evidence.asserted_at) <= p._date(admission.admitted_at)
+                    < p._date(evidence.expires_at)):
+                raise p.ProtocolInputError()
+        except p.RecoveryEvidenceExpired:
+            raise
+        except (ValueError, TypeError):
+            raise FixtureCorrupt("recovery admission corrupt") from None
+        return row[1], row[2]
+
+    def admit_recovery_evidence(self, selected, evidence_raw, clock):
+        try:
+            selected = p.RecoveryEvidenceSelection.model_validate(selected)
+        except (ValueError, TypeError):
+            raise p.ProtocolInputError() from None
+
+        def action():
+            with read_store(self.root, "issuer") as db:
+                now = clock()
+                case = self._recovery_case(db, selected.case_id, now)
+                evidence = p.check_recovery_evidence(evidence_raw, case, selected, now)
+
+            def validate(db):
+                now = clock()
+                current = self._recovery_case(db, selected.case_id, now)
+                p.check_recovery_evidence(evidence_raw, current, selected, now)
+                existing = self._recovery_admission(db, current, selected, now)
+                if existing is not None and existing[0] != evidence_raw:
+                    raise Refused("RECOVERY_BINDING_CONFLICT")
+                other = db.execute("SELECT case_id FROM recovery_admissions WHERE evidence_id=?",
+                                   (evidence.evidence_id,)).fetchone()
+                if other is not None and other[0] != selected.case_id:
+                    raise Refused("RECOVERY_BINDING_CONFLICT")
+
+            with transaction(self.root, "issuer", self.hook, validate) as db:
+                existing = self._recovery_admission(db, case, selected, clock())
+                if existing is not None:
+                    return existing[1]
+                admission = self._recovery_value(
+                    p.RecoveryEvidenceAdmission, admission_id=str(uuid4()),
+                    case_id=case.case_id, evidence_id=evidence.evidence_id,
+                    case_sha256=selected.case_sha256,
+                    evidence_sha256=hashlib.sha256(evidence_raw).hexdigest(),
+                    predecessor_receipt_sha256=case.predecessor_receipt_sha256,
+                    replacement_sha256=evidence.replacement_sha256,
+                    admitted_at=clock().isoformat(timespec="seconds").replace("+00:00", "Z"),
+                    state="EVIDENCE_RECORDED_ONLY")
+                raw = p.recovery_bytes(admission)
+                db.execute("INSERT INTO recovery_admissions "
+                           "VALUES(?,?,?,?,'EVIDENCE_RECORDED_ONLY')",
+                           (case.case_id, evidence.evidence_id, evidence_raw, raw))
+                checkpoint(self.hook, "recovery_admission_write", db)
+                return raw
+
+        return self._recovery_result(selected.case_id, action)
+
+    def recovery_snapshot(self):
+        with read_store(self.root, "issuer") as db:
+            return {"sha256": snapshot_digest(db, ("recovery_cases", "recovery_admissions")),
+                    "cases": db.execute("SELECT count(*) FROM recovery_cases").fetchone()[0],
+                    "admissions": db.execute(
+                        "SELECT count(*) FROM recovery_admissions").fetchone()[0]}
 
     def snapshot(self):
         with read_store(self.root, "issuer") as db:
