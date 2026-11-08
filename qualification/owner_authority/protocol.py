@@ -627,7 +627,7 @@ class FixtureHostResult(Closed):
 class RunnableCase(Closed):
     kind: Literal["OFFLINE_CONFORMANCE"]
     case_id: Literal["lost-response-replay", "revoked-claim", "inactive-session",
-                     "malformed-request-refusal"]
+                     "malformed-request-refusal", "manifest-renewal"]
     requirement: Token
     expected_code: Code
     assertion_ids: Identifiers

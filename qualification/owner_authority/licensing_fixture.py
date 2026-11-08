@@ -5,6 +5,7 @@ identity, installed trust, network access and product stores have no entrypoint.
 """
 
 import base64
+import hashlib
 import os
 import sqlite3
 from contextlib import contextmanager
@@ -131,6 +132,14 @@ def signed(kind, payload, signer):
     return p.canonical({"version": "owner-bootstrap/1", "key_id": key_id,
                         "payload_base64url": encode(raw),
                         "signature_base64url": encode(key.sign(p.prefix(kind) + raw))})
+
+
+def snapshot_digest(db, tables):
+    """Hash owner-selected complete rows without exporting private fixture bytes."""
+    rows = {table: [[{"bytes": v.hex()} if type(v) is bytes else v for v in row]
+                    for row in db.execute("SELECT * FROM " + table + " ORDER BY rowid")]
+            for table in tables}
+    return hashlib.sha256(p.canonical(rows)).hexdigest()
 
 
 ISSUER_SQL = """
@@ -306,6 +315,7 @@ class IssuerFixture:
     def snapshot(self):
         with read_store(self.root, "issuer") as db:
             return {
+                "ledger_sha256": snapshot_digest(db, ("claims", "consumptions", "journal")),
                 "consumptions": db.execute("SELECT count(*) FROM consumptions").fetchone()[0],
                 "claims": db.execute(
                     "SELECT claim_id,state FROM claims ORDER BY claim_id").fetchall(),

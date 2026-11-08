@@ -30,13 +30,21 @@ Create the manifest using the existing `run.schema.json`:
   The caller declares the harness commit. The per-case receipts also hash the
   actual executing harness source and record the Python version.
 - Runnable cases cover signed replay after a lost response, revoked claims and
-  denial with no dispatch, and malformed-consume recovery. The latter performs
+  denial with no dispatch, malformed-consume recovery, and manifest renewal.
+  Malformed recovery performs
   three explicit exchanges: a committed but lost reply, a malformed recovery
   request with zero issuer-ledger entry, then fresh authenticated recovery of
   the original receipt. It proves complete pending-binding preservation and
   derived unresolved state (`UNKNOWN`), not a stored completion column.
   A cached invocation dispatches nothing. Metadata is canonical fixture IPC;
-  it does not qualify HTTP/TLS or a live endpoint. Other issue #73 cases stay
+  it does not qualify HTTP/TLS or a live endpoint. Manifest renewal deliberately
+  loses a committed reply, expires only its case-local synthetic manifest, and
+  proves an explicit resume dispatches nothing while it is unavailable. Two
+  selected forward renewals preserve complete pending state; separate issue-time
+  and expiry regressions are refused. A restarted host then explicitly resumes
+  and recovers the original receipt: two exchanges, one issuer consumption and
+  one local triplet. Renewal and issuer adoption have no ledger/authority effects;
+  cached recovery has no dispatch. Other issue #73 cases stay
   `BLOCKED`; native cases remain `NOT_RUN`.
 - The closed models and derived schemas enforce this exact work-order profile.
   Historical evidence keeps its original schema/harness bytes and pin; do not
@@ -67,5 +75,8 @@ resume recovers the original receipt. The issuer fixture's explicit candidate
 adoption changes its in-memory configuration without changing its ledger or signers.
 Fresh roots bind `offline-fixture/2` and the accepted profile above; old or wrong
 profiles are refused without migration. Constructor bytes never overwrite an
-existing host configuration. Controller renewal recipe/assertion adoption is
-still pending, so the `manifest-renewal` catalog case remains blocked.
+existing host configuration. The `manifest-renewal` case uses these owners and
+records fixed assertions from stored digests and actual exchange/consumption
+counts. Real worker fault controls require exact false assertion flags and a
+recorded FAIL; stopped workers do not count as assertion-sensitivity proof.
+A failed recovery never triggers the cached step as an implicit retry.

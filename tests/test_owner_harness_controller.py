@@ -626,3 +626,346 @@ def test_malformed_workers_cannot_call_live_or_installed_owners(tmp_path, monkey
     monkeypatch.setattr(ctl, "_child", _offline_only_child)
     result = ctl._execute(root, ctl.MALFORMED, monotonic_ns() + p.CASE_NS)
     assert result.actual_code == "COMMITTED" and all(result.assertions.values())
+
+
+RENEWAL_ASSERTIONS = [
+    "pending-after-loss", "unavailable-no-dispatch", "derived-unknown", "retained-state",
+    "renewal-only-config-effects", "no-implicit-resume", "forward-renewals",
+    "installed-issue-monotonic", "installed-expiry-monotonic",
+    "fresh-attempts", "one-local-triplet", "cached-no-dispatch", "same-receipt",
+    "issuer-exchanges", "issuer-consumptions", "issuer-ledger-preserved",
+]
+
+
+def test_real_renewal_cli_records_complete_proof(tmp_path):
+    path = manifest(tmp_path, packet("manifest-renewal"))
+    output = tmp_path / "renewal"
+    result = cli("offline", "--manifest", path, "--output-root", output)
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    case, = p.parse_packet(result.stdout.strip().encode(), "result").cases
+    assert (case.outcome, case.actual_code) == ("PASS", "COMMITTED")
+    receipt = json.loads((output / "manifest-renewal.json").read_bytes())
+    assert receipt["assertions"] == dict.fromkeys(RENEWAL_ASSERTIONS, True)
+    assert receipt["qualification_pass"] is False
+    assert receipt["evidence_class"] == "OFFLINE_CONFORMANCE"
+    hashes = json.loads((output / "hashes.json").read_bytes())
+    for item in hashes["artifacts"]:
+        assert item["sha256"] == ctl.digest((output / item["alias"]).read_bytes())
+
+
+def _renewal_fault_child(fault, target, *args):
+    """Fault real owner effects inside the same spawned workers, never verdict flags."""
+    from qualification.owner_authority.licensing_fixture import transaction
+
+    with pytest.MonkeyPatch.context() as patch:
+        if target is ctl._issuer:
+            if fault == "same-receipt":
+                _changed_first_receipt(patch)
+            elif fault == "extra-consumption":
+                _extra_issuer_consumption(patch)
+            elif fault == "zero-consumptions":
+                consume = ctl.IssuerFixture.consume
+                def lost_ledger(owner, raw, clock):
+                    reply = consume(owner, raw, clock)
+                    with transaction(owner.root, "issuer") as db:
+                        db.execute("DELETE FROM consumptions")
+                        db.execute("DELETE FROM journal WHERE event='CONSUME'")
+                    return reply
+                patch.setattr(ctl.IssuerFixture, "consume", lost_ledger)
+            elif fault == "issuer-ledger-preserved":
+                adopt = ctl.IssuerFixture.adopt_manifest
+                def revoked(issuer, candidate, now):
+                    adopt(issuer, candidate, now)
+                    with transaction(issuer.root, "issuer") as db:
+                        issuer._journal(db, "REVOKE", ctl._uid(1))
+                patch.setattr(ctl.IssuerFixture, "adopt_manifest", revoked)
+            elif fault == "expired-dispatch":
+                consume = ctl.IssuerFixture.consume
+                consumed = [0]
+                def at_expiry(owner, raw, clock):
+                    consumed[0] += 1
+                    return consume(owner, raw, ctl._clock if consumed[0] == 2 else clock)
+                patch.setattr(ctl.IssuerFixture, "consume", at_expiry)
+            elif fault == "hidden-resume":
+                adopt = ctl.IssuerFixture.adopt_manifest
+                def once(owner, candidate, now):
+                    if owner.manifest != candidate:
+                        adopt(owner, candidate, now)
+                patch.setattr(ctl.IssuerFixture, "adopt_manifest", once)
+        if target is ctl._host:
+            if fault == "missing-exchange":
+                class CachedTransport:
+                    def __init__(self, channel):
+                        self.channel, self.requests, self.cached = channel, 0, None
+                        self.replay = False
+                    def __enter__(self):
+                        return self
+                    def __exit__(self, *exc):
+                        self.channel.close()
+                    def __getattr__(self, name):
+                        return getattr(self.channel, name)
+                    def send_bytes(self, raw):
+                        if raw not in (ctl.SNAPSHOT, ctl.ADVANCE, ctl.ADOPT,
+                                       ctl.INSPECT, ctl.CANDIDATES):
+                            self.requests += 1
+                            if self.requests == 2:
+                                self.replay = True
+                                return
+                        self.channel.send_bytes(raw)
+                    def recv_bytes(self):
+                        if self.replay:
+                            self.replay = False
+                            return self.cached
+                        raw = self.channel.recv_bytes()
+                        self.cached = raw
+                        return raw
+                args = (*args[:2], CachedTransport(args[2]), *args[3:])
+            bootstrap, renew = ctl.HostFixture.bootstrap, ctl.HostFixture.renew_manifest
+            request, select = ctl.HostFixture._request, ctl.HostFixture.select_renewal
+            calls, renewals, saved = [0], [0], {}
+
+            def signed_request(host, binding, claim, now, db=None):
+                raw = request(host, binding, claim, now, db)
+                saved.setdefault("request", raw)
+                if fault == "expired-dispatch":
+                    saved["request"] = raw
+                if fault in ("reused-attempt", "reused-time"):
+                    parsed = p.parse_consume_request(raw).model_dump()
+                    first = p.parse_consume_request(saved["request"])
+                    field = "attempt_id" if fault == "reused-attempt" else "requested_at"
+                    parsed[field] = getattr(first, field)
+                    data = {k: v for k, v in parsed.items()
+                            if k not in ("owner_claim", "installation_signature")}
+                    import base64
+                    signature = host.key.sign(p.prefix("consume") + p.canonical(data))
+                    parsed["installation_signature"] = base64.urlsafe_b64encode(
+                        signature).rstrip(b"=").decode()
+                    raw = p.canonical(parsed)
+                return raw
+
+            def clear_triplet(host):
+                with transaction(host.root, "host") as db:
+                    for table in ("audit", "admins", "receipts"):
+                        db.execute("DELETE FROM " + table)
+
+            def selection(host):
+                if fault == "derived-unknown" and saved.pop("early", False):
+                    clear_triplet(host)
+                return select(host)
+
+            def publication(host, exchange, observe, clock):
+                calls[0] += 1
+                saved["exchange"], saved["observe"], saved["clock"] = exchange, observe, clock
+                if calls[0] == 4 and "triplet" in saved:
+                    with transaction(host.root, "host") as db:
+                        for table, row in saved["triplet"]:
+                            db.execute("INSERT INTO " + table + " VALUES(" +
+                                       ",".join("?" for _ in row) + ")", row)
+                def twice(raw):
+                    value = exchange(raw)
+                    exchange(raw)
+                    return value
+                result = bootstrap(host, twice if fault == "extra-exchange" else exchange,
+                                   observe, clock)
+                if fault == "expired-dispatch" and calls[0] == 2:
+                    exchange(saved["request"])
+                if ((fault == "pending-after-loss" and calls[0] == 1)
+                        or (fault == "unavailable-no-dispatch" and calls[0] == 2)):
+                    result = p.FixtureHostResult.model_validate(
+                        result.model_dump() | {"code": "PENDING"})
+                if fault == "derived-unknown" and calls[0] == 2:
+                    with transaction(host.root, "host") as db:
+                        binding, *_ = host._pending(db)
+                        db.execute("INSERT INTO receipts VALUES(1,?,?)",
+                                   (binding.operation_id, b"synthetic early publication"))
+                        db.execute("INSERT INTO admins VALUES(1,?,?,'admin')",
+                                   (binding.operation_id, binding.principal_commitment))
+                        db.execute("INSERT INTO audit VALUES(1,?,'FIXTURE_BOOTSTRAP')",
+                                   (binding.operation_id,))
+                    saved["early"] = True
+                if fault == "one-local-triplet" and calls[0] == 3:
+                    with transaction(host.root, "host") as db:
+                        saved["triplet"] = [(table, db.execute(
+                            "SELECT * FROM " + table).fetchone())
+                            for table in ("receipts", "admins", "audit")]
+                    clear_triplet(host)
+                return result
+
+            def renewal(host, selected, candidate, observe, clock):
+                renewals[0] += 1
+                if ((fault == "forward-renewals" and renewals[0] == 1)
+                        or (fault == "second-forward-renewal" and renewals[0] == 2)):
+                    return selected
+                result = renew(host, selected, candidate, observe, clock)
+                if fault == "retained-state" and renewals[0] == 1:
+                    with transaction(host.root, "host") as db:
+                        db.execute("UPDATE pending SET original_manifest=?", (candidate,))
+                if fault == "hidden-resume" and renewals[0] == 1:
+                    # Adopt through the real issuer owner, then wrongly resume inside renewal.
+                    args[2].send_bytes(ctl.ADOPT)
+                    assert args[2].recv() is None
+                    assert bootstrap(host, saved["exchange"], observe, clock).committed
+                return result
+
+            if fault in ("installed-issue-monotonic", "installed-expiry-monotonic"):
+                check = p.check_manifest_renewal
+                def unchecked(candidate, original, installed, keys, release_ids, now):
+                    value = p.verify_signed(candidate, "manifest", keys, release_ids)
+                    targeted = ((value.issued_at, value.expires_at) == (
+                        "2026-01-01T01:00:00Z", "2026-01-05T00:00:00Z") if
+                        fault == "installed-issue-monotonic" else
+                        (value.issued_at, value.expires_at) == (
+                            "2026-01-01T01:00:01Z", "2026-01-03T00:00:00Z"))
+                    return value if targeted else check(
+                        candidate, original, installed, keys, release_ids, now)
+                patch.setattr(p, "check_manifest_renewal", unchecked)
+            patch.setattr(ctl.HostFixture, "_request", signed_request)
+            patch.setattr(ctl.HostFixture, "select_renewal", selection)
+            patch.setattr(ctl.HostFixture, "bootstrap", publication)
+            patch.setattr(ctl.HostFixture, "renew_manifest", renewal)
+            if fault == "cached-no-dispatch":
+                _faulted_host(patch, fault)
+        ctl._child(target, *args)
+
+
+RENEWAL_FAULTS = [
+    ("pending-after-loss", {"pending-after-loss"}),
+    ("unavailable-no-dispatch", {"unavailable-no-dispatch"}),
+    ("expired-dispatch", {"unavailable-no-dispatch", "no-implicit-resume", "issuer-exchanges"}),
+    ("derived-unknown", {"derived-unknown"}),
+    ("retained-state", {"retained-state", "renewal-only-config-effects"}),
+    ("hidden-resume", {"renewal-only-config-effects", "no-implicit-resume"}),
+    ("forward-renewals", {"forward-renewals", "renewal-only-config-effects"}),
+    ("installed-issue-monotonic", {"installed-issue-monotonic"}),
+    ("installed-expiry-monotonic", {"installed-expiry-monotonic"}),
+    ("reused-attempt", {"fresh-attempts"}),
+    ("reused-time", {"fresh-attempts"}),
+    ("one-local-triplet", {"one-local-triplet", "cached-no-dispatch"}),
+    ("cached-no-dispatch", {"cached-no-dispatch", "no-implicit-resume", "issuer-exchanges",
+                            "fresh-attempts"}),
+    ("same-receipt", {"same-receipt"}),
+    ("extra-exchange", {"issuer-exchanges", "no-implicit-resume"}),
+    ("extra-consumption", {"issuer-consumptions"}),
+    ("zero-consumptions", {"issuer-consumptions", "same-receipt"}),
+    ("missing-exchange", {"issuer-exchanges"}),
+    ("second-forward-renewal", {"forward-renewals", "renewal-only-config-effects",
+                                "installed-issue-monotonic"}),
+    ("issuer-ledger-preserved", {"issuer-ledger-preserved"}),
+]
+
+
+@pytest.mark.parametrize("fault,failed", RENEWAL_FAULTS)
+def test_renewal_real_fault_records_exact_false_assertions(
+        tmp_path, monkeypatch, capfd, fault, failed):
+    path = manifest(tmp_path, packet("manifest-renewal"))
+    output = tmp_path / "out"
+    monkeypatch.setattr(ctl, "_child", partial(_renewal_fault_child, fault))
+    status = ctl.main(["offline", "--manifest", str(path), "--output-root", str(output)])
+    captured = capfd.readouterr()
+    assert not captured.err
+    raw = (output / "result.json").read_bytes()
+    assert captured.out.strip().encode() == raw
+    case, = p.parse_packet(raw, "result").cases
+    receipt = json.loads((output / case.artifacts[0].alias).read_bytes())
+    assert (status, case.outcome, case.actual_code) == (1, "FAIL", "COMMITTED"), receipt
+    assert receipt["assertions"] == {key: key not in failed for key in RENEWAL_ASSERTIONS}
+
+
+def test_renewal_workers_cannot_call_live_or_installed_owners(tmp_path, monkeypatch):
+    root = tmp_path / "fixtures"
+    root.mkdir()
+    monkeypatch.setattr(ctl, "_child", _offline_only_child)
+    result = ctl._execute(root, "manifest-renewal", monotonic_ns() + p.CASE_NS)
+    assert result.actual_code == "COMMITTED" and all(result.assertions.values())
+
+
+def _lost_again_child(target, *args):
+    with pytest.MonkeyPatch.context() as patch:
+        if target is ctl._host:
+            bootstrap = ctl.HostFixture.bootstrap
+            calls = [0]
+            def altered(host, consume, observe, clock):
+                calls[0] += 1
+                def lost(raw):
+                    consume(raw)
+                    raise TimeoutError
+                return bootstrap(host, lost if calls[0] == 3 else consume, observe, clock)
+            patch.setattr(ctl.HostFixture, "bootstrap", altered)
+        ctl._child(target, *args)
+
+
+def test_renewal_lost_recovery_does_not_trigger_cached_retry(tmp_path, monkeypatch, capfd):
+    path = manifest(tmp_path, packet("manifest-renewal"))
+    output = tmp_path / "out"
+    monkeypatch.setattr(ctl, "_child", _lost_again_child)
+    assert ctl.main(["offline", "--manifest", str(path), "--output-root", str(output)]) == 1
+    case, = p.parse_packet(capfd.readouterr().out.strip().encode(), "result").cases
+    assert (case.outcome, case.actual_code) == ("FAIL", "LICENSING_UNAVAILABLE")
+    receipt = json.loads((output / "manifest-renewal.json").read_bytes())
+    assert receipt["assertions"]["no-implicit-resume"] is True
+    assert receipt["assertions"]["issuer-exchanges"] is True
+    assert receipt["assertions"]["issuer-consumptions"] is True
+    assert receipt["assertions"]["one-local-triplet"] is False
+    assert receipt["assertions"]["same-receipt"] is False
+
+
+def _renewal_denial_child(control, target, *args):
+    from datetime import timedelta
+
+    from qualification.owner_authority.licensing_fixture import transaction
+
+    with pytest.MonkeyPatch.context() as patch:
+        if target is ctl._issuer and control == "expired-claim":
+            consume, calls = ctl.IssuerFixture.consume, [0]
+            def expired(owner, raw, clock):
+                calls[0] += 1
+                return consume(owner, raw, (lambda: ctl.NOW + timedelta(hours=12))
+                               if calls[0] == 2 else clock)
+            patch.setattr(ctl.IssuerFixture, "consume", expired)
+        if target is ctl._host:
+            bootstrap, calls = ctl.HostFixture.bootstrap, [0]
+            def denied(host, consume, observe, clock):
+                calls[0] += 1
+                if calls[0] == 2 and control in ("missing-installed", "corrupt-installed",
+                                                "corrupt-original"):
+                    with transaction(host.root, "host") as db:
+                        if control == "corrupt-original":
+                            db.execute("UPDATE pending SET original_manifest=?", (b"{}",))
+                        else:
+                            db.execute("UPDATE configuration SET manifest=?", (
+                                None if control == "missing-installed" else b"{}",))
+                if calls[0] == 3:
+                    if control == "inactive":
+                        def observe():
+                            return ctl._observe(False)
+                    elif control == "expired-claim":
+                        def clock():
+                            return ctl.NOW + timedelta(hours=12)
+                return bootstrap(host, consume, observe, clock)
+            patch.setattr(ctl.HostFixture, "bootstrap", denied)
+        ctl._child(target, *args)
+
+
+@pytest.mark.parametrize("control,code", [("inactive", "NATIVE_SESSION_INACTIVE"),
+                                         ("expired-claim", "OWNER_AUTHORIZATION_EXPIRED"),
+                                         ("missing-installed", "CASE_PROCESS_FAILED"),
+                                         ("corrupt-installed", "CASE_PROCESS_FAILED"),
+                                         ("corrupt-original", "CASE_PROCESS_FAILED")])
+def test_renewal_negative_outcomes_are_recorded(tmp_path, monkeypatch, capfd, control, code):
+    path = manifest(tmp_path, packet("manifest-renewal"))
+    output = tmp_path / "out"
+    monkeypatch.setattr(ctl, "_child", partial(_renewal_denial_child, control))
+    stopped = code == "CASE_PROCESS_FAILED"
+    assert ctl.main(["offline", "--manifest", str(path), "--output-root", str(output)]) == (
+        2 if stopped else 1)
+    captured = capfd.readouterr()
+    assert not captured.err
+    case, = p.parse_packet(captured.out.strip().encode(), "result").cases
+    assert (case.outcome, case.actual_code) == ("STOP" if stopped else "FAIL", code)
+    receipt = json.loads((output / "manifest-renewal.json").read_bytes())
+    assert receipt["assertions"]["one-local-triplet"] is False
+    assert receipt["assertions"]["cached-no-dispatch"] is False
+    if not stopped:
+        assert receipt["assertions"]["issuer-consumptions"] is True
+        assert receipt["assertions"]["retained-state"] is True
+        assert receipt["assertions"]["same-receipt"] is False
