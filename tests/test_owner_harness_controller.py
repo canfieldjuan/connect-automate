@@ -1309,3 +1309,150 @@ def test_recovery_mixed_runnable_selection_preserves_order_and_codes(tmp_path):
     cases = p.parse_packet(result.stdout.strip().encode(), "result").cases
     assert [(case.case_id, case.outcome, case.actual_code) for case in cases] == [
         (ctl.RECOVERY, "PASS", "EVIDENCE_RECORDED_ONLY"), (ctl.REPLAY, "PASS", "COMMITTED")]
+
+
+def _recovery_clause_child(fault, target, *args):
+    """Independent real effects for conjuncts masked by the original fault set."""
+    with pytest.MonkeyPatch.context() as patch:
+        if target is ctl._issuer:
+            opening = ctl.IssuerFixture.open_recovery_case
+            opened = [0]
+            def extra_open(owner, *values, **kw):
+                opened[0] += 1
+                result = opening(owner, *values, **kw)
+                if fault == "opens" and opened[0] == 2:
+                    owner.open_recovery_case(*values, **kw)
+                return result
+            patch.setattr(ctl.IssuerFixture, "open_recovery_case", extra_open)
+            admission = ctl.IssuerFixture.admit_recovery_evidence
+            admitted = [0]
+            def altered_admit(owner, selected, raw, clock):
+                admitted[0] += 1
+                index = admitted[0]
+                if fault == "sequence" and index == 2:
+                    owner.admit_recovery_evidence(selected, raw, clock)
+                if ((fault == "conflict-code" and index == 3)
+                        or (fault == "expiry-code" and index == 4)):
+                    raw = b"{}"  # Real invalid-evidence refusal, unchanged store.
+                return admission(owner, selected, raw, clock)
+            patch.setattr(ctl.IssuerFixture, "admit_recovery_evidence", altered_admit)
+            recovery = ctl._recovery_issuer
+            def altered_recovery(owner, channel):
+                if fault in ("cases", "consumptions"):
+                    # Actual additional signed consumption before measured recovery.
+                    claim = owner.issue(p.OwnerClaim(
+                        version="owner-bootstrap/1", purpose="owner-bootstrap",
+                        claim_id=ctl._uid(81), organization_id=ctl._uid(2),
+                        entitlement_id=ctl._uid(83), generation=1, issued_at=ctl.START,
+                        not_before=ctl.START, expires_at="2026-01-01T12:00:00Z"),
+                        ctl.datetime.fromisoformat(ctl.START))
+                    spare = ctl.HostFixture(owner.root.parent / "spare", owner.manifest,
+                        owner.keys, owner.release_ids, ctl.Ed25519PrivateKey.generate()).create(
+                            ctl._uid(84), ctl._uid(85), ctl._uid(2))
+                    binding = spare.prepare(claim, ctl._uid(82), ctl._observe, ctl.NOW)
+                    assert spare.bootstrap(lambda raw: owner.consume(raw, ctl._clock),
+                                           ctl._observe, ctl._clock).committed
+                    if fault == "cases":
+                        replacement_host = ctl.HostFixture(owner.root.parent / "spare-target",
+                            owner.manifest, owner.keys, owner.release_ids,
+                            ctl.Ed25519PrivateKey.generate()).create(
+                                ctl._uid(88), ctl._uid(89), ctl._uid(2))
+                        snapshot = replacement_host.recovery_snapshot()
+                        replacement = p.ReplacementTarget.model_validate({
+                            "version": "offline-recovery-evidence/1",
+                            "evidence_class": "OFFLINE_CONFORMANCE", "qualification_pass": False,
+                            "operation_id": ctl._uid(87), "installation_id": ctl._uid(88),
+                            "host_id": ctl._uid(89), "organization_id": binding.organization_id,
+                            "entitlement_id": binding.entitlement_id,
+                            "installation_public_key": snapshot.installation_public_key,
+                            "principal_commitment": binding.principal_commitment,
+                            "initialization_sha256": snapshot.configuration_sha256})
+                        raw = owner.open_recovery_case(ctl._uid(86), binding.claim_id,
+                            binding.operation_id, replacement, "2026-01-01T01:00:00Z",
+                            "2026-01-01T03:00:00Z", clock=ctl._clock)
+                        p.parse_recovery(raw, "case")
+                class Channel:
+                    suppressed = False
+
+                    def recv_bytes(self, limit):
+                        raw = channel.recv_bytes(limit)
+                        command = p.parse_recovery_control(raw, "command")
+                        if fault == "lost-admission" and command.command == "admit-lost":
+                            self.suppressed = True
+                            # Suppression before dispatch: the actual owner never commits.
+                            return p.recovery_control_bytes(p.RecoveryAction(command="inspect"),
+                                                            "command")
+                        return raw
+
+                    def send_bytes(self, raw):
+                        reply = p.parse_recovery_control(raw, "reply")
+                        if self.suppressed:
+                            assert isinstance(reply, p.RecoveryStatusReply)
+                            reply = reply.model_copy(update={"kind": "lost"})
+                            self.suppressed = False
+                        elif fault == "lost-kind" and reply.kind == "lost":
+                            reply = reply.model_copy(update={"kind": "status"})
+                        channel.send_bytes(p.recovery_control_bytes(reply, "reply"))
+                return recovery(owner, Channel())
+            patch.setattr(ctl, "_recovery_issuer", altered_recovery)
+        ctl._child(target, *args)
+
+
+RECOVERY_CLAUSE_FAULTS = [
+    ("opens", {"same-case-on-reopen"}),
+    ("lost-kind", {"lost-reply-retained"}),
+    ("lost-admission", {"lost-reply-retained", "explicit-replay-only",
+                        "same-admission-on-reopen", "one-recovery-pair"}),
+    ("sequence", {"explicit-replay-only"}),
+    ("cases", {"one-recovery-pair", "issuer-original-preserved"}),
+    ("conflict-code", {"changed-evidence-conflict"}),
+    ("expiry-code", {"expired-replay-preserves-history"}),
+    ("consumptions", {"issuer-original-preserved"}),
+]
+
+
+@pytest.mark.parametrize("fault,failed", RECOVERY_CLAUSE_FAULTS)
+def test_recovery_clause_fault_records_exact_false_assertions(
+        tmp_path, monkeypatch, capfd, fault, failed):
+    path = manifest(tmp_path, packet(ctl.RECOVERY))
+    output = tmp_path / "out"
+    monkeypatch.setattr(ctl, "_child", partial(_recovery_clause_child, fault))
+    status = ctl.main(["offline", "--manifest", str(path), "--output-root", str(output)])
+    captured = capfd.readouterr()
+    assert not captured.err
+    assert (output / "result.json").exists(), (status, captured.out)
+    case, = p.parse_packet((output / "result.json").read_bytes(), "result").cases
+    receipt = json.loads((output / case.artifacts[0].alias).read_bytes())
+    assert (status, case.outcome, case.actual_code) == (
+        1, "FAIL", "EVIDENCE_RECORDED_ONLY"), receipt
+    assert receipt["assertions"] == {key: key not in failed for key in RECOVERY_ASSERTIONS}
+    p.RecoveryProof.model_validate(receipt["recovery"])
+
+
+@pytest.mark.parametrize("scenario,expected,code", [
+    ("unrelated-proof", "STOP", "RECOVERY_PROOF_MISMATCH"),
+    ("missing-proof", "STOP", "RECOVERY_PROOF_MISMATCH"),
+    ("refusal", "FAIL", "RECOVERY_PREDECESSOR_UNAVAILABLE"),
+])
+def test_recovery_proof_presence_guard(tmp_path, monkeypatch, capfd, scenario, expected, code):
+    fixtures = tmp_path / "fixtures"
+    fixtures.mkdir()
+    # Real proof for the positive side; only the observation's case association changes.
+    real = ctl._execute(fixtures, ctl.RECOVERY, monotonic_ns() + p.CASE_NS)
+    assert real.actual_code == "EVIDENCE_RECORDED_ONLY" and all(real.assertions.values())
+    case_id = ctl.REPLAY if scenario == "unrelated-proof" else ctl.RECOVERY
+    path = manifest(tmp_path, packet(case_id))
+    if scenario == "unrelated-proof":
+        observed = passing().model_copy(update={"recovery": real.recovery})
+    else:
+        observed = p.CaseObservation(
+            actual_code=code if scenario == "refusal" else real.actual_code,
+                                    assertions=real.assertions, recovery=None)
+    monkeypatch.setattr(ctl, "_execute", lambda *args: observed)
+    output = tmp_path / "out"
+    status = ctl.main(["offline", "--manifest", str(path), "--output-root", str(output)])
+    captured = capfd.readouterr()
+    assert not captured.err
+    case, = p.parse_packet((output / "result.json").read_bytes(), "result").cases
+    assert (status, case.outcome, case.actual_code) == (
+        2 if expected == "STOP" else 1, expected, code)
