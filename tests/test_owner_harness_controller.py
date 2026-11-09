@@ -1170,12 +1170,10 @@ RECOVERY_FAULTS = [
 ]
 
 
-@pytest.mark.parametrize("fault,failed", RECOVERY_FAULTS)
-def test_recovery_real_fault_records_exact_false_assertions(
-        tmp_path, monkeypatch, capfd, fault, failed):
+def _assert_recovery_fault_packet(tmp_path, monkeypatch, capfd, fault, failed, child):
     path = manifest(tmp_path, packet("recovery-evidence-admission"))
     output = tmp_path / "out"
-    monkeypatch.setattr(ctl, "_child", partial(_recovery_fault_child, fault))
+    monkeypatch.setattr(ctl, "_child", partial(child, fault))
     status = ctl.main(["offline", "--manifest", str(path), "--output-root", str(output)])
     captured = capfd.readouterr()
     assert not captured.err
@@ -1188,6 +1186,13 @@ def test_recovery_real_fault_records_exact_false_assertions(
         1, "FAIL", "EVIDENCE_RECORDED_ONLY"), receipt
     assert receipt["assertions"] == {key: key not in failed for key in RECOVERY_ASSERTIONS}
     p.RecoveryProof.model_validate(receipt["recovery"])
+
+
+@pytest.mark.parametrize("fault,failed", RECOVERY_FAULTS)
+def test_recovery_real_fault_records_exact_false_assertions(
+        tmp_path, monkeypatch, capfd, fault, failed):
+    _assert_recovery_fault_packet(tmp_path, monkeypatch, capfd, fault, failed,
+                                  _recovery_fault_child)
 
 
 def test_recovery_workers_cannot_call_live_or_installed_owners(tmp_path, monkeypatch):
@@ -1414,19 +1419,8 @@ RECOVERY_CLAUSE_FAULTS = [
 @pytest.mark.parametrize("fault,failed", RECOVERY_CLAUSE_FAULTS)
 def test_recovery_clause_fault_records_exact_false_assertions(
         tmp_path, monkeypatch, capfd, fault, failed):
-    path = manifest(tmp_path, packet(ctl.RECOVERY))
-    output = tmp_path / "out"
-    monkeypatch.setattr(ctl, "_child", partial(_recovery_clause_child, fault))
-    status = ctl.main(["offline", "--manifest", str(path), "--output-root", str(output)])
-    captured = capfd.readouterr()
-    assert not captured.err
-    assert (output / "result.json").exists(), (status, captured.out)
-    case, = p.parse_packet((output / "result.json").read_bytes(), "result").cases
-    receipt = json.loads((output / case.artifacts[0].alias).read_bytes())
-    assert (status, case.outcome, case.actual_code) == (
-        1, "FAIL", "EVIDENCE_RECORDED_ONLY"), receipt
-    assert receipt["assertions"] == {key: key not in failed for key in RECOVERY_ASSERTIONS}
-    p.RecoveryProof.model_validate(receipt["recovery"])
+    _assert_recovery_fault_packet(tmp_path, monkeypatch, capfd, fault, failed,
+                                  _recovery_clause_child)
 
 
 @pytest.mark.parametrize("scenario,expected,code", [
@@ -1447,7 +1441,7 @@ def test_recovery_proof_presence_guard(tmp_path, monkeypatch, capfd, scenario, e
     else:
         observed = p.CaseObservation(
             actual_code=code if scenario == "refusal" else real.actual_code,
-                                    assertions=real.assertions, recovery=None)
+            assertions=real.assertions, recovery=None)
     monkeypatch.setattr(ctl, "_execute", lambda *args: observed)
     output = tmp_path / "out"
     status = ctl.main(["offline", "--manifest", str(path), "--output-root", str(output)])
