@@ -734,6 +734,12 @@ specifies a separately named evidence-admission proof case and sanitized packet.
 It preserves the admission policy above and does not promote device replacement
 or satisfy business-verification, retirement or native gates.
 
+The proposed [licensing-owned recovery approval work order](LEAD-OWNER-RECOVERY-APPROVAL.md)
+defines the administrative decision boundary and the policy, channel and
+qualification inputs required before executable recovery work. It supplies
+no concrete business-verification policy, recovery authorization or host
+publication permission; unreachable-predecessor recovery remains blocked.
+
 ## Native mechanism pins and protected ownership
 
 ### B1: selected native qualification profile
