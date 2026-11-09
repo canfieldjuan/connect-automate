@@ -1,12 +1,15 @@
 """Private offline harness CLI. Entry point: python -m qualification.owner_authority.controller."""
 
 import argparse
+import base64
 import hashlib
 import multiprocessing
 import os
 import stat
 import sys
+from contextlib import ExitStack, contextmanager
 from datetime import UTC, datetime, timedelta
+from functools import wraps
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import monotonic_ns
@@ -29,6 +32,8 @@ REVOKED = "revoked-claim"
 INACTIVE = "inactive-session"
 MALFORMED = "malformed-request-refusal"
 RENEWAL = "manifest-renewal"
+RECOVERY = "recovery-evidence-admission"
+RECOVERY_BEGIN = b"recovery-begin"
 CANDIDATES = b"renewal-candidates"
 ADVANCE = b"renewal-clock"
 ADOPT = b"renewal-adopt"
@@ -40,6 +45,14 @@ SNAPSHOT = b"snapshot"
 
 class Stop(RuntimeError):
     """Only fixed diagnostic codes cross the CLI boundary."""
+
+
+class RecoveryDeclined(Exception):
+    """A valid domain refusal, distinct from a corrupt or failed worker."""
+
+    def __init__(self, refusal: p.RecoveryEvidenceRefusal):
+        self.refusal = refusal
+        super().__init__(refusal.code)
 
 
 def digest(raw):
@@ -150,6 +163,9 @@ def _issuer(root, case_id, channel):
             return connect(*args, **kwargs)
 
         while (request := channel.recv_bytes()) != SNAPSHOT:
+            if case_id == RECOVERY and request == RECOVERY_BEGIN:
+                _recovery_issuer(issuer, channel)
+                return
             if case_id == RENEWAL:
                 if request == CANDIDATES:
                     channel.send(candidates)
@@ -388,6 +404,21 @@ def _host(root, case_id, issuer, report):
             issuer.send_bytes(command)
             return issuer.recv()
 
+        if case_id == RECOVERY:
+            try:
+                observed = _recovery_host(host, binding, issuer, consume)
+            except RecoveryDeclined as declined:
+                issuer.send_bytes(p.recovery_control_bytes(
+                    p.RecoveryAction(command="finish"), "command"))
+                finished = p.parse_recovery_control(issuer.recv_bytes(p.CONTROL_BYTES), "reply")
+                if not isinstance(finished, p.RecoveryStatusReply) or finished.kind != "status":
+                    raise Stop("RECOVERY_PREREQUISITE_FAILED") from None
+                case = next(case for case in p.parse_inventory(_read(HERE / "cases.json")).cases
+                            if case.case_id == RECOVERY)
+                observed = p.CaseObservation(actual_code=declined.refusal.code,
+                    assertions=dict.fromkeys(case.assertion_ids, False))
+            report.send_bytes(p.canonical(observed.model_dump()))
+            return
         if case_id == REPLAY:
             code, assertions = _replay(host, claim, binding, consume)
         elif case_id == MALFORMED:
@@ -419,6 +450,228 @@ def _host(root, case_id, issuer, report):
                 REPLAY: (2, 1), REVOKED: (1, 0), INACTIVE: (0, 0), MALFORMED: (3, 1),
             }[case_id]
         report.send_bytes(p.canonical({"actual_code": code, "assertions": assertions}))
+
+
+@contextmanager
+def _count_recovery_calls(owner, methods):
+    """Count actual owner entry, including nested/implicit calls, after setup."""
+    counts = dict.fromkeys(set(methods.values()), 0)
+    with ExitStack() as patches:
+        for name, counter in methods.items():
+            original = getattr(owner, name)
+
+            def wrapped(function, field):
+                @wraps(function)
+                def call(*args, **kwargs):
+                    counts[field] += 1
+                    return function(*args, **kwargs)
+                return call
+
+            patches.enter_context(patch.object(owner, name, wrapped(original, counter)))
+        yield counts
+
+
+def _reopen_recovery_issuer(issuer):
+    return IssuerFixture(issuer.root, issuer.manifest, issuer.keys, issuer.release_ids,
+                         issuer.claim_signer, issuer.receipt_signer)
+
+
+def _recovery_issuer(issuer, channel):
+    clock = [NOW]
+    first = None
+    methods = {"open_recovery_case": "opens", "select_recovery_evidence": "selections",
+               "admit_recovery_evidence": "admissions", "__init__": "reopens"}
+    methods.update(dict.fromkeys(
+        ("consume", "exchange", "issue", "reissue", "revoke", "adopt_manifest"), "dispatches"))
+    with _count_recovery_calls(IssuerFixture, methods) as counts:
+        def status():
+            original, recovery = issuer.snapshot(), issuer.recovery_snapshot()
+            return p.RecoveryStatus.model_validate({
+                "ledger_sha256": original["ledger_sha256"],
+                "recovery_sha256": recovery["sha256"], "cases": recovery["cases"],
+                "admissions": recovery["admissions"], "consumptions": original["consumptions"],
+                "first_admission_sha256": first, "calls": counts,
+            })
+
+        while True:
+            command = p.parse_recovery_control(channel.recv_bytes(p.CONTROL_BYTES), "command")
+            result = None
+            if isinstance(command, p.RecoveryOpen):
+                raw = issuer.open_recovery_case(
+                    command.case_id, command.predecessor_claim_id, command.predecessor_operation_id,
+                    command.replacement, command.opened_at, command.expires_at,
+                    clock=lambda: clock[0])
+                kind = "case"
+            elif isinstance(command, p.RecoverySelect):
+                raw = issuer.select_recovery_evidence(command.case_id, lambda: clock[0])
+                kind = "selection"
+            elif isinstance(command, p.RecoveryAdmit):
+                raw = issuer.admit_recovery_evidence(
+                    command.selection, p.recovery_bytes(command.envelope), lambda: clock[0])
+                kind = "admission"
+            else:
+                if command.command == "reopen":
+                    issuer = _reopen_recovery_issuer(issuer)
+                elif command.command == "expire":
+                    clock[0] = NOW + timedelta(minutes=30)
+                result = p.RecoveryStatusReply(kind="status", status=status())
+            if result is None:
+                # Explicit expected type; a refusal never means a prior commit did not occur.
+                try:
+                    value = p.parse_recovery(raw, kind)
+                except p.ProtocolInputError:
+                    value = p.parse_recovery(raw, "refusal")
+                    kind = "refusal"
+                if kind == "admission" and first is None:
+                    first = digest(raw)
+                if kind == "admission" and command.command == "admit-lost":
+                    result = p.RecoveryStatusReply(kind="lost", status=status())
+                else:
+                    model = {"case": p.RecoveryCaseReply, "selection": p.RecoverySelectionReply,
+                             "admission": p.RecoveryAdmissionReply,
+                             "refusal": p.RecoveryRefusalReply}
+                    result = model[kind](kind=kind, value=value, status=status())
+            channel.send_bytes(p.recovery_control_bytes(result, "reply"))
+            if command.command == "finish":
+                return
+
+
+def _retirement_envelope(host, case, evidence_id):
+    common = {"version": "offline-recovery-evidence/1", "evidence_class": "OFFLINE_CONFORMANCE",
+              "qualification_pass": False}
+    evidence = p.RetirementEvidence.model_validate(common | {
+        "purpose": "offline-predecessor-retirement-evidence", "evidence_id": evidence_id,
+        "case_id": case.case_id, "case_sha256": digest(p.recovery_bytes(case)),
+        "predecessor_receipt_sha256": case.predecessor_receipt_sha256,
+        "replacement_sha256": digest(p.recovery_bytes(case.replacement)),
+        "asserted_at": "2026-01-01T01:00:00Z", "expires_at": "2026-01-01T01:30:00Z",
+        "assertion": "SYNTHETIC_RETIREMENT_ONLY",
+    })
+    raw = p.recovery_bytes(evidence)
+    def encode(value):
+        return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
+    return p.RetirementEvidenceEnvelope.model_validate(common | {
+        "payload_base64url": encode(raw),
+        "signature_base64url": encode(host.key.sign(p.RETIREMENT_PREFIX + raw)),
+    })
+
+
+def _recovery_document(reply, expected):
+    if isinstance(reply, p.RecoveryRefusalReply):
+        raise RecoveryDeclined(reply.value)
+    if not isinstance(reply, expected):
+        raise Stop("RECOVERY_PREREQUISITE_FAILED")
+    return reply.value
+
+
+def _recovery_host(host, binding, channel, consume):
+    setup = host.bootstrap(consume, _observe, _clock)
+    if not setup.committed:
+        raise Stop("RECOVERY_SETUP_FAILED")
+    replacement = HostFixture(host.root.parent / "replacement", host._initial_manifest,
+                              host.keys, host.release_ids, Ed25519PrivateKey.generate()).create(
+                                  _uid(21), _uid(22), binding.organization_id)
+    original_before, replacement_before = host.recovery_snapshot(), replacement.recovery_snapshot()
+    original_receipt = host.snapshot()["receipt_sha256"]
+    common = {"version": "offline-recovery-evidence/1", "evidence_class": "OFFLINE_CONFORMANCE",
+              "qualification_pass": False}
+    target = p.ReplacementTarget.model_validate(common | {
+        "operation_id": _uid(20), "installation_id": replacement_before.installation_id,
+        "host_id": replacement_before.host_id,
+        "organization_id": replacement_before.organization_id,
+        "entitlement_id": binding.entitlement_id,
+        "installation_public_key": replacement_before.installation_public_key,
+        "principal_commitment": binding.principal_commitment,
+        "initialization_sha256": replacement_before.configuration_sha256,
+    })
+    opening = p.RecoveryOpen(command="open", case_id=_uid(23),
+                             predecessor_claim_id=binding.claim_id,
+                             predecessor_operation_id=binding.operation_id, replacement=target,
+                             opened_at="2026-01-01T01:00:00Z", expires_at="2026-01-01T03:00:00Z")
+
+    def rpc(command):
+        channel.send_bytes(p.recovery_control_bytes(command, "command"))
+        return p.parse_recovery_control(channel.recv_bytes(p.CONTROL_BYTES), "reply")
+
+    def action(name):
+        reply = rpc(p.RecoveryAction(command=name))
+        if not isinstance(reply, p.RecoveryStatusReply) or reply.kind != "status":
+            raise Stop("RECOVERY_PREREQUISITE_FAILED")
+        return reply.status
+
+    channel.send_bytes(RECOVERY_BEGIN)
+    methods = dict.fromkeys(("bootstrap", "bootstrap_exchange", "prepare", "renew_manifest"),
+                            "dispatches")
+    with _count_recovery_calls(HostFixture, methods) as calls:
+        before = action("inspect")
+        case = _recovery_document(rpc(opening), p.RecoveryCaseReply)
+        selected = _recovery_document(rpc(p.RecoverySelect(command="select", case_id=case.case_id)),
+                                      p.RecoverySelectionReply)
+        envelope = _retirement_envelope(host, case, _uid(24))
+        lost_reply = rpc(p.RecoveryAdmit(
+            command="admit-lost", selection=selected, envelope=envelope))
+        if isinstance(lost_reply, p.RecoveryRefusalReply):
+            raise RecoveryDeclined(lost_reply.value)
+        lost = action("inspect")
+        reopened = action("reopen")
+        case_again = _recovery_document(rpc(opening), p.RecoveryCaseReply)
+        reply = rpc(p.RecoveryAdmit(command="admit", selection=selected, envelope=envelope))
+        admission = _recovery_document(reply, p.RecoveryAdmissionReply)
+        replayed = reply.status
+        changed = _retirement_envelope(host, case, _uid(25))
+        conflict = rpc(p.RecoveryAdmit(command="admit", selection=selected, envelope=changed))
+        action("expire")
+        expired = rpc(p.RecoveryAdmit(command="admit", selection=selected, envelope=envelope))
+        finished = action("finish")
+        original_after = host.recovery_snapshot()
+        replacement_after = replacement.recovery_snapshot()
+        trace = p.RecoveryProof(
+            before=before, lost=lost, replayed=replayed, conflicted=conflict.status,
+            expired=expired.status, finished=finished, case_sha256=digest(p.recovery_bytes(case)),
+            reopened_case_sha256=digest(p.recovery_bytes(case_again)),
+            admission_sha256=digest(p.recovery_bytes(admission)),
+            predecessor_before_sha256=original_before.state_sha256,
+            predecessor_after_sha256=original_after.state_sha256,
+            replacement_before_sha256=replacement_before.state_sha256,
+            replacement_after_sha256=replacement_after.state_sha256,
+            host_dispatches=calls["dispatches"],
+        )
+    states = (lost, replayed, conflict.status, expired.status, finished)
+    assertions = {
+        "source-bound-case": case.predecessor_binding == binding
+            and case.predecessor_receipt_sha256 == original_receipt and case.replacement == target,
+        "same-case-on-reopen": trace.case_sha256 == trace.reopened_case_sha256
+            and reopened.calls.reopens == 1 and replayed.calls.opens == 2,
+        "admission-evidence-only": admission.state == "EVIDENCE_RECORDED_ONLY"
+            and admission.case_id == case.case_id and admission.evidence_id == _uid(24)
+            and admission.case_sha256 == trace.case_sha256
+            and admission.evidence_sha256 == digest(p.recovery_bytes(envelope))
+            and admission.predecessor_receipt_sha256 == original_receipt
+            and admission.replacement_sha256 == digest(p.recovery_bytes(target)),
+        "lost-reply-retained": isinstance(lost_reply, p.RecoveryStatusReply)
+            and lost_reply.kind == "lost" and lost.admissions == 1,
+        "explicit-replay-only": [state.calls.admissions for state in (before, *states)]
+            == [0, 1, 2, 3, 4, 4] and reopened.calls.admissions == 1,
+        "same-admission-on-reopen": trace.admission_sha256 == lost.first_admission_sha256
+            and replayed.calls.reopens == 1,
+        "one-recovery-pair": all(state.cases == state.admissions == 1
+            and state.recovery_sha256 == lost.recovery_sha256 for state in states),
+        "changed-evidence-conflict": isinstance(conflict, p.RecoveryRefusalReply)
+            and conflict.value.code == "RECOVERY_BINDING_CONFLICT"
+            and conflict.status.recovery_sha256 == replayed.recovery_sha256,
+        "expired-replay-preserves-history": isinstance(expired, p.RecoveryRefusalReply)
+            and expired.value.code == "RECOVERY_EVIDENCE_EXPIRED"
+            and expired.status.recovery_sha256 == conflict.status.recovery_sha256,
+        "issuer-original-preserved": all(state.ledger_sha256 == before.ledger_sha256
+            and state.consumptions == 1 for state in states),
+        "predecessor-host-preserved": original_after == original_before,
+        "replacement-host-unpublished": replacement_after == replacement_before
+            and all(getattr(replacement_after, k) == 0
+                    for k in ("pending", "receipts", "admins", "audit")),
+        "recovery-no-bootstrap-dispatch": trace.host_dispatches == 0
+            and all(state.calls.dispatches == 0 for state in (before, *states)),
+    }
+    return p.CaseObservation(actual_code=admission.state, assertions=assertions, recovery=trace)
 
 
 def _child(target, *args):
@@ -488,6 +741,7 @@ def _write(path, raw):
 
 def _run_case(case, output, common, environment, platform, deadline):
     started = monotonic_ns()
+    observed = None
     try:
         limit = min(started + p.CASE_NS, deadline)
         if _seconds_left(limit) == 0:
@@ -498,6 +752,10 @@ def _run_case(case, output, common, environment, platform, deadline):
             raise Stop("CASE_TIMEOUT")
         if set(observed.assertions) != set(case.assertion_ids):
             raise Stop("ASSERTION_SET_MISMATCH")
+        if ((case.case_id != RECOVERY and observed.recovery is not None)
+                or (case.case_id == RECOVERY and observed.actual_code == case.expected_code
+                    and observed.recovery is None)):
+            raise Stop("RECOVERY_PROOF_MISMATCH")
         actual, assertions = observed.actual_code, observed.assertions
         outcome = ("PASS" if actual == case.expected_code and all(assertions.values()) else "FAIL")
     except Stop as stop:
@@ -516,6 +774,8 @@ def _run_case(case, output, common, environment, platform, deadline):
     artifact = _write(output / f"{case.case_id}.json", p.canonical({
         **common, **details, "assertions": assertions, "environment": environment,
         "elapsed_ns": elapsed,
+        **({"recovery": observed.recovery.model_dump()}
+           if observed is not None and observed.recovery is not None else {}),
     }))
     return p.OfflineCase(**details, artifacts=[artifact])
 

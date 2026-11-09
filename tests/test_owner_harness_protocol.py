@@ -263,7 +263,7 @@ def test_generated_schema_bytes_survive_autocrlf_checkout(tmp_path, kind):
 def test_exact_profile_is_owned_by_schema_and_mixed_errors_stay_invalid(kind):
     p = protocol()
     model = p.OfflineRun if kind == "run" else p.OfflineResult
-    pin = "5b7c73d48b943290eb22d49b43e68fb17921a00c"
+    pin = "92fbc04b8ec9a195932a16c7d97e738ea352c164"
     assert model.model_json_schema()["properties"]["contract_commit"]["const"] == pin
     wrong = fixture(kind) | {"contract_commit": "a" * 40}
     with pytest.raises(ValidationError):

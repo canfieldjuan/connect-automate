@@ -2787,3 +2787,48 @@ def test_recovery_open_revalidates_source_before_any_commit(tmp_path, phase):
     with pytest.raises(FixtureCorrupt):
         wire.issuer(issuer.root, hook=hook).open_recovery_case(*args, clock=lambda: NOW)
     assert (issuer.recovery_snapshot(), issuer.snapshot()) == before
+
+
+@pytest.mark.parametrize("table,column", [
+    ("configuration", "installation_id"), ("configuration", "host_id"),
+    ("configuration", "organization_id"), ("configuration", "manifest"),
+    ("pending", "operation_id"), ("pending", "binding"), ("pending", "claim"),
+    ("pending", "salt"), ("pending", "principal"), ("pending", "original_manifest"),
+    ("receipts", "operation_id"), ("receipts", "envelope"),
+    ("admins", "operation_id"), ("admins", "principal_commitment"),
+    ("audit", "operation_id"),
+])
+def test_recovery_host_snapshot_covers_complete_stored_content(tmp_path, table, column):
+    _, issuer, host, _ = renewal_fixture(tmp_path)
+    assert host.bootstrap(lambda raw: issuer.consume(raw, lambda: NOW),
+                          observation, lambda: NOW).committed
+    before = host.recovery_snapshot()
+    assert before.installation_id == uid(5) and before.host_id == uid(6)
+    assert before.organization_id == uid(2)
+    assert before.installation_public_key == host._public_key()
+    assert [getattr(before, k) for k in ("pending", "receipts", "admins", "audit")] == [1]*4
+    db = sqlite3.connect(host.root / "fixture.sqlite", isolation_level=None)
+    try:
+        db.execute("PRAGMA foreign_keys=OFF")
+        old = db.execute("SELECT " + column + " FROM " + table).fetchone()[0]
+        changed = bytes([old[0] ^ 1]) + old[1:] if type(old) is bytes else uid(98)
+        if column == "principal_commitment":
+            changed = "f" * 64
+        db.execute("UPDATE " + table + " SET " + column + "=?", (changed,))
+    finally:
+        db.close()
+    after = host.recovery_snapshot()
+    assert after.state_sha256 != before.state_sha256
+    assert (after.configuration_sha256 != before.configuration_sha256) == (table == "configuration")
+    assert [getattr(after, k) for k in ("pending", "receipts", "admins", "audit")] == [1]*4
+
+
+def test_recovery_host_snapshot_refuses_replaced_installation_key(tmp_path):
+    from qualification.owner_authority.licensing_fixture import FixtureCorrupt, transaction
+
+    _, _, host, _ = renewal_fixture(tmp_path)
+    with transaction(host.root, "host") as db:
+        db.execute("UPDATE configuration SET public_key=?",
+                   (b64(Ed25519PrivateKey.generate().public_key().public_bytes_raw()),))
+    with pytest.raises(FixtureCorrupt):
+        host.recovery_snapshot()

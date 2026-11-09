@@ -1056,3 +1056,98 @@ def test_recovery_case_revalidates_forged_qualification_before_clock(recovery_wi
     forged = case.model_copy(update={"qualification_pass": True})
     with pytest.raises(p.RecoveryEvidenceInvalid):
         p.check_recovery_case(forged, recovery_wire["now"])
+
+
+def recovery_control_values(values):
+    p = protocol()
+    case = p.RecoveryEvidenceCase.model_validate(values["case"])
+    selection = p.recovery_selection(case)
+    envelope = p.parse_recovery(values["sign"](), "envelope")
+    commands = [p.RecoveryOpen(command="open", case_id=case.case_id,
+        predecessor_claim_id=case.predecessor_binding.claim_id,
+        predecessor_operation_id=case.predecessor_binding.operation_id,
+        replacement=case.replacement, opened_at=case.opened_at, expires_at=case.expires_at),
+        p.RecoverySelect(command="select", case_id=case.case_id),
+        *[p.RecoveryAdmit(command=kind, selection=selection, envelope=envelope)
+          for kind in ("admit", "admit-lost")],
+        *[p.RecoveryAction(command=kind) for kind in ("inspect", "reopen", "expire", "finish")]]
+    status = p.RecoveryStatus.model_validate({
+        "ledger_sha256": "a"*64, "recovery_sha256": "b"*64, "cases": 0,
+        "admissions": 0, "consumptions": 1, "first_admission_sha256": None,
+        "calls": dict.fromkeys(("opens", "selections", "admissions", "reopens", "dispatches"), 0),
+    })
+    documents = recovery_documents(values)
+    return commands, [p.RecoveryAdmissionReply(kind="admission", status=status,
+                         value=p.RecoveryEvidenceAdmission.model_validate(documents["admission"])),
+                     p.RecoveryRefusalReply(kind="refusal", status=status,
+                         value=p.RecoveryEvidenceRefusal.model_validate(documents["refusal"])),
+                     p.RecoveryCaseReply(kind="case", value=case, status=status),
+                     p.RecoverySelectionReply(kind="selection", value=selection, status=status),
+                     p.RecoveryStatusReply(kind="status", status=status),
+                     p.RecoveryStatusReply(kind="lost", status=status)]
+
+
+def test_recovery_control_round_trip_closed_discriminated_models(recovery_wire):
+    p = protocol()
+    for kind, values in zip(("command", "reply"),
+                            recovery_control_values(recovery_wire), strict=True):
+        schema = p.RECOVERY_CONTROL[kind].json_schema()
+        assert schema["discriminator"]["propertyName"] == (
+            "command" if kind == "command" else "kind")
+        for definition in schema["$defs"].values():
+            if definition.get("type") == "object":
+                assert definition["additionalProperties"] is False
+                assert set(definition["required"]) == set(definition["properties"])
+        for value in values:
+            raw = p.recovery_control_bytes(value, kind)
+            assert p.parse_recovery_control(raw, kind) == value
+            data = value.model_dump()
+            for field in data:
+                bad = data.copy()
+                del bad[field]
+                with pytest.raises(p.ProtocolInputError):
+                    p.parse_recovery_control(p.canonical(bad), kind)
+            with pytest.raises(p.ProtocolInputError):
+                p.parse_recovery_control(p.canonical(data | {"extra": False}), kind)
+            with pytest.raises(p.ProtocolInputError):
+                p.parse_recovery_control(p.canonical(data | {
+                    "command" if kind == "command" else "kind": "unknown"}), kind)
+            with pytest.raises(p.ProtocolInputError):
+                p.parse_recovery_control(b" " + raw, kind)
+
+
+@pytest.mark.parametrize("bad", [None, False, 0, "", b"", b"null", b"{}", b"x"*8193,
+                                  b'{"command":"inspect","command":"finish"}',
+                                  b'{"command":"inspect","extra":NaN}'])
+@pytest.mark.parametrize("kind", ["command", "reply", "unknown"])
+def test_recovery_control_malformed_boundaries(kind, bad):
+    with pytest.raises(protocol().ProtocolInputError):
+        protocol().parse_recovery_control(bad, kind)
+
+
+@pytest.mark.parametrize("value,valid", [(0, True), (1, True), (2147483647, True),
+                                        (-1, False), (2147483648, False), (False, False),
+                                        ("", False), (None, False), (1.0, False)])
+def test_recovery_control_counts_have_no_falsy_default(recovery_wire, value, valid):
+    p = protocol()
+    _, replies = recovery_control_values(recovery_wire)
+    data = replies[-1].model_dump()
+    data["status"]["calls"]["admissions"] = value
+    if valid:
+        assert p.parse_recovery_control(p.canonical(data), "reply").status.calls.admissions == value
+    else:
+        with pytest.raises(p.ProtocolInputError):
+            p.parse_recovery_control(p.canonical(data), "reply")
+
+
+def test_recovery_control_send_revalidates_forged_nested_values(recovery_wire):
+    p = protocol()
+    commands, _ = recovery_control_values(recovery_wire)
+    opening = commands[0]
+    target = opening.replacement.model_copy(update={"qualification_pass": 0})
+    with pytest.raises(p.ProtocolInputError):
+        p.recovery_control_bytes(opening.model_copy(update={"replacement": target}), "command")
+    command = commands[2]
+    envelope = command.envelope.model_copy(update={"payload_base64url": "A"*2049})
+    with pytest.raises(p.ProtocolInputError):
+        p.recovery_control_bytes(command.model_copy(update={"envelope": envelope}), "command")

@@ -341,6 +341,20 @@ class HostFixture:
             checkpoint(self.hook, "renew_manifest_write", db)
         return after
 
+    def recovery_snapshot(self):
+        """Read-only full-state proof, including public initialization binding."""
+        with read_store(self.root, "host") as db:
+            installation, host, organization, public = self._configuration(db)
+            return p.RecoveryHostSnapshot.model_validate({
+                "installation_id": installation, "host_id": host,
+                "organization_id": organization, "installation_public_key": public,
+                "configuration_sha256": snapshot_digest(db, ("configuration",)),
+                "state_sha256": snapshot_digest(
+                    db, ("configuration", "pending", "receipts", "admins", "audit")),
+                **{name: db.execute("SELECT count(*) FROM " + name).fetchone()[0]
+                   for name in ("pending", "receipts", "admins", "audit")},
+            })
+
     def snapshot(self):
         with read_store(self.root, "host") as db:
             counts = {name: db.execute("SELECT count(*) FROM " + name).fetchone()[0]
