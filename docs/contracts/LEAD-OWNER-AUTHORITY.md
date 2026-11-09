@@ -729,6 +729,11 @@ specifies a separate synthetic evidence-admission prerequisite. It does not
 supply replacement authorization or satisfy the business-verification and
 retirement gates above; the device-replacement case remains blocked.
 
+The proposed [offline recovery-evidence controller work order](LEAD-OWNER-RECOVERY-CONTROLLER.md)
+specifies a separately named evidence-admission proof case and sanitized packet.
+It preserves the admission policy above and does not promote device replacement
+or satisfy business-verification, retirement or native gates.
+
 ## Native mechanism pins and protected ownership
 
 ### B1: selected native qualification profile
