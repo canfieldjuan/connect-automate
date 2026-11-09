@@ -47,6 +47,7 @@
       "assertion_ids": ["pending-after-loss", "unavailable-no-dispatch", "derived-unknown", "retained-state", "renewal-only-config-effects", "no-implicit-resume", "forward-renewals", "installed-issue-monotonic", "installed-expiry-monotonic", "fresh-attempts", "one-local-triplet", "cached-no-dispatch", "same-receipt", "issuer-exchanges", "issuer-consumptions", "issuer-ledger-preserved"],
       "capability": "disposable-fixtures"
     },
+    {"kind": "OFFLINE_CONFORMANCE", "case_id": "recovery-evidence-admission", "requirement": "issue-73", "expected_code": "EVIDENCE_RECORDED_ONLY", "assertion_ids": ["source-bound-case", "same-case-on-reopen", "admission-evidence-only", "lost-reply-retained", "explicit-replay-only", "same-admission-on-reopen", "one-recovery-pair", "changed-evidence-conflict", "expired-replay-preserves-history", "issuer-original-preserved", "predecessor-host-preserved", "replacement-host-unpublished", "recovery-no-bootstrap-dispatch"], "capability": "disposable-fixtures"},
     {"kind": "BLOCKED", "case_id": "device-replacement", "requirement": "issue-73"},
     {"kind": "BLOCKED", "case_id": "inaccessible-disk-evidence", "requirement": "issue-73"}
   ]

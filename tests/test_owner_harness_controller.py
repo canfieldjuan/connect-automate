@@ -969,3 +969,343 @@ def test_renewal_negative_outcomes_are_recorded(tmp_path, monkeypatch, capfd, co
         assert receipt["assertions"]["issuer-consumptions"] is True
         assert receipt["assertions"]["retained-state"] is True
         assert receipt["assertions"]["same-receipt"] is False
+
+
+RECOVERY_ASSERTIONS = [
+    "source-bound-case", "same-case-on-reopen", "admission-evidence-only",
+    "lost-reply-retained", "explicit-replay-only", "same-admission-on-reopen",
+    "one-recovery-pair", "changed-evidence-conflict", "expired-replay-preserves-history",
+    "issuer-original-preserved", "predecessor-host-preserved", "replacement-host-unpublished",
+    "recovery-no-bootstrap-dispatch",
+]
+
+
+def test_real_recovery_evidence_cli_records_complete_proof(tmp_path):
+    path = manifest(tmp_path, packet("recovery-evidence-admission"))
+    output = tmp_path / "recovery"
+    result = cli("offline", "--manifest", path, "--output-root", output)
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    case, = p.parse_packet(result.stdout.strip().encode(), "result").cases
+    assert (case.outcome, case.actual_code) == ("PASS", "EVIDENCE_RECORDED_ONLY")
+    receipt = json.loads((output / "recovery-evidence-admission.json").read_bytes())
+    assert receipt["assertions"] == dict.fromkeys(RECOVERY_ASSERTIONS, True)
+    assert receipt["qualification_pass"] is False
+    assert receipt["evidence_class"] == "OFFLINE_CONFORMANCE"
+    for item in json.loads((output / "hashes.json").read_bytes())["artifacts"]:
+        assert item["sha256"] == ctl.digest((output / item["alias"]).read_bytes())
+
+
+def _recovery_fault_child(fault, target, *args):
+    """Alter real fixture inputs/effects inside spawned owners, never assertion flags."""
+    from qualification.owner_authority.licensing_fixture import transaction
+
+    with pytest.MonkeyPatch.context() as patch:
+        if target is ctl._issuer:
+            if fault in ("target", "reopened-case", "unknown-predecessor"):
+                opening = ctl.IssuerFixture.open_recovery_case
+                opens = [0]
+                def changed_open(owner, *values, **kw):
+                    opens[0] += 1
+                    if fault == "unknown-predecessor":
+                        values = (values[0], ctl._uid(98), ctl._uid(99), *values[3:])
+                    if fault == "target":
+                        values = (*values[:3], values[3].model_copy(
+                            update={"host_id": ctl._uid(92)}), *values[4:])
+                    raw = opening(owner, *values, **kw)
+                    if fault == "reopened-case" and opens[0] == 2:
+                        case = p.parse_recovery(raw, "case")
+                        raw = p.recovery_bytes(case.model_copy(
+                            update={"opened_at": "2026-01-01T00:59:00Z"}))
+                    return raw
+                patch.setattr(ctl.IssuerFixture, "open_recovery_case", changed_open)
+            if fault == "no-reopen":
+                patch.setattr(ctl, "_reopen_recovery_issuer", lambda owner: owner)
+            if fault in ("delivered-reply", "no-expiry"):
+                parsing = p.parse_recovery_control
+                def changed_command(raw, kind):
+                    value = parsing(raw, kind)
+                    if kind == "command":
+                        if fault == "delivered-reply" and value.command == "admit-lost":
+                            return value.model_copy(update={"command": "admit"})
+                        if fault == "no-expiry" and value.command == "expire":
+                            return value.model_copy(update={"command": "inspect"})
+                    return value
+                patch.setattr(p, "parse_recovery_control", changed_command)
+            if fault == "issuer-dispatch":
+                consume = ctl.IssuerFixture.consume
+                saved = []
+                def capture(owner, raw, clock):
+                    saved[:] = [raw]
+                    return consume(owner, raw, clock)
+                patch.setattr(ctl.IssuerFixture, "consume", capture)
+            admission = ctl.IssuerFixture.admit_recovery_evidence
+            calls = [0]
+            original_evidence = []
+            def changed_admit(owner, selected, raw, clock):
+                calls[0] += 1
+                index = calls[0]
+                if index == 1:
+                    original_evidence[:] = [raw]
+                if fault == "implicit-retry" and index == 1:
+                    owner.admit_recovery_evidence(selected, raw, clock)
+                if fault == "issuer-dispatch" and index == 1:
+                    owner.consume(saved[0], clock)
+                if fault == "changed-evidence-ignored" and index == 3:
+                    raw = original_evidence[0]
+                if fault == "changed-stored-admission" and index == 2:
+                    with transaction(owner.root, "issuer") as db:
+                        record = json.loads(db.execute(
+                            "SELECT admission FROM recovery_admissions").fetchone()[0])
+                        record["admission_id"] = ctl._uid(93)
+                        db.execute("UPDATE recovery_admissions SET admission=?",
+                                   (p.canonical(record),))
+                result = admission(owner, selected, raw, clock)
+                if fault.startswith("admission-") and index == 2:
+                    data = json.loads(result)
+                    field = fault.removeprefix("admission-")
+                    data[field] = ctl._uid(94) if field.endswith("_id") else "f" * 64
+                    return p.recovery_bytes(p.RecoveryEvidenceAdmission.model_validate(data))
+                if fault == "original-ledger" and index == 1:
+                    with transaction(owner.root, "issuer") as db:
+                        db.execute("UPDATE claims SET state='REVOKED'")
+                if fault in ("extra-case", "extra-admission") and index == 2:
+                    with transaction(owner.root, "issuer") as db:
+                        # A real additional row: count-only proof must not be fabricated.
+                        db.execute("PRAGMA defer_foreign_keys=ON")
+                        claim = db.execute("SELECT * FROM claims").fetchone()
+                        db.execute("INSERT INTO claims VALUES(?,?,?,?,?,?)",
+                                   (ctl._uid(90), ctl._uid(2), ctl._uid(91), 1,
+                                    claim[4], 'REVOKED'))
+                        consumption = db.execute(
+                            "SELECT binding,receipt FROM consumptions").fetchone()
+                        db.execute("INSERT INTO consumptions VALUES(?,?,?,?)",
+                                   (ctl._uid(90), ctl._uid(92), *consumption))
+                        document = db.execute("SELECT document FROM recovery_cases").fetchone()[0]
+                        db.execute("INSERT INTO recovery_cases VALUES(?,?,?,'EVIDENCE_CASE_ONLY')",
+                                   (ctl._uid(93), ctl._uid(92), document))
+                        if fault == "extra-admission":
+                            db.execute("INSERT INTO recovery_admissions "
+                                       "VALUES(?,?,?,?,'EVIDENCE_RECORDED_ONLY')",
+                                       (ctl._uid(93), ctl._uid(94), raw, result))
+                if ((fault == "conflict-history" and index == 3)
+                        or (fault == "expired-history" and index == 4)):
+                    with transaction(owner.root, "issuer") as db:
+                        record = json.loads(db.execute(
+                            "SELECT admission FROM recovery_admissions").fetchone()[0])
+                        record["admission_id"] = ctl._uid(96)
+                        db.execute("UPDATE recovery_admissions SET admission=?",
+                                   (p.canonical(record),))
+                return result
+            patch.setattr(ctl.IssuerFixture, "admit_recovery_evidence", changed_admit)
+        elif target is ctl._host:
+            if fault == "source-binding":
+                prepare = ctl.HostFixture.prepare
+                def changed_prepare(host, *values):
+                    return prepare(host, *values).model_copy(
+                        update={"principal_commitment": "e" * 64})
+                patch.setattr(ctl.HostFixture, "prepare", changed_prepare)
+            if fault == "source-receipt":
+                snapshot = ctl.HostFixture.snapshot
+                def changed_receipt(host):
+                    return snapshot(host) | {"receipt_sha256": "e" * 64}
+                patch.setattr(ctl.HostFixture, "snapshot", changed_receipt)
+            if fault == "replacement-pending":
+                prepare, create = ctl.HostFixture.prepare, ctl.HostFixture.create
+                saved = []
+                def save_claim(host, *values):
+                    saved[:] = [values[0]]
+                    return prepare(host, *values)
+                def dirty_replacement(host, *values):
+                    result = create(host, *values)
+                    if host.root.name == "replacement":
+                        prepare(host, saved[0], ctl._uid(4), ctl._observe, ctl.NOW)
+                    return result
+                patch.setattr(ctl.HostFixture, "prepare", save_claim)
+                patch.setattr(ctl.HostFixture, "create", dirty_replacement)
+            if fault in ("original-host", "replacement-host"):
+                snapshot = ctl.HostFixture.recovery_snapshot
+                seen = {}
+                def changed_snapshot(host):
+                    name = host.root.name
+                    seen[name] = seen.get(name, 0) + 1
+                    selected = "host" if fault == "original-host" else "replacement"
+                    if name == selected and seen[name] == 2:
+                        with transaction(host.root, "host") as db:
+                            db.execute("UPDATE configuration SET host_id=?", (ctl._uid(97),))
+                    return snapshot(host)
+                patch.setattr(ctl.HostFixture, "recovery_snapshot", changed_snapshot)
+            if fault == "host-dispatch":
+                signing = ctl._retirement_envelope
+                def extra_bootstrap(host, *values):
+                    host.bootstrap(forbidden, ctl._observe, ctl._clock)
+                    return signing(host, *values)
+                patch.setattr(ctl, "_retirement_envelope", extra_bootstrap)
+        ctl._child(target, *args)
+
+
+RECOVERY_FAULTS = [
+    ("source-binding", {"source-bound-case"}),
+    ("source-receipt", {"source-bound-case", "admission-evidence-only"}),
+    ("replacement-pending", {"replacement-host-unpublished"}),
+    ("conflict-history", {"one-recovery-pair", "changed-evidence-conflict"}),
+    ("expired-history", {"one-recovery-pair", "expired-replay-preserves-history"}),
+    ("target", {"source-bound-case", "admission-evidence-only"}),
+    ("reopened-case", {"same-case-on-reopen"}),
+    ("no-reopen", {"same-case-on-reopen", "same-admission-on-reopen"}),
+    ("delivered-reply", {"lost-reply-retained"}),
+    ("implicit-retry", {"explicit-replay-only"}),
+    ("changed-stored-admission", {"same-admission-on-reopen", "one-recovery-pair"}),
+    ("extra-case", {"one-recovery-pair", "issuer-original-preserved"}),
+    ("extra-admission", {"one-recovery-pair", "issuer-original-preserved"}),
+    ("changed-evidence-ignored", {"changed-evidence-conflict"}),
+    ("no-expiry", {"expired-replay-preserves-history"}),
+    ("original-ledger", {"issuer-original-preserved"}),
+    ("original-host", {"predecessor-host-preserved"}),
+    ("replacement-host", {"replacement-host-unpublished"}),
+    ("host-dispatch", {"recovery-no-bootstrap-dispatch"}),
+    ("issuer-dispatch", {"recovery-no-bootstrap-dispatch"}),
+    *[("admission-" + field, {"admission-evidence-only", "same-admission-on-reopen"})
+      for field in ("case_id", "evidence_id", "case_sha256", "evidence_sha256",
+                    "predecessor_receipt_sha256", "replacement_sha256")],
+]
+
+
+@pytest.mark.parametrize("fault,failed", RECOVERY_FAULTS)
+def test_recovery_real_fault_records_exact_false_assertions(
+        tmp_path, monkeypatch, capfd, fault, failed):
+    path = manifest(tmp_path, packet("recovery-evidence-admission"))
+    output = tmp_path / "out"
+    monkeypatch.setattr(ctl, "_child", partial(_recovery_fault_child, fault))
+    status = ctl.main(["offline", "--manifest", str(path), "--output-root", str(output)])
+    captured = capfd.readouterr()
+    assert not captured.err
+    assert (output / "result.json").exists(), (status, captured.out)
+    raw = (output / "result.json").read_bytes()
+    assert captured.out.strip().encode() == raw
+    case, = p.parse_packet(raw, "result").cases
+    receipt = json.loads((output / case.artifacts[0].alias).read_bytes())
+    assert (status, case.outcome, case.actual_code) == (
+        1, "FAIL", "EVIDENCE_RECORDED_ONLY"), receipt
+    assert receipt["assertions"] == {key: key not in failed for key in RECOVERY_ASSERTIONS}
+    p.RecoveryProof.model_validate(receipt["recovery"])
+
+
+def test_recovery_workers_cannot_call_live_or_installed_owners(tmp_path, monkeypatch):
+    root = tmp_path / "fixtures"
+    root.mkdir()
+    monkeypatch.setattr(ctl, "_child", _offline_only_child)
+    result = ctl._execute(root, "recovery-evidence-admission", monotonic_ns() + p.CASE_NS)
+    assert result.actual_code == "EVIDENCE_RECORDED_ONLY" and all(result.assertions.values())
+
+
+def test_recovery_ordinary_refusal_is_fail_not_corruption_stop(tmp_path, monkeypatch, capfd):
+    path = manifest(tmp_path, packet("recovery-evidence-admission"))
+    output = tmp_path / "out"
+    monkeypatch.setattr(ctl, "_child", partial(_recovery_fault_child, "unknown-predecessor"))
+    status = ctl.main(["offline", "--manifest", str(path), "--output-root", str(output)])
+    captured = capfd.readouterr()
+    assert not captured.err
+    assert (output / "result.json").exists(), (status, captured.out)
+    case, = p.parse_packet((output / "result.json").read_bytes(), "result").cases
+    assert (status, case.outcome, case.actual_code) == (
+        1, "FAIL", "RECOVERY_PREDECESSOR_UNAVAILABLE")
+    receipt = json.loads((output / case.artifacts[0].alias).read_bytes())
+    assert receipt["assertions"] == dict.fromkeys(RECOVERY_ASSERTIONS, False)
+
+
+def _recovery_stop_child(fault, target, *args):
+    import sqlite3
+    from contextlib import closing
+
+    with pytest.MonkeyPatch.context() as patch:
+        if target is ctl._issuer:
+            if fault in ("terminate", "timeout"):
+                if fault == "terminate":
+                    raise SystemExit(1)
+                import time
+                time.sleep(10)
+            if fault.startswith(("select-", "admit-")):
+                method = ("select_recovery_evidence" if fault.startswith("select-")
+                          else "admit_recovery_evidence")
+                original = getattr(ctl.IssuerFixture, method)
+                def corrupt(owner, *values, **kw):
+                    with closing(sqlite3.connect(owner.root / "fixture.sqlite")) as db:
+                        if fault.endswith("missing"):
+                            db.execute("DELETE FROM consumptions")
+                        else:
+                            db.execute("UPDATE consumptions SET operation_id=?", (ctl._uid(98),))
+                        db.commit()
+                    return original(owner, *values, **kw)
+                patch.setattr(ctl.IssuerFixture, method, corrupt)
+            if fault == "corrupt-evidence":
+                admit = ctl.IssuerFixture.admit_recovery_evidence
+                seen = [0]
+                def corrupt_evidence(owner, *values, **kw):
+                    seen[0] += 1
+                    if seen[0] == 2:
+                        with closing(sqlite3.connect(owner.root / "fixture.sqlite")) as db:
+                            db.execute("UPDATE recovery_admissions SET evidence=?", (b"{}",))
+                            db.commit()
+                    return admit(owner, *values, **kw)
+                patch.setattr(ctl.IssuerFixture, "admit_recovery_evidence", corrupt_evidence)
+            if fault == "malformed-reply":
+                patch.setattr(p, "recovery_control_bytes", lambda *a: b'{"kind":"unexpected"}')
+            if fault == "malformed-command":
+                parsing = p.parse_recovery_control
+                def bad(raw, kind):
+                    return parsing(b'{"command":"unknown"}' if kind == "command" else raw, kind)
+                patch.setattr(p, "parse_recovery_control", bad)
+        ctl._child(target, *args)
+
+
+@pytest.mark.parametrize("fault", ["select-missing", "select-rekeyed", "admit-missing",
+                                  "admit-rekeyed", "terminate", "timeout",
+                                  "malformed-reply", "malformed-command", "corrupt-evidence"])
+def test_recovery_corruption_transport_and_deadline_are_stop(tmp_path, monkeypatch, capfd, fault):
+    path = manifest(tmp_path, packet(ctl.RECOVERY))
+    output = tmp_path / "out"
+    before = {child.pid for child in multiprocessing.active_children()}
+    monkeypatch.setattr(ctl, "_child", partial(_recovery_stop_child, fault))
+    if fault == "timeout":
+        monkeypatch.setattr(p, "CASE_NS", 500_000_000)
+    status = ctl.main(["offline", "--manifest", str(path), "--output-root", str(output)])
+    captured = capfd.readouterr()
+    assert not captured.err
+    assert (output / "result.json").exists(), (status, captured.out)
+    case, = p.parse_packet((output / "result.json").read_bytes(), "result").cases
+    assert (status, case.outcome, case.actual_code) == (
+        2, "STOP", "CASE_TIMEOUT" if fault == "timeout" else "CASE_PROCESS_FAILED")
+    receipt = json.loads((output / case.artifacts[0].alias).read_bytes())
+    assert receipt["assertions"] == dict.fromkeys(RECOVERY_ASSERTIONS, False)
+    assert "recovery" not in receipt
+    assert {child.pid for child in multiprocessing.active_children()} == before
+
+
+def test_recovery_previous_contract_profile_refused_before_effects(
+        tmp_path, monkeypatch, capsys, denied_effects):
+    data = packet(ctl.RECOVERY)
+    data["contract_commit"] = "5b7c73d48b943290eb22d49b43e68fb17921a00c"
+    path = manifest(tmp_path, data)
+    assert ctl.main(["offline", "--manifest", str(path),
+                     "--output-root", str(tmp_path / "out")]) == 2
+    stop(capsys, "CONTRACT_MISMATCH")
+    assert not (tmp_path / "out").exists()
+
+
+def test_recovery_mixed_selection_keeps_replacement_blocked(tmp_path, monkeypatch, capsys):
+    path = manifest(tmp_path, packet(ctl.RECOVERY, "device-replacement"))
+    monkeypatch.setattr(ctl, "_execute", forbidden)
+    output = tmp_path / "out"
+    assert ctl.main(["offline", "--manifest", str(path), "--output-root", str(output)]) == 2
+    stop(capsys, "CONTRACT_BLOCKED")
+    assert not output.exists()
+
+
+def test_recovery_mixed_runnable_selection_preserves_order_and_codes(tmp_path):
+    path = manifest(tmp_path, packet(ctl.RECOVERY, ctl.REPLAY))
+    output = tmp_path / "out"
+    result = cli("offline", "--manifest", path, "--output-root", output)
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    cases = p.parse_packet(result.stdout.strip().encode(), "result").cases
+    assert [(case.case_id, case.outcome, case.actual_code) for case in cases] == [
+        (ctl.RECOVERY, "PASS", "EVIDENCE_RECORDED_ONLY"), (ctl.REPLAY, "PASS", "COMMITTED")]

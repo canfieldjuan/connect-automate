@@ -33,7 +33,7 @@ from connect_automate.entitlement import UuidV4, verify_signature
 
 PACKET_BYTES = 1048576
 CASE_NS = 180_000_000_000
-CONTRACT_COMMIT = "5b7c73d48b943290eb22d49b43e68fb17921a00c"
+CONTRACT_COMMIT = "92fbc04b8ec9a195932a16c7d97e738ea352c164"
 Token = Annotated[StrictStr, Field(pattern=r"^[a-z0-9][a-z0-9._-]{0,63}$")]
 Code = Annotated[StrictStr, Field(pattern=r"^[A-Z][A-Z0-9_]{0,63}$")]
 Digest = Annotated[StrictStr, Field(pattern=r"^[0-9a-f]{64}$")]
@@ -808,6 +808,155 @@ def check_recovery_evidence(raw: bytes, case: RecoveryEvidenceCase,
     return evidence
 
 
+# Recovery controller IPC remains separate from signed evidence and host results.
+CONTROL_BYTES = 8192
+Counter = Annotated[StrictInt, Field(ge=0, le=2147483647)]
+
+
+class RecoveryHostSnapshot(Closed):
+    installation_id: UuidV4
+    host_id: UuidV4
+    organization_id: UuidV4
+    installation_public_key: PublicKey
+    configuration_sha256: Digest
+    state_sha256: Digest
+    pending: Counter
+    receipts: Counter
+    admins: Counter
+    audit: Counter
+
+
+class RecoveryCalls(Closed):
+    opens: Counter
+    selections: Counter
+    admissions: Counter
+    reopens: Counter
+    dispatches: Counter
+
+
+class RecoveryStatus(Closed):
+    ledger_sha256: Digest
+    recovery_sha256: Digest
+    cases: Counter
+    admissions: Counter
+    consumptions: Counter
+    first_admission_sha256: Digest | None
+    calls: RecoveryCalls
+
+
+class RecoveryControl(Closed):
+    @model_validator(mode="after")
+    def nested_budgets(self):
+        for name in type(self).model_fields:
+            value = getattr(self, name)
+            if isinstance(value, RecoveryValue):
+                recovery_bytes(value)
+        return self
+
+
+class RecoveryOpen(RecoveryControl):
+    command: Literal["open"]
+    case_id: UuidV4
+    predecessor_claim_id: UuidV4
+    predecessor_operation_id: UuidV4
+    replacement: ReplacementTarget
+    opened_at: Instant
+    expires_at: Instant
+
+
+class RecoverySelect(RecoveryControl):
+    command: Literal["select"]
+    case_id: UuidV4
+
+
+class RecoveryAdmit(RecoveryControl):
+    command: Literal["admit", "admit-lost"]
+    selection: RecoveryEvidenceSelection
+    envelope: RetirementEvidenceEnvelope
+
+
+class RecoveryAction(RecoveryControl):
+    command: Literal["inspect", "reopen", "expire", "finish"]
+
+
+class RecoveryCaseReply(RecoveryControl):
+    kind: Literal["case"]
+    value: RecoveryEvidenceCase
+    status: RecoveryStatus
+
+
+class RecoverySelectionReply(RecoveryControl):
+    kind: Literal["selection"]
+    value: RecoveryEvidenceSelection
+    status: RecoveryStatus
+
+
+class RecoveryAdmissionReply(RecoveryControl):
+    kind: Literal["admission"]
+    value: RecoveryEvidenceAdmission
+    status: RecoveryStatus
+
+
+class RecoveryRefusalReply(RecoveryControl):
+    kind: Literal["refusal"]
+    value: RecoveryEvidenceRefusal
+    status: RecoveryStatus
+
+
+class RecoveryStatusReply(RecoveryControl):
+    kind: Literal["status", "lost"]
+    status: RecoveryStatus
+
+
+RECOVERY_CONTROL = {
+    "command": TypeAdapter(Annotated[
+        RecoveryOpen | RecoverySelect | RecoveryAdmit | RecoveryAction,
+        Field(discriminator="command"),
+    ]),
+    "reply": TypeAdapter(Annotated[
+        RecoveryCaseReply | RecoverySelectionReply | RecoveryAdmissionReply
+        | RecoveryRefusalReply | RecoveryStatusReply, Field(discriminator="kind"),
+    ]),
+}
+
+
+def parse_recovery_control(raw: bytes, kind: str):
+    try:
+        value = RECOVERY_CONTROL[kind].validate_python(_json(raw, CONTROL_BYTES))
+        if canonical(value.model_dump()) != raw:
+            raise ProtocolInputError()
+        return value
+    except (ValueError, TypeError, KeyError, RecursionError):
+        raise ProtocolInputError() from None
+
+
+def recovery_control_bytes(value, kind: str):
+    try:
+        value = RECOVERY_CONTROL[kind].validate_python(value)
+        raw = canonical(value.model_dump())
+        parse_recovery_control(raw, kind)
+        return raw
+    except (ValueError, TypeError, KeyError, RecursionError):
+        raise ProtocolInputError() from None
+
+
+class RecoveryProof(Closed):
+    before: RecoveryStatus
+    lost: RecoveryStatus
+    replayed: RecoveryStatus
+    conflicted: RecoveryStatus
+    expired: RecoveryStatus
+    finished: RecoveryStatus
+    case_sha256: Digest
+    reopened_case_sha256: Digest
+    admission_sha256: Digest
+    predecessor_before_sha256: Digest
+    predecessor_after_sha256: Digest
+    replacement_before_sha256: Digest
+    replacement_after_sha256: Digest
+    host_dispatches: Counter
+
+
 class FixtureObservation(Closed):
     """Synthetic principal reference and time, never acquired native identity."""
 
@@ -840,7 +989,7 @@ class FixtureHostResult(Closed):
 class RunnableCase(Closed):
     kind: Literal["OFFLINE_CONFORMANCE"]
     case_id: Literal["lost-response-replay", "revoked-claim", "inactive-session",
-                     "malformed-request-refusal", "manifest-renewal"]
+                     "malformed-request-refusal", "manifest-renewal", "recovery-evidence-admission"]
     requirement: Token
     expected_code: Code
     assertion_ids: Identifiers
@@ -864,6 +1013,7 @@ class CaseInventory(Closed):
 
 
 class CaseObservation(Closed):
+    recovery: RecoveryProof | None = None
     actual_code: Code
     assertions: Annotated[dict[Token, StrictBool], Field(min_length=1, max_length=64)]
 

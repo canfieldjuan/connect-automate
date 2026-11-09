@@ -22,7 +22,7 @@ Create the manifest using the existing `run.schema.json`:
 
 - Set `version` to `owner-harness/1`, `evidence_class` to `OFFLINE_CONFORMANCE`
   and `qualification_pass` to literal false.
-- Use the accepted work-order revision `5b7c73d48b943290eb22d49b43e68fb17921a00c`
+- Use the accepted work-order revision `92fbc04b8ec9a195932a16c7d97e738ea352c164`
   and the full harness commit of the checkout under review. Supply a fresh UUIDv4
   `run_id`. Pin `dependency_lock_sha256` to the actual bytes of `uv.lock`.
 - Set `fixtures` to a single alias/digest pair with alias `cases` and the SHA-256
@@ -30,7 +30,8 @@ Create the manifest using the existing `run.schema.json`:
   The caller declares the harness commit. The per-case receipts also hash the
   actual executing harness source and record the Python version.
 - Runnable cases cover signed replay after a lost response, revoked claims and
-  denial with no dispatch, malformed-consume recovery, and manifest renewal.
+  denial with no dispatch, malformed-consume recovery, manifest renewal, and
+  recovery-evidence admission.
   Malformed recovery performs
   three explicit exchanges: a committed but lost reply, a malformed recovery
   request with zero issuer-ledger entry, then fresh authenticated recovery of
@@ -57,7 +58,7 @@ listed hashes before using the evidence. The fixture digest binds the case and
 its public synthetic recipe. Retain the directory and cite aliases and hashes
 when sharing evidence. A directory without `result.json` is incomplete.
 The offline exit status is 0 for a run with passing assertions, 1 for a failed
-assertion or code, and 2 for a refusal or stopped case. Per-case time is bounded
+assertion or code, and 2 for a controller refusal or stopped case. Per-case time is bounded
 at 180 seconds within the serial 3600-second platform budget.
 
 The native `preflight`, `run` and `collect` commands return a fixed STOP
@@ -98,7 +99,7 @@ fixtures. Such a signature proves key possession and exact evidence binding, not
 unreachable/failed-PC path stays blocked under the canonical recovery policy.
 `EVIDENCE_RECORDED_ONLY` is an evidence-admission result, never replacement
 admin eligibility; the `device-replacement` catalog case remains BLOCKED.
-The original claim/receipt purposes, controller recipes and host APIs are unchanged.
+The original claim/receipt purposes and host authority writers are unchanged.
 The new fixture profile refuses old roots without migration; historical packets
 retain their original bytes and profile. Native sign-in, Hello, Gmail and live
 activation remain on hold.
@@ -115,6 +116,27 @@ competing targets and reused evidence IDs cannot overwrite an admission.
 snapshot continues to cover only claims, consumptions and journal. No host
 state or original consumption row is written by these recovery APIs.
 New tables require fixture version4 and fresh roots; version3 protocol-only
-roots are refused without migration. No controller recipe or case promotion is
-included. Business verification, qualified old-host retirement and replacement
-authorization remain separate gates.
+roots are refused without migration. Business verification, qualified old-host
+retirement and replacement authorization remain separate gates.
+
+The accepted [controller proof work order](../../docs/contracts/LEAD-OWNER-RECOVERY-CONTROLLER.md)
+adds `recovery-evidence-admission`, expected `EVIDENCE_RECORDED_ONLY`. A real
+synthetic bootstrap establishes the predecessor consumption; its original key
+signs evidence bound to the issuer-owned case and a fresh replacement fixture.
+The case opens at consumption time. After admission the issuer withholds the
+reply, reopens its store with its worker-local signers, and returns the identical
+admission on an explicit retry. This is a store reopen, not a process restart.
+A different signed evidence ID conflicts; replay at exact evidence expiry refuses
+while retaining history. No private key crosses IPC or enters the evidence packet.
+
+Closed recovery control messages are capped at 8192 canonical bytes and enforce
+the smaller nested value budgets. Complete owner-read host row digests and actual
+owner-entry counters prove unchanged predecessor/replacement authority and no
+bootstrap, consume, exchange, renewal, or issuer adoption dispatch during recovery.
+The receipt records thirteen fixed assertions with sanitized counts and digests.
+Ordinary typed domain refusals yield FAIL; corruption, malformed IPC, worker
+failure and deadlines yield STOP. Real worker fault controls must yield the exact
+false assertion set and FAIL; STOP is separate evidence. The existing result-last
+publication and source/catalog/lock hashes apply. Storage remains version4, with
+the accepted profile advanced and old profiles refused without migration.
+`device-replacement` remains BLOCKED and all native/live holds remain in force.

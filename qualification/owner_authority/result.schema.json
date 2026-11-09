@@ -115,7 +115,7 @@
       "type": "array"
     },
     "contract_commit": {
-      "const": "5b7c73d48b943290eb22d49b43e68fb17921a00c",
+      "const": "92fbc04b8ec9a195932a16c7d97e738ea352c164",
       "title": "Contract Commit",
       "type": "string"
     },
