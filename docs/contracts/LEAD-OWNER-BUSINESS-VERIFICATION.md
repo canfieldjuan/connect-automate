@@ -40,6 +40,15 @@ established by this inspection. A concrete source and custodian must be supplied
 and accepted before execution. This does not assert that no such records exist
 elsewhere or that an uninspected record is qualified.
 
+Initial business enrollment and its recovery-contact record are a **new proposed
+record system**, not a facility supplied by either inspected repository. Its
+accountable owner and storage location are open decisions for Juan. The proposed
+placement is outside the licence service, preserving that service proposal's
+no-identity-data boundary. An alternative inside that service would require an
+explicit contract amendment; it is not authorized here. A payment-provider
+dashboard or records held outside these repositories have not been inspected
+and cannot be named as an established trust source.
+
 Prior evidence alias `licensing-recovery-approval/contract/manifest.json`, SHA256
 `455ce4f0a27cdcb922ea92412799d857bf64703e054e691ff672421247c8b469`, covers the
 requirements proposal at `8a4513c4e9245e58cbf3703e8e74d66655ddd110`, not business
