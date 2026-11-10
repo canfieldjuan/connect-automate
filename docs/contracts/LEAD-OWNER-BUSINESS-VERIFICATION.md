@@ -9,10 +9,13 @@ collects customer evidence or authorizes implementation.
 
 Pending amendment to the accepted proposal at
 `f219d016577d737676bdbc0338cef025e3a07fbc`: remove categorical exclusion of
-sole-authority businesses. Independent verification of business authority remains
-required; confirmation by a second business authority is no longer a universal
-prerequisite. This amendment needs its own exact-revision acceptance and does
-not inherit acceptance from that earlier revision.
+sole-authority businesses and the unnecessary restrictions identified in
+oversight's restriction audit. Independent verification of business authority
+remains required; a second business authority, enrollment before the recovery
+case, owner self-authorization paperwork and customer hardware-key purchase are
+not universal prerequisites. The administrator profile gains a spare credential
+and revised session timeouts. This amendment needs its own exact-revision acceptance
+and does not inherit acceptance from that earlier revision.
 
 The [recovery approval requirements](LEAD-OWNER-RECOVERY-APPROVAL.md) and
 [canonical recovery policy](LEAD-OWNER-AUTHORITY.md#failed-or-replaced-pc-recovery)
@@ -68,21 +71,44 @@ requirements proposal at `8a4513c4e9245e58cbf3703e8e74d66655ddd110`, not busines
 verification. Existing offline controller proofs remain unchanged. There is no
 model, prompt, inference runtime or customer-document input in this slice.
 
-Deliberate departure: recommend a pre-enrolled-representative policy and a
+Deliberate departure: recommend independently verified enrollment and a
 dedicated administrator channel, with the restrictions and costs below. These
 are proposed product choices, not established behavior or automatic extensions
 of the entitlement service. Later executable work must inventory its actual
 owners, list all differences and preserve existing offline proof parity.
 
-## Recommended initial policy: pre-enrolled business representatives
+## Recommended initial policy: independently verified business representatives
 
-Support recovery only after the enrollment-record owner creates and verifies
-the business-authority enrollment through a separately accepted enrollment step,
-before any recovery case. An existing demo, subscription, paid invoice or
-offline licence alone is ineligible. No just-in-time enrollment or contact/key
-replacement may be admitted through an open recovery case. This deliberately leaves
-legacy businesses without qualified enrollment blocked until a separately
-accepted enrollment process supplies the prerequisite.
+Require qualified business-authority enrollment before an affirmative recovery
+verification result. Enrollment may already exist or be established during a
+recovery case under the same separately accepted independent-evidence procedure.
+An existing customer is not excluded solely because no enrollment predates the
+case. A demo, subscription, paid invoice or offline licence alone is insufficient.
+
+For recovery-time enrollment, the licensing verifier must obtain authority
+sources and business contact routes independently of the requester. The sources,
+authority relationship and routes must predate the case; the verifier retrieves
+current status and initiates contact on that independently established route.
+A source retrieved after case opening is not disqualified merely by retrieval
+time, but its pre-case provenance and continuing authority must be established.
+An independent authority record and the contact route in the original sale's
+records are possible inputs only under an accepted method, not presumed existing
+or sufficient evidence. A requester-supplied document, link, contact replacement,
+key or verification flag is untrusted input, never a trust source merely because
+it was submitted. Missing pre-case provenance, inaccessible required sources or
+unverifiable current status blocks enrollment; no support override substitutes.
+
+After independently verifying identity, current authority and the exact business
+and entitlement binding, record the verified authority in a pending enrollment
+with its provenance, source revisions, case reference, verifier and time. Only
+then may the verifier initiate the accepted credential-registration ceremony
+bound to that verified identity and enrollment. Enrollment becomes qualified
+only after that ceremony succeeds. The registration key and its possession do
+not authorize the enrollment; an arbitrary key in the recovery request cannot
+be promoted to an enrolled credential. The later procedure must prove this binding and ordering.
+Complete enrollment before the recovery challenge and verification sequence below;
+initial evidence gathering cannot depend on possessing a not-yet-enrolled key.
+No enrollment, contact replacement or credential registration is executed here.
 
 A business is not ineligible merely because it has a single person with business
 authority. The same independent-verification requirement applies to a person
@@ -98,22 +124,21 @@ Personal identity and contact details would stay in the enrollment-record owner'
 new external record store; recovery receives opaque references and integrity
 digests only.
 
-The proposed authority source must be created during that enrollment step: a
-business authorization naming the representative, their authority basis and
-scope, and linking the business and entitlement, plus evidence of how the
-representative's identity and business authority were independently established.
-For delegated authority, this includes the authorizing person's independently
-verified authority and the delegation chain to the representative. For own
-business authority, this includes independent evidence that the identified
-representative holds that authority; self-delegation or appointing a second
-person is not required and cannot substitute for that evidence. The executed
-business authorization is a **new enrollment-time document requirement proposed here**;
-no existing commercial agreement or authorization is presumed. Its exact form
-and execution procedure require separate acceptance before enrollment is enabled.
-A signature on a document or a purchase payment alone is insufficient. The
-record must include the provenance of the independent authority evidence, the
-verified authority basis and an independently obtained business contact route,
-not merely data supplied by the later recovery requester. If that chain cannot
+The enrollment record must identify the representative's authority basis and
+scope, link the business and entitlement, and retain evidence of how identity
+and current business authority were independently established. For own business
+authority, that independently verified evidence is the authority record; no
+signed self-authorization document, self-delegation or second person is required.
+
+For delegated authority only, require a business authorization document naming
+the delegate and scope, linked to the business and entitlement, plus independent
+verification of the authorizing person's authority and the delegation chain.
+Its exact form and execution procedure need separate acceptance. During
+recovery-time enrollment, the delegation instrument and authorizing relationship
+must satisfy the same pre-case provenance and current-validity rules above;
+creating a new delegation inside the case cannot bootstrap authority. A signature
+or purchase payment alone is insufficient. In both authority paths, retain the
+provenance of the independent evidence and contact route. If that chain cannot
 be established, enrollment is not qualified and recovery remains blocked.
 
 No enrollment record or contact is claimed to exist today. Before executable
@@ -128,15 +153,17 @@ must cover own authority and delegated authority explicitly. Neither method is
 selected or qualified by this amendment. Unsupported business forms, absent
 accepted methods or unclear authority remain blocked, not guessed from a job
 title, email domain or public listing. Sole-authority status alone is not an
-unsupported business form. Apart from the proposed new business authorization
-above, no document template, government-ID upload or external identity vendor is
-selected.
+unsupported business form. Apart from the proposed delegation document above,
+no document template, government-ID upload or external identity vendor is selected.
 
 For each recovery request, the licensing verifier must:
 
 1. Load the current enrollment and authority basis from its authoritative store,
-   independently of fields submitted by the requester. Match the exact business
-   and entitlement lineage against licensing's consumed deployment.
+   independently of fields submitted by the requester. If no enrollment exists,
+   complete the recovery-time enrollment procedure above first; do not interpret
+   missing required history from an existing enrollment as a new enrollment.
+   Match the exact business and entitlement lineage against licensing's consumed
+   deployment.
 2. Authenticate the requester with their enrolled credential and a fresh,
    single-use challenge bound server-side to the case revision, policy revision,
    predecessor receipt digest and exact replacement target digest. A credential
@@ -183,10 +210,14 @@ the result immediately even inside its time window. Unavailable authoritative
 status blocks approval; cached data cannot assert that no revocation occurred.
 
 Representative changes and lost credentials require the separately accepted
-enrollment/re-enrollment procedure. The old enrollment remains in history;
-pending verification is invalidated. Neither support email nor the recovery
-administrator may bypass missing provenance or assign themselves as the business
-representative. No credential enrollment or re-enrollment happens in this slice.
+enrollment/re-enrollment procedure, using the same independent verification and
+pre-case source/contact requirements when performed during recovery. A new key is
+registered only after that verification, through the bound ceremony above. Keep
+the old enrollment and revocation history; invalidate pending verification and
+never overwrite withdrawn authority or reinterpret corrupt history as absence.
+Neither support email nor the recovery administrator may bypass missing
+provenance or assign themselves as the business representative. No credential
+enrollment or re-enrollment happens in this slice.
 
 ## Recommended licensing administrator channel
 
@@ -199,12 +230,30 @@ must explicitly approve its initial administrator roster and enrollment
 ceremony. No public self-signup, shared administrator account,
 customer-token promotion or client-supplied role is permitted.
 
-Propose personally enrolled, user-verifying roaming hardware credentials for
-both this administrator channel and representative authentication. Platform
-credentials, Hello and synced credentials are outside the initial profile.
-The later authentication work order must specify and qualify how this profile
-is enforced; a browser attachment preference alone cannot prove hardware
-custody. No authentication implementation or security-key purchase is authorized.
+For licensing administrators, require personally enrolled, user-verifying roaming
+hardware credentials. Before enabling the initial roster, each administrator
+must register and verify at least two credentials on distinct physical security
+keys, with the spare stored separately. Two registrations on one key do not meet
+the spare requirement. This supports a single operator; it does not require a
+second administrator or a shared account. Platform and synced credentials remain
+outside the administrator profile.
+
+For business representatives, permit any user-verifying WebAuthn passkey usable
+independently of the deployment being recovered: a roaming key, a synced passkey
+available on another device, or a phone passkey. Reject a credential whose only
+usable copy is bound to the failed deployment. A label such as "synced" or a
+client-supplied device claim alone does not establish independent availability.
+The later authentication work order must qualify an actual registration and
+assertion path independent of the failed deployment, require and verify user
+verification, and establish the identity/enrollment binding. A customer need not
+buy a hardware key if a qualifying passkey is available. No administrator hardware
+restriction is relaxed by this representative profile.
+
+The later authentication work order must specify and qualify both profiles; a
+browser attachment preference alone cannot prove hardware custody or independence
+from a deployment. No authentication implementation or security-key purchase is
+authorized. Native sign-in and Hello remain on hold; permitting a future customer
+passkey profile does not authorize a native or Hello probe.
 
 Use the standard registration and assertion verification procedures, including
 expected origin, RP identity, challenge, signature and required user verification,
@@ -213,10 +262,18 @@ not establish the holder's business role; enrollment and current business
 authority remain separate checks. See [W3C WebAuthn registration](https://www.w3.org/TR/2021/REC-webauthn-2-20210408/#sctn-registering-a-new-credential)
 and [assertion verification](https://www.w3.org/TR/2021/REC-webauthn-2-20210408/#sctn-verifying-assertion).
 
-Proposed administrator sessions expire after 15 minutes absolute or 5 minutes
-idle, whichever comes first. Approval requires a new single-use authentication
-ceremony tied to that exact decision, completed within 5 minutes of commit.
-Equality at either limit is expired. An open page does not keep authority alive.
+Proposed administrator sessions expire after 12 hours absolute or 15 minutes
+idle, whichever comes first. This removes both the unsupported five-minute idle
+cutoff and the blanket 15-minute absolute cap; the latter would interrupt active
+manual verification without adding decision-specific authentication. The proposed
+bounds use the overall limit and inactivity recommendation in
+[NIST SP 800-63B-4, AAL3 reauthentication](https://pages.nist.gov/800-63-4/sp800-63b/aal/#aal3reauth).
+This is a timeout reference, not a claim that this unimplemented channel meets
+AAL3. Activity never extends the absolute ceiling. Approval still requires a new
+single-use authentication ceremony tied to that
+exact decision, completed within 5 minutes of commit. Equality at either session
+limit or the approval-ceremony expiry is expired. An open page does not keep
+authority alive.
 Each write derives the actor from the authenticated session, enforces its
 server-side role and business scope, and revalidates after the writer wait.
 
@@ -225,10 +282,13 @@ maintaining administrator enrollment. A verifier may also be an approver if
 explicitly assigned both roles, but cannot approve their own customer recovery
 request. Role administration cannot grant the actor their own additional scope.
 Roster changes require the separately accepted operator-controlled enrollment
-procedure, not approval rights. No emergency password/email fallback is proposed:
-if all authorized administrator credentials are lost, writes stop until that
-procedure restores administration. Preserve operator console access; do not
-deploy access restrictions before its recovery path is accepted and qualified.
+procedure, not approval rights. If one key is lost, the remaining enrolled key
+can authenticate the administrator under the existing role and enrollment rules;
+revoke the lost credential and restore the separately stored spare through the
+accepted procedure. No emergency password/email fallback is proposed: if all
+authorized administrator credentials are lost, writes stop until that procedure
+restores administration. Preserve operator console access; do not deploy access
+restrictions before its recovery path is accepted and qualified.
 
 The approval owner must serialize permission, enrollment and policy revisions
 with the approval commit, using the same durable authorization boundary or a
@@ -246,11 +306,11 @@ the accepted fields and bounds; this prose proposal adds no alternate validator.
 
 ## Private records, audit and deletion boundary
 
-Keep enrollment-time business authorization, contact details and human
-verification notes in the enrollment-record owner's proposed external record
-store. Limit access to assigned verifiers and explicitly authorized records
-custodians; an approver sees the
-necessary result/provenance, not unrestricted source documents. No raw record,
+Keep independent authority evidence, delegation documents where required, contact
+details and human verification notes in the enrollment-record owner's proposed
+external record store. Limit access to assigned verifiers and explicitly
+authorized records custodians; an approver sees the necessary result/provenance,
+not unrestricted source documents. No raw record,
 identity document, credential secret, session token or contact detail enters a
 Lead Intake packet, entitlement, PR, log or model prompt. Opaque references and
 hashes are still access-controlled, not treated as public anonymization.
@@ -282,19 +342,59 @@ admission remains `EVIDENCE_RECORDED_ONLY`, and synthetic proofs remain
 `OFFLINE_CONFORMANCE` with `qualification_pass=false`. Device replacement and
 inaccessible-disk cases remain `BLOCKED`; native cases remain `NOT_RUN`.
 
+## Why the retained restrictions are needed
+
+The asset is a business's deployment authority, not possession of its licence.
+The existing [offline fixture](../../qualification/owner_authority/licensing_fixture.py)
+checks consumed bindings and receipts in `_recovery_predecessor`, preserves
+corruption STOP in `_recovery_case`, and has no real business-identity verifier or
+administrator session. The [approval requirements](LEAD-OWNER-RECOVERY-APPROVAL.md)
+separate those missing owners from host retirement and publication. The reasons
+below apply to the proposed channel; they do not claim those controls exist.
+The customer is often the only business authority, and the licensor may have one
+operator. No restriction below requires another business owner or another operator.
+
+| Retained rule | Exclusion or cost | Concrete need; why the lighter rule is insufficient |
+| --- | --- | --- |
+| Independently establish identity, current authority and exact business/entitlement; verifier distinct from requester; no self-approval | Manual verification and waiting; a requester cannot verify or approve their own case. | Prevent takeover of another business's consumed deployment. Credentials, receipts and self-assertions establish neither current business authority nor an independent decision. One licensing operator may verify and approve a customer's case; a second business authority is unnecessary. |
+| Independent pre-case authority/contact provenance for recovery-time enrollment, followed by current checks and verifier-initiated contact | Customers without independently recoverable provenance remain blocked; contact takes time. | Prevent an attacker from supplying both the proposed identity and its own confirmation route during the case. A current lookup alone cannot bind the person holding the new key to the existing business/entitlement. Existing qualified enrollment or independently obtained historical evidence supplies that link; prior enrollment itself is not mandatory. No route or source is accepted merely because it exists in a public listing. |
+| Delegation instrument only for delegated authority | Delegates need a document establishing their scope; owners do not. | An employer/owner's identity does not establish a delegate's permission to move deployment authority. The accepted instrument can be an existing valid authorization; a new bespoke form is not universally required. A delegate's job title or own statement cannot establish the grant. |
+| Complete verified enrollment and bound registration before using a new credential; preserve revisions and withdrawn/corrupt history | Registration or re-enrollment is an extra step; missing historical integrity blocks recovery. | A new key otherwise authorizes itself, and a missing record could reset an existing consumed lineage. Credential possession alone or recreating a record on error cannot preserve the original authority chain. Recovery-time enrollment supplies the needed path without requiring the dead PC's credential. |
+| Customer passkey requires user verification and availability independent of the failed deployment | A customer needs a usable independent authenticator; no mandatory hardware purchase. | A failed PC cannot perform the recovery ceremony, and possession without user verification lets a lost unattended authenticator stand in for the person. A phone, synced copy on another device or roaming key meets the need; hardware-only custody for customers does not. |
+| Individually enrolled administrator hardware keys, two distinct keys with separately stored spare; no shared account or self-assigned role | The operator buys and safeguards primary and spare keys and uses an approved roster procedure. | This role can move authority across customers and handle verification records. Hardware custody limits credential copying after account/device compromise; a synced credential does not provide that non-exportability boundary. Distinct keys avoid a single lost/broken key locking out the only operator. Two credentials on one device share the same failure, while requiring two operators excludes the actual operating model. |
+| Authority confirmation at most 24 hours old; current source/revocation checks still mandatory | A delayed case may require another manual confirmation. | No qualified change-notification service exists for human authority evidence. A stored confirmation cannot certify indefinitely that the role/contact remains current. A one-day maximum age bounds reliance on that manual observation; relying solely on the absence of a recorded revocation would assume a missing notification service. This is a proposed freshness budget, not proof that a one-day-old observation is sufficient. Current evidence must also pass. |
+| Single-use case-bound credential challenge and decision ceremony, each at most 5 minutes old | A delayed ceremony must restart. | Bound the usable life of an abandoned authentication result while an attacker tries to substitute a case or target. Single-use prevents a second use but not a delayed first use; binding prevents cross-target use but not stale presence. Five minutes is the proposed ceremony budget, not a measured guarantee. It does not cap the preceding manual investigation. |
+| Administrator session at most 12 hours overall and 15 minutes idle, with fresh authentication for approval | Reauthenticate after inactivity or a long working session. | Bound unattended access and long-lived session theft. Idle timeout alone permits an attacker to keep a stolen session active indefinitely; an overall limit alone leaves an unattended session usable for hours. The cited NIST bounds supply the reference profile; the shorter blanket cap adds interruption without protecting the exact approval better. |
+| Server-derived actor/scope, origin protection, exact decision binding, serialized revisions and revocation, one selected target | No unsigned import or email-link approval; competing decisions wait or fail. | Prevent forged roles, request substitution, revoked authority winning a writer race and duplicate replacement targets. A prior check followed by an unguarded write or a browser flag does not enforce the licensing writer's decision. The existing consumed-binding/corruption owners illustrate why caller claims cannot replace authoritative state. |
+| No password/email/support bypass; all administrator keys lost means restore through the accepted enrollment procedure | Losing both keys stops writes until administration is restored. | An easier fallback would let an attacker bypass the privileged credential and roster boundary. A tested spare handles ordinary single-key loss; full loss requires restoring that same authority boundary, not asserting a support role. No permanent lockout or second-person requirement is introduced. |
+| External restricted identity records, opaque references, protected audit history and explicit source-retention policy | Custody, access control, backup/restore and retention work for the named owner. | Source identity material must not spread through licences, logs, CI or model prompts; the proposed licence service has no identity store. Audit history is required to distinguish authorized deletion from corrupt consumption. Hashes alone cannot replace unavailable authority evidence; unrestricted copies or deleting lineage on cleanup defeat those boundaries. No indefinite source-retention duration is imposed. |
+| Determined consumption, qualified predecessor retirement, fresh replacement proof and separate executable authorization | A dead/unreachable predecessor can still block publication even after successful business verification. | The current local-first host cannot prove an old disk image lost its authority merely because licensing approved a replacement. A signature or support decision does not fence the old host. Issue 84 owns the missing enforcement/product decision; this contract cannot disguise that gap. No ordinary-operation polling is introduced because it would change offline operation rather than prove the existing boundary. |
+| Concrete methods, owner/custody and qualification before execution; native/live holds | This contract alone cannot perform recovery or collect real evidence. | Current code supplies synthetic evidence only. A fixture flag or accepted prose cannot authenticate a real business or retire a real host. The separately reviewed execution work order must provide those actual owners and proofs; the holds preserve Juan's explicit scope. |
+
 ## Acceptance examples and exit gates
 
 These are future proof obligations, not executed tests:
 
 | Case | Required outcome |
 | --- | --- |
-| Qualified pre-enrollment, fresh enrolled-key proof, independently verified current own authority or delegation chain under an accepted method, same business/entitlement and target | One case-bound verification result; no automatic recovery approval or host write. |
+| Qualified enrollment, fresh enrolled-key proof, independently verified current own authority or delegation chain under an accepted method, same business/entitlement and target | One case-bound verification result; no automatic recovery approval or host write. |
 | Licence, paid invoice, receipt, email, installer privilege or synthetic retirement packet alone | No business-verification success. |
-| Record with no independently established authority basis; new contact/key supplied in recovery; unsupported business form | Block; no enrollment or trust-root substitution inside recovery. |
+| Existing customer without prior enrollment; verifier independently obtains pre-case authority sources and contact route, confirms current identity/authority/binding, records enrollment and completes bound credential registration | May proceed to the same fresh challenge and verification checks; no automatic recovery approval. |
+| Missing independent authority evidence; only a new contact/key supplied in recovery; unsupported evidence method or business form | Block; no requester-supplied trust-root substitution. |
+| Claimed pre-case source with no provenance, newly created delegation or contact route inside the case, or current authority withdrawn | Block recovery-time enrollment; historical existence alone is insufficient. |
+| Existing enrollment with missing required history, presented as a first-time enrollment | Corruption STOP; do not bootstrap a replacement record. |
+| Owner acting under independently verified own authority, with no signed self-authorization document | Admit that authority basis without the document; all other enrollment and recovery checks still apply. |
+| Delegate without the required authorization document or with an unverified authorizing chain | Block; the owner's paperwork exemption does not apply to delegated authority. |
 | Sole-authority business meeting the preceding qualified-enrollment, credential, independent current-authority and binding requirements | Eligible for the same verification result without a second business authority; all separate recovery approval gates still apply. |
 | Sole-authority enrollment but no accepted independent verification method for that authority basis, or only self-assertion, route/key possession and a signed authorization | Block verification; eligibility and these items together do not establish authority. |
 | Delegated representative with a missing or withdrawn authorizing authority or delegation link; named contact or custodian offered as authority without independent evidence | Block verification; neither a second person's presence nor custody substitutes for the authority chain. |
 | Valid credential but withdrawn own authority or delegation, wrong entitlement, stale or mixed-validity evidence | No approval; credential possession does not rescue a failed authority check. |
+| Representative uses a user-verifying phone, synced or roaming passkey through a qualified path independent of the failed deployment | Accept the credential profile; current business authority and exact case binding remain required. |
+| Representative credential usable only on the failed deployment, no user verification, or only an unsupported claim of independent availability | Refuse authentication; no profile-label bypass. |
+| Initial administrator roster has one key, or two credentials on the same physical key | Do not enable administration until distinct primary and spare keys are registered and verified. |
+| Administrator loses one of the separately stored enrolled keys | Remaining key can authenticate under existing roles; revoke the lost key and restore the spare through the accepted procedure. No fallback or additional scope. |
+| Administrator is idle beyond 5 but below 15 minutes, or active beyond 15 minutes but below 12 hours absolute | These elapsed times alone do not expire the session; decision-specific authentication and all role checks still apply. |
+| Administrator reaches 12 hours absolute or 15 minutes idle, or approval ceremony reaches 5 minutes | Expired; activity cannot extend the absolute ceiling or rescue the decision ceremony. |
 | Exact expiry, future confirmation time, zero/empty/false bounds or missing required fields | Refuse; no fallback to a permissive default. Numeric and temporal bounds belong to the future closed schema and semantic owner. |
 | Forged actor/role, wrong origin, replayed challenge, expired session, wrong target or requester approving own recovery | No privileged write; server-owned identity and binding control the decision. |
 | Permission or enrollment revoked while approval waits for the writer | Revalidate under serialized authorization ordering; revocation before commit prevents approval. |
@@ -307,29 +407,34 @@ enrollment-record owner and decide the external storage location. That owner mus
 supply the new enrollment-system design, concrete independent authority-check
 methods and sources for own authority and delegation, representative
 credential-enrollment procedures, and retention schedule. The later qualification
-must demonstrate the positive sole-authority and delegated cases and reject the
-self-assertion-only, unsupported-method and broken-chain cases above; this
-contract supplies no such execution evidence. The licensing owner
-must adopt the verification policy and supply its administrator enrollment and
-recovery procedures, roster and channel design under the ownership split above.
+must demonstrate both prior and recovery-time enrollment, the owner without
+self-authorization paperwork, delegated authority with its instrument, and the
+independent-device passkey and administrator-spare cases. It must reject the
+self-assertion-only, unsupported-method, broken-chain, requester-key substitution
+and corrupt-history cases above; this contract supplies no such execution
+evidence. The licensing owner must adopt the verification policy and supply its
+administrator enrollment and recovery procedures, roster and channel design under
+the ownership split above.
 Juan must accept those concrete inputs. A later work order must pin the
 authentication implementation and profile enforcement, closed wire/storage
 models, atomic permission ordering and
 qualification plan. No undeclared provider, trust root or policy placeholder may
 be replaced with a fixture flag and called real verification.
 
-Juan's exact acceptance of this amendment must cover removing the categorical
-sole-authority exclusion while retaining independent identity and current
-business-authority verification. Pre-enrollment, the enrollment-time authorization
-document, credential requirement, session/freshness bounds and blocked fallback
-behavior remain required. Costs remain: creating and operating the enrollment
-system, hardware credentials, manual independent verification and recovery
-delays. Supporting sole-authority businesses requires a concrete accepted and
-qualified evidence method; its availability and cost are still unresolved. Some
-businesses will remain blocked until their enrollment and verification method
-are qualified. No second business authority is required solely to make a sole
-owner eligible. Acceptance of this amendment does not accept a concrete evidence
-source or enable execution; those inputs need separate review and acceptance.
+Juan's exact acceptance of this amendment must cover sole-authority eligibility,
+independently verified enrollment before or during recovery, authorization
+paperwork only for delegation, the separate customer/administrator credential
+profiles, two physical administrator keys and the revised session timeouts. These
+changes retain independent identity/current-authority verification, pre-case
+source and contact provenance for recovery-time enrollment, freshness/revocation
+and blocked fallback behavior. Costs remain: the external record system, manual
+verification, administrator hardware keys and spare custody, and recovery delays.
+A representative's hardware-key purchase and an owner's self-authorization
+paperwork are not mandatory costs. Concrete evidence methods, registration and
+re-enrollment procedures, and independent-device authentication still need
+acceptance and qualification; their availability and cost are unresolved.
+Eligibility alone enables no recovery. Acceptance of this amendment selects no
+concrete source or provider and does not authorize execution.
 
 Submit this exact contract revision to independent oversight; then obtain Juan's
 exact-revision acceptance before merge. Implementation, synthetic fixture runs,
