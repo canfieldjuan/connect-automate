@@ -41,8 +41,14 @@ and accepted before execution. This does not assert that no such records exist
 elsewhere or that an uninspected record is qualified.
 
 Initial business enrollment and its recovery-contact record are a **new proposed
-record system**, not a facility supplied by either inspected repository. Its
-accountable owner and storage location are open decisions for Juan. The proposed
+record system**, not a facility supplied by either inspected repository. The
+**enrollment-record owner** means the accountable owner Juan must name; that
+owner and the storage location remain open decisions. This owner would create
+and maintain enrollment records, source-material custody and retention. The
+**licensing owner** retains recovery-policy adoption and approval responsibility
+and is proposed to own the administrator channel's account/role registry and
+decision audit. That does not assign ownership of enrollment records to licensing.
+Both roles require their explicit accepted procedures before operation. Proposed
 placement is outside the licence service, preserving that service proposal's
 no-identity-data boundary. An alternative inside that service would require an
 explicit contract amendment; it is not authorized here. A payment-provider
@@ -63,8 +69,9 @@ owners, list all differences and preserve existing offline proof parity.
 
 ## Recommended initial policy: pre-enrolled business representatives
 
-Support recovery only for a business with a licensing-owned, previously verified
-business-authority enrollment. An existing demo, subscription, paid invoice or
+Support recovery only after the enrollment-record owner creates and verifies
+the business-authority enrollment through a separately accepted enrollment step,
+before any recovery case. An existing demo, subscription, paid invoice or
 offline licence alone is ineligible. No just-in-time enrollment or contact/key
 replacement may be admitted through an open recovery case. This deliberately leaves
 legacy businesses without qualified enrollment blocked until a separately
@@ -73,26 +80,32 @@ accepted enrollment process supplies the prerequisite.
 The enrollment must bind an opaque business ID and entitlement lineage to a
 named authorized representative, the scope and end of their delegation, a
 registered public credential, and a pre-established business contact route.
-Personal identity and contact details stay in a separate restricted verification
-record store; recovery receives opaque references and integrity digests only.
+Personal identity and contact details would stay in the enrollment-record owner's
+new external record store; recovery receives opaque references and integrity
+digests only.
 
-The independent authority source is the licensing owner's original commercial
-onboarding record: the business's executed authorization naming the delegate,
-its linkage to the business and entitlement, and the onboarding custodian's
-record of how the authorizing person's authority was independently established.
+The proposed authority source must be created during that enrollment step: a
+business authorization naming the delegate and linking the business and
+entitlement, plus the enrollment-record owner's evidence of how the authorizing
+person's business authority was independently established. The executed business
+authorization is a **new enrollment-time document requirement proposed here**;
+no existing commercial agreement or authorization is presumed. Its exact form
+and execution procedure require separate acceptance before enrollment is enabled.
 A signature on a document or a purchase payment alone is insufficient. The
 record must include the provenance of an independently obtained business contact
 route and the verified authorizing role, not merely data supplied by the later
 recovery requester. If that chain cannot be established, enrollment is not
 qualified and recovery remains blocked.
 
-This proposal does not invent those original records or deem their custodian
-trusted. Before executable work, the licensing owner must identify the actual
-record system, accountable custodian, original authority-check procedure and
-representative-enrollment ceremony; Juan must accept that concrete source and
-procedure. Unsupported business forms or unclear signatory authority are blocked,
-not guessed from a job title, email domain or public listing. No government-ID
-upload, external identity vendor or new legal-document requirement is selected.
+No enrollment record or contact is claimed to exist today. Before executable
+work, Juan must name the enrollment-record owner and decide the storage location.
+That owner must propose how to create the new system, independently check
+business authority and enroll the representative; the licensing owner must adopt
+the resulting policy, and Juan must accept the concrete source and procedures.
+Unsupported business forms or unclear signatory authority are blocked, not
+guessed from a job title, email domain or public listing. Apart from the proposed
+new business authorization above, no document template, government-ID upload
+or external identity vendor is selected.
 
 For each recovery request, the licensing verifier must:
 
@@ -103,7 +116,7 @@ For each recovery request, the licensing verifier must:
    single-use challenge bound server-side to the case revision, policy revision,
    predecessor receipt digest and exact replacement target digest. A credential
    proves continuity with enrollment, not business authority by itself.
-3. Consult the original authority record and confirm the delegation is still
+3. Consult the enrollment authority record and confirm the delegation is still
    current through the pre-established business contact route. The verifier
    initiates the contact using the stored route, never a replacement route in
    the recovery request. Record who confirmed the representative's current
@@ -111,9 +124,13 @@ For each recovery request, the licensing verifier must:
    Route possession alone is not the result: missing authority provenance,
    ambiguity, disagreement or an unresponsive contact leaves the case blocked.
    The requester's own assertion of continuing authority cannot serve as the
-   independent confirmation; the accepted onboarding procedure must identify
-   the business authority or record custodian able to supply it. If no such
-   independent source is available, this initial policy does not support recovery.
+   independent confirmation. The confirmer must be a business-side authority
+   distinct from the requester, established through the accepted enrollment
+   procedure. A verifier-side custodian, enrollment-record owner or other holder
+   of the verification records cannot serve as that confirmer. If no such
+   independent business-side authority is available, recovery remains blocked.
+   A sole-authority business whose enrolled representative is its only authority
+   has no recovery path under this initial policy, even after enrollment.
 4. Write a case-bound verification record with the enrollment/delegation and
    policy revisions, authoritative-source references, exact target binding,
    verifier identity and expiry. Recheck current versions and revocation before
@@ -139,9 +156,10 @@ representative. No credential enrollment or re-enrollment happens in this slice.
 Use a dedicated, private licensing administration web application with an
 explicit origin and relying-party identity, separate from customer application
 and licence-acquisition surfaces. Select no host, domain, vendor or deployment
-here. The licensing owner controls its server-side account/role registry and
-audit writer; the operator explicitly approves its initial administrator roster
-and enrollment ceremony. No public self-signup, shared administrator account,
+here. Under the ownership split above, the licensing owner is proposed to control
+its server-side account/role registry and decision-audit writer; the operator
+must explicitly approve its initial administrator roster and enrollment
+ceremony. No public self-signup, shared administrator account,
 customer-token promotion or client-supplied role is permitted.
 
 Propose personally enrolled, user-verifying roaming hardware credentials for
@@ -191,9 +209,10 @@ the accepted fields and bounds; this prose proposal adds no alternate validator.
 
 ## Private records, audit and deletion boundary
 
-Keep original business authorization, contact details and human verification
-notes in the restricted licensing verification store. Limit access to assigned
-verifiers and explicitly authorized records custodians; an approver sees the
+Keep enrollment-time business authorization, contact details and human
+verification notes in the enrollment-record owner's proposed external record
+store. Limit access to assigned verifiers and explicitly authorized records
+custodians; an approver sees the
 necessary result/provenance, not unrestricted source documents. No raw record,
 identity document, credential secret, session token or contact detail enters a
 Lead Intake packet, entitlement, PR, log or model prompt. Opaque references and
@@ -202,8 +221,8 @@ hashes are still access-controlled, not treated as public anonymization.
 Keep the recovery lineage and decision audit immutable while authority or any
 replacement derived from it remains in use. Source-material retention is a
 separate policy: this proposal intentionally sets no deletion duration without
-the licensing owner's actual record obligations. Before executable work the
-owner must supply an accepted retention/access schedule, deletion owner and
+the enrollment-record owner's actual record obligations. Before executable work
+that owner must supply an accepted retention/access schedule, deletion owner and
 backup handling. No cleanup job or permanent retention claim is authorized.
 Authorized source deletion records a tombstone and provenance digest; it never
 frees a consumed deployment. If required verification material is unavailable,
@@ -235,6 +254,7 @@ These are future proof obligations, not executed tests:
 | Qualified pre-enrollment, fresh enrolled-key proof, independently reconfirmed current delegation, same business/entitlement and target | One case-bound verification result; no automatic recovery approval or host write. |
 | Licence, paid invoice, receipt, email, installer privilege or synthetic retirement packet alone | No business-verification success. |
 | Record with no independently established authorizing role; new contact/key supplied in recovery; unsupported business form | Block; no enrollment or trust-root substitution inside recovery. |
+| Sole-authority business whose enrolled representative is its only authority, including one with completed enrollment | No recovery under this initial policy; neither self-confirmation nor a verifier-side record holder can substitute for an independent business-side authority. |
 | Valid credential but withdrawn delegation, wrong entitlement, stale or mixed-validity evidence | No approval; credential possession does not rescue a failed authority check. |
 | Exact expiry, future confirmation time, zero/empty/false bounds or missing required fields | Refuse; no fallback to a permissive default. Numeric and temporal bounds belong to the future closed schema and semantic owner. |
 | Forged actor/role, wrong origin, replayed challenge, expired session, wrong target or requester approving own recovery | No privileged write; server-owned identity and binding control the decision. |
@@ -243,20 +263,27 @@ These are future proof obligations, not executed tests:
 | Valid business and admin checks, but unreachable predecessor or absent native/retirement qualification | Block replacement; no exemption from issue 84. |
 | Missing source after authorized deletion versus damaged required audit lineage | Block new verification for unavailable source; STOP for corrupt lineage; neither makes consumption available. |
 
-Before an executable work order can be accepted, the licensing owner must supply
-and adopt the concrete onboarding source/custodian/procedure, credential-enrollment
-and administrator-recovery procedure, roster, retention schedule and channel
-ownership. A later work order must pin the authentication implementation and
-profile enforcement, closed wire/storage models, atomic permission ordering and
+Before an executable work order can be accepted, Juan must name the
+enrollment-record owner and decide the external storage location. That owner must
+supply the new enrollment-system design, authority-check and representative
+credential-enrollment procedures, and retention schedule. The licensing owner
+must adopt the verification policy and supply its administrator enrollment and
+recovery procedures, roster and channel design under the ownership split above.
+Juan must accept those concrete inputs. A later work order must pin the
+authentication implementation and profile enforcement, closed wire/storage
+models, atomic permission ordering and
 qualification plan. No undeclared provider, trust root or policy placeholder may
 be replaced with a fixture flag and called real verification.
 
-Juan's exact acceptance must cover the proposed eligibility restriction, manual
-authority confirmation, credential requirement, session/freshness bounds and
-blocked fallback behavior. Costs are deliberate: onboarding work, hardware
-credentials, manual verification and recovery delays; some existing customers
-will be ineligible until enrollment is qualified. These are proposals for review,
-not claims that Juan already chose them. An accepted proposal can remain blocked
+Juan's exact acceptance must cover the proposed eligibility restriction, new
+enrollment-time authorization document, manual authority confirmation, credential
+requirement, session/freshness bounds and blocked fallback behavior. Costs are
+deliberate: creating and operating the enrollment system, hardware credentials,
+manual verification and recovery delays; some existing customers will be
+ineligible until enrollment is qualified. Sole-authority businesses remain
+excluded from recovery under this initial policy even after enrollment; this is
+a product restriction, not a temporary enrollment backlog. These are proposals
+for review, not claims that Juan already chose them. An accepted proposal can remain blocked
 for execution until its named inputs are supplied and separately reviewed.
 
 Submit this exact contract revision to independent oversight; then obtain Juan's
