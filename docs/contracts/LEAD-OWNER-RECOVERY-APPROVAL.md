@@ -93,6 +93,11 @@ Possessing a licence, consumed claim, receipt, email address, local account,
 installer privilege or evidence-admission packet alone is insufficient.
 No real identity documents are collected by this work order.
 
+The proposed [business-verification policy and administrator channel](LEAD-OWNER-BUSINESS-VERIFICATION.md)
+recommends a restricted initial policy and channel profile for licensing-owner
+adoption and Juan's exact acceptance. It does not establish that an authoritative
+enrollment source exists, satisfy native retirement or authorize execution.
+
 ## Exact decision binding and independent prerequisites
 
 The licensing owner must read its authoritative consumed deployment and bind
