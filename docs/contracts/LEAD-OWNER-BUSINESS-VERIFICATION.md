@@ -402,6 +402,10 @@ These are future proof obligations, not executed tests:
 | Valid business and admin checks, but unreachable predecessor or absent native/retirement qualification | Block replacement; no exemption from issue 84. |
 | Missing source after authorized deletion versus damaged required audit lineage | Block new verification for unavailable source; STOP for corrupt lineage; neither makes consumption available. |
 
+The proposed [enrollment, evidence and custody work order](LEAD-OWNER-ENROLLMENT.md)
+develops the concrete inputs below. It does not establish an existing record
+system or a qualified evidence method, and this policy remains their owner.
+
 Before an executable work order can be accepted, Juan must name the
 enrollment-record owner and decide the external storage location. That owner must
 supply the new enrollment-system design, concrete independent authority-check
