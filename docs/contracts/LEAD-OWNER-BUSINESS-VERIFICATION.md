@@ -7,15 +7,13 @@ independent oversight and Juan's exact-revision acceptance before merge. Neither
 acceptance nor merge provisions an account, enrolls a business, generates keys,
 collects customer evidence or authorizes implementation.
 
-Pending amendment to the accepted proposal at
-`f219d016577d737676bdbc0338cef025e3a07fbc`: remove categorical exclusion of
-sole-authority businesses and the unnecessary restrictions identified in
-oversight's restriction audit. Independent verification of business authority
-remains required; a second business authority, enrollment before the recovery
-case, owner self-authorization paperwork and customer hardware-key purchase are
-not universal prerequisites. The administrator profile gains a spare credential
-and revised session timeouts. This amendment needs its own exact-revision acceptance
-and does not inherit acceptance from that earlier revision.
+The sole-authority policy amendment merged in PR 100; its enrollment work order
+merged in PR 102. This pending amendment records Juan's subsequent owner
+appointment and proposes configurable source retention. Its new policy details
+need independent review and exact-revision acceptance; earlier acceptance does
+not accept them automatically. Independent verification remains required without
+a universal second person, prior enrollment, owner self-authorization document
+or customer hardware-key purchase.
 
 The [recovery approval requirements](LEAD-OWNER-RECOVERY-APPROVAL.md) and
 [canonical recovery policy](LEAD-OWNER-AUTHORITY.md#failed-or-replaced-pc-recovery)
@@ -31,7 +29,8 @@ establish who may act for a business. A caller-supplied approver or verification
 flag cannot fill that gap. This is a missing policy/channel, not a defect to fix
 in the existing consume or evidence-admission owners.
 
-This amendment changes only this proposal; the approval work order is unchanged.
+This amendment changes this policy and its enrollment work order; the approval
+requirements are unchanged.
 No runtime, schema, catalog, dependency, workflow, fixture or entitlement format
 changes. It creates no licensing endpoint and modifies no other repository.
 
@@ -52,8 +51,9 @@ elsewhere or that an uninspected record is qualified.
 
 Initial business enrollment and its recovery-contact record are a **new proposed
 record system**, not a facility supplied by either inspected repository. The
-**enrollment-record owner** means the accountable owner Juan must name; that
-owner and the storage location remain open decisions. This owner would create
+**enrollment-record owner** is Juan, explicitly appointed in his subsequent
+operator decision recorded in the enrollment work order and issue 101. The
+storage location remains open. This owner would create
 and maintain enrollment records, source-material custody and retention. The
 **licensing owner** retains recovery-policy adoption and approval responsibility
 and is proposed to own the administrator channel's account/role registry and
@@ -142,8 +142,8 @@ provenance of the independent evidence and contact route. If that chain cannot
 be established, enrollment is not qualified and recovery remains blocked.
 
 No enrollment record or contact is claimed to exist today. Before executable
-work, Juan must name the enrollment-record owner and decide the storage location.
-That owner must propose how to create the new system, independently check
+work, Juan, the appointed record owner, must decide the storage location and
+propose how to create the new system, independently check
 business authority and enroll the representative; the licensing owner must adopt
 the resulting policy, and Juan must accept the concrete source and procedures.
 The concrete procedure must specify supported business forms and authority bases,
@@ -317,13 +317,91 @@ hashes are still access-controlled, not treated as public anonymization.
 
 Keep the recovery lineage and decision audit immutable while authority or any
 replacement derived from it remains in use. Source-material retention is a
-separate policy: this proposal intentionally sets no deletion duration without
-the enrollment-record owner's actual record obligations. Before executable work
-that owner must supply an accepted retention/access schedule, deletion owner and
-backup handling. No cleanup job or permanent retention claim is authorized.
+separate policy, proposed below. Before executable work, the record owner must
+supply the actual record obligations, accepted schedule and backup handling.
+No cleanup job or permanent retention claim is authorized.
 Authorized source deletion records a tombstone and provenance digest; it never
 frees a consumed deployment. If required verification material is unavailable,
 future approval blocks. A missing lineage/audit row is STOP, not routine deletion.
+
+### Proposed source-retention schedule
+
+Juan requested a default within 30–90 days with customer choice; this amendment
+recommends **30 days from receipt for each retained source copy**. The exact
+default, start event and rules here are proposed for review, not an already
+accepted or legally qualified US-wide schedule. Record the receipt time and
+effective policy revision. Reading, reviewing, opening a recovery case or
+restoring a backup does not restart that clock. Verification still pending at
+expiry does not silently extend it; new independent evidence may be needed.
+
+The business's currently authorized representative can choose a shorter or
+longer duration for its source copies through the authenticated business-scoped
+channel. No 30-day minimum or 90-day maximum is inferred from the suggested
+default range. Zero means no persistent source copy, using transient verification
+or references where the qualified method supports that; it does not mean retain
+forever or use a fallback default. A method needing a retained copy must state
+the exact need and investigate a lighter alternative, not categorically exclude
+the business. No silent coercion of a valid customer choice is permitted.
+
+Make each change explicit about existing copies and future collection. Shortening
+for existing copies makes already-overdue copies due immediately. An explicit
+extension may update a still-retained copy, but cannot recreate deleted bytes.
+Serialize setting changes with deletion and report which operation took effect;
+if deletion won, an extension cannot claim to restore the copy or undo its
+tombstone. A future form must show the effective expiry and the
+scope of the change before saving it. Record who changed it and which revision
+applies. An unauthenticated caller, another business or a revoked representative
+cannot change this policy. This uses the canonical role boundary, not a new
+credential or second-person approval requirement.
+
+The setting must say plainly: **this duration governs raw source copies only**.
+Both the setting surface, before saving, and every deletion receipt must list
+each other retained class below: minimal enrollment/current-authority records,
+consumed-deployment lineage/decision audit, and any remaining source-copy backups.
+For each, show what remains, its concrete retention basis and its end condition
+(or the backup's actual expiry), including when the selected source duration is
+zero. Distinguish a class with no remaining records from one still retained.
+Zero or completed source deletion must not be presented as deletion of all
+business records. The selected operating policy must supply the unresolved
+retirement/end conditions before real use; a generic "required records remain"
+notice does not fulfill this disclosure or justify retention.
+
+Use the following record classes; do not implement one account-wide TTL:
+
+| Record class | Proposed handling |
+| --- | --- |
+| Raw source copies, including optional identity/delegation documents and captured source responses | Customer-configurable default above, subject only to a specifically established obligation for that record. Prefer independent references/minimal facts when sufficient; no universal ID copy. |
+| Minimal enrollment/current-authority record | Retain only facts and provenance needed to manage current authority: opaque record/binding references, authority basis/scope, method and source revision, observation/verifier provenance, credential-registration reference and current withdrawal/supersession state. Contact and identity details stay external and are limited to the qualified method's needs. No document text disguised as audit metadata. |
+| Consumed-deployment lineage and decision audit | Preserve original identifiers, association revisions and authorization/deletion decisions while authority or a derived replacement remains in use, as above. Source expiry cannot make consumption available. Retirement and eventual deletion require a separately specified condition proving this history no longer supports active authority; this is not a blanket forever policy. |
+| Source-copy backups | Cover each copy in the custody inventory with a finite, disclosed expiry. Restrict ordinary access after primary expiry and reapply current deletion tombstones before any restore is exposed. Customer-visible deletion status distinguishes primary deletion from remaining backup expiry; do not claim immediate physical erasure of all copies. |
+
+Juan owns deletion operations; the customer controls the source-copy preference.
+On expiry, prevent further ordinary reads, delete through the store's supported
+object API, and record completion or retryable failure without copying the
+source into logs. Do not mark deletion complete on a failed/missing response.
+Concurrent verification must recheck required-source availability at decision
+commit; a stale open document cannot supply current evidence. Where a qualified
+method can independently retrieve fresh evidence, use it and record new
+provenance; deletion is not permanent ineligibility. Corrupt required history
+remains STOP, not a cue to rebuild it as a new enrollment.
+
+The selected custody plan must state the actual backup expiry bound and restore
+procedure before collection. No provider-independent number is invented here.
+If a selected source/jurisdiction imposes a conflicting obligation, record its
+authority, affected record class, duration and customer-visible effect; justify
+why a minimal reference or different evidence method cannot meet it. Do not
+infer a nationwide legal minimum or indefinite hold from a generic compliance
+label. The all-50-state target requires coverage research, not an extra document
+from every customer.
+
+The later schema owns non-negative duration and explicit zero semantics, UTC
+instants, closed record classes and required policy revisions. Reject booleans,
+empty strings and malformed values rather than defaulting them to 30. The one
+retention owner computes expiry; the transactional writer enforces revisions,
+authorization and deletion ordering. The same owner schedules pending source
+records under the [custody creation order](LEAD-OWNER-ENROLLMENT.md#source-object-creation-and-reconciliation);
+upload finalization never starts a second retention clock. This prose does not
+add an executable schema, scheduler or source-cleanup implementation.
 
 ## Approval remains a separate decision
 
@@ -368,6 +446,8 @@ operator. No restriction below requires another business owner or another operat
 | Server-derived actor/scope, origin protection, exact decision binding, serialized revisions and revocation, one selected target | No unsigned import or email-link approval; competing decisions wait or fail. | Prevent forged roles, request substitution, revoked authority winning a writer race and duplicate replacement targets. A prior check followed by an unguarded write or a browser flag does not enforce the licensing writer's decision. The existing consumed-binding/corruption owners illustrate why caller claims cannot replace authoritative state. |
 | No password/email/support bypass; all administrator keys lost means restore through the accepted enrollment procedure | Losing both keys stops writes until administration is restored. | An easier fallback would let an attacker bypass the privileged credential and roster boundary. A tested spare handles ordinary single-key loss; full loss requires restoring that same authority boundary, not asserting a support role. No permanent lockout or second-person requirement is introduced. |
 | External restricted identity records, opaque references, protected audit history and explicit source-retention policy | Custody, access control, backup/restore and retention work for the named owner. | Source identity material must not spread through licences, logs, CI or model prompts; the proposed licence service has no identity store. Audit history is required to distinguish authorized deletion from corrupt consumption. Hashes alone cannot replace unavailable authority evidence; unrestricted copies or deleting lineage on cleanup defeat those boundaries. No indefinite source-retention duration is imposed. |
+| Separate source-copy expiry from active authority/consumption history | Some minimal binding/audit facts remain beyond the customer's document-copy duration. | The existing recovery relation and consumed-state rules need original identifiers and withdrawals to avoid duplicate authority or false availability after cleanup. Longer retention of original documents is unnecessary for that purpose; deleting both classes loses the boundary. Keep only necessary facts and specify retirement before eventual removal. |
+| Customer settings use authenticated business scope and serialized deletion handling | Authorized changes require the existing channel; deleted copies cannot be resurrected by an extension. | A cross-business or revoked actor could destroy another customer's proof, and a race/restore could silently retain private material contrary to the effective policy. A UI-only check or deleting metadata alone cannot enforce the boundary. Existing role controls, structured policy revisions and supported object deletion are sufficient; no second approver is needed. |
 | Determined consumption, qualified predecessor retirement, fresh replacement proof and separate executable authorization | A dead/unreachable predecessor can still block publication even after successful business verification. | The current local-first host cannot prove an old disk image lost its authority merely because licensing approved a replacement. A signature or support decision does not fence the old host. Issue 84 owns the missing enforcement/product decision; this contract cannot disguise that gap. No ordinary-operation polling is introduced because it would change offline operation rather than prove the existing boundary. |
 | Concrete methods, owner/custody and qualification before execution; native/live holds | This contract alone cannot perform recovery or collect real evidence. | Current code supplies synthetic evidence only. A fixture flag or accepted prose cannot authenticate a real business or retire a real host. The separately reviewed execution work order must provide those actual owners and proofs; the holds preserve Juan's explicit scope. |
 
@@ -401,13 +481,19 @@ These are future proof obligations, not executed tests:
 | Lost reply or two concurrent decisions for different replacements | Existing exact retry/one-selected-target rules; preserve history, never duplicate approval or overwrite the target. |
 | Valid business and admin checks, but unreachable predecessor or absent native/retirement qualification | Block replacement; no exemption from issue 84. |
 | Missing source after authorized deletion versus damaged required audit lineage | Block new verification for unavailable source; STOP for corrupt lineage; neither makes consumption available. |
+| Default receipt-based expiry, shorter/longer customer setting, zero, and a value above 90 days | Default is 30 days; valid choices are honored without an inferred 30–90 bound. Zero persists no source copy; no falsy fallback. Method-specific obligations must be explicit. |
+| Zero selected, or positive duration expires while minimal authority/lineage records or backups remain | Setting and deletion receipt both identify the raw-copy-only scope and each retained class, its basis and end condition/backup expiry. Show absent classes accurately; never claim all records were deleted. |
+| Boolean, empty string, missing required policy revision or mixed valid/invalid policy fields | Closed schema rejects malformed policy; no partial application or fallback duration. |
+| Shortening an existing copy past its due time; extension before, at or after expiry | Due immediately on shortening; explicit extension can update a retained copy. If deletion wins the serialized race, no false restoration or undone tombstone. Check both operation orders and exact expiry. |
+| Verification still open at expiry; deletion fails; stale backup restored after deletion | No clock reset or silent extension, no false completion; unavailable required evidence blocks decision until valid evidence exists. Restore reapplies tombstones and reports remaining backup expiry accurately. |
+| Customer changes another business's policy or uses a withdrawn role | Reject under current business/role authorization without changing either policy. |
 
 The proposed [enrollment, evidence and custody work order](LEAD-OWNER-ENROLLMENT.md)
 develops the concrete inputs below. It does not establish an existing record
 system or a qualified evidence method, and this policy remains their owner.
 
-Before an executable work order can be accepted, Juan must name the
-enrollment-record owner and decide the external storage location. That owner must
+Before an executable work order can be accepted, Juan, the appointed
+enrollment-record owner, must decide the external storage location and
 supply the new enrollment-system design, concrete independent authority-check
 methods and sources for own authority and delegation, representative
 credential-enrollment procedures, and retention schedule. The later qualification
