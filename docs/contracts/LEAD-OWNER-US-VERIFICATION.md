@@ -123,6 +123,10 @@ and the recovery-independent credential profile remain separate work orders.
 
 ## Proposed licensing issuance and association journal
 
+The proposed [licensing register specification](LEAD-OWNER-LICENSING-REGISTER.md)
+develops the source/owner recommendation, closed record branches and writer ordering.
+It is a separate contract proposal, not an implemented registry or licensing adoption.
+
 Because no registry exists in the inspected main branches, propose a licensing-owned
 revisioned journal and an adapter to the actual authoritative commercial source.
 This is a new record system requiring adoption, not an existing service capability.
