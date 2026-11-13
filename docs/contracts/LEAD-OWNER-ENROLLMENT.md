@@ -219,6 +219,10 @@ record owner, fields, source systems and cross-store ordering before code work.
 
 ## Evidence profiles: concrete completion requirements
 
+The proposed [US verification methods and licensing-record work order](LEAD-OWNER-US-VERIFICATION.md)
+develops named source investigations and the missing issuance/association journal.
+Its research coverage is not qualification or authorization to execute this workflow.
+
 An enrollment procedure must establish three separate facts: the person is the
 claimed person, that person has current authority for the business, and the
 business owns the issued-entitlement association (including the exact consumed
