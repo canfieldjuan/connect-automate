@@ -354,6 +354,18 @@ applies. An unauthenticated caller, another business or a revoked representative
 cannot change this policy. This uses the canonical role boundary, not a new
 credential or second-person approval requirement.
 
+The setting must say plainly: **this duration governs raw source copies only**.
+Both the setting surface, before saving, and every deletion receipt must list
+each other retained class below: minimal enrollment/current-authority records,
+consumed-deployment lineage/decision audit, and any remaining source-copy backups.
+For each, show what remains, its concrete retention basis and its end condition
+(or the backup's actual expiry), including when the selected source duration is
+zero. Distinguish a class with no remaining records from one still retained.
+Zero or completed source deletion must not be presented as deletion of all
+business records. The selected operating policy must supply the unresolved
+retirement/end conditions before real use; a generic "required records remain"
+notice does not fulfill this disclosure or justify retention.
+
 Use the following record classes; do not implement one account-wide TTL:
 
 | Record class | Proposed handling |
@@ -386,8 +398,10 @@ The later schema owns non-negative duration and explicit zero semantics, UTC
 instants, closed record classes and required policy revisions. Reject booleans,
 empty strings and malformed values rather than defaulting them to 30. The one
 retention owner computes expiry; the transactional writer enforces revisions,
-authorization and deletion ordering. This prose does not add an executable
-schema, scheduler or source-cleanup implementation.
+authorization and deletion ordering. The same owner schedules pending source
+records under the [custody creation order](LEAD-OWNER-ENROLLMENT.md#source-object-creation-and-reconciliation);
+upload finalization never starts a second retention clock. This prose does not
+add an executable schema, scheduler or source-cleanup implementation.
 
 ## Approval remains a separate decision
 
@@ -468,6 +482,7 @@ These are future proof obligations, not executed tests:
 | Valid business and admin checks, but unreachable predecessor or absent native/retirement qualification | Block replacement; no exemption from issue 84. |
 | Missing source after authorized deletion versus damaged required audit lineage | Block new verification for unavailable source; STOP for corrupt lineage; neither makes consumption available. |
 | Default receipt-based expiry, shorter/longer customer setting, zero, and a value above 90 days | Default is 30 days; valid choices are honored without an inferred 30–90 bound. Zero persists no source copy; no falsy fallback. Method-specific obligations must be explicit. |
+| Zero selected, or positive duration expires while minimal authority/lineage records or backups remain | Setting and deletion receipt both identify the raw-copy-only scope and each retained class, its basis and end condition/backup expiry. Show absent classes accurately; never claim all records were deleted. |
 | Boolean, empty string, missing required policy revision or mixed valid/invalid policy fields | Closed schema rejects malformed policy; no partial application or fallback duration. |
 | Shortening an existing copy past its due time; extension before, at or after expiry | Due immediately on shortening; explicit extension can update a retained copy. If deletion wins the serialized race, no false restoration or undone tombstone. Check both operation orders and exact expiry. |
 | Verification still open at expiry; deletion fails; stale backup restored after deletion | No clock reset or silent extension, no false completion; unavailable required evidence blocks decision until valid evidence exists. Restore reapplies tombstones and reports remaining backup expiry accurately. |

@@ -110,6 +110,43 @@ owns the proposed default, customer settings, deletion and required history.
 Prefer source references and minimal verification records where the qualified
 method permits; this candidate does not require copies of identity documents.
 
+### Source-object creation and reconciliation
+
+Before any source upload, the custody writer must commit a closed pending
+retention record containing the unique object key, authenticated business scope,
+receipt time and policy revision. Enforce required fields, key uniqueness and
+policy references with the storage owner's schema/constraints; Storage write
+authorization must require that committed, current record. If the commit fails,
+no upload is permitted. A zero source-copy duration uses the canonical transient/
+reference path, not an upload followed by deletion. This adds no customer step.
+
+The canonical retention owner schedules pending records from the recorded
+receipt time, including a crash before upload or after upload but before
+finalization. Finalize only against the current policy/state; failures remain
+tracked, with the same key on retry and no clock reset. Pending expiry, deletion
+and upload completion must be serialized/fenced: a late object must remain
+unreadable and be deleted if expiry/deletion won. Keep the deletion record long
+enough to reconcile in-flight completions; an empty object lookup alone cannot
+prove no late upload will arrive. The later storage contract must qualify this
+ordering rather than assume a database transaction includes the Storage API.
+
+As a last line of defense in addition to that creation invariant, reconcile the
+managed source bucket's complete object inventory with the current committed
+retention records. Delete an object lacking such a record through the supported
+Storage API, **within one hour of its store-recorded creation time**, not one
+hour after discovery. This proposed operational cleanup bound includes listing,
+retry and deletion; it is not extra retention time for known copies, whose
+canonical expiry still applies, nor permission to persist zero-duration copies.
+Use the store's structured inventory and verify its timestamps during storage
+qualification; missing/unusable age is treated as overdue. Reconciliation must
+first use a current, reconciled metadata view under the restore rules above,
+not mistake a partial restore for authoritative absence. Limit it to the managed
+source-object scope; it must not delete unrelated objects or recreate missing
+authority/consumption history. An overdue or unsuccessfully deleted orphan is a
+reported retention failure with continued cleanup, never a successful receipt.
+The future qualification must prove coverage and the bound; this is no claim
+that a reconciler or provider guarantee exists today.
+
 ## Business-to-entitlement binding
 
 Do not equate a licence subject, provider customer ID, email address, display
@@ -309,6 +346,7 @@ are the obligations introduced or made concrete by this work order:
 | Record-class retention decisions before real collection | Owner must identify actual obligations and a deletion procedure. | Unspecified retention creates unnecessary private-data exposure or removes evidence needed for later decisions. Keeping everything forever or guessing a universal duration is not a substitute. |
 | Business/role access policies and verified object deletion for the candidate store | Policy configuration, access qualification and separate file-backup/deletion work. | Private customer evidence must not be exposed to another business or remain as forgotten object bytes after metadata cleanup. Encryption alone does not authorize readers, and metadata deletion does not delete Storage objects. Built-in policies/API operations are the supported mechanism; no bespoke cryptography is required here. |
 | Revisioned licensing association with preserved original identifiers | Operator/licensing verification and conflict reconciliation; no automatic email-based association. | Existing recovery models require the original organization/entitlement relation. A mutable name/email join or overwriting on renewal can assign someone else's deployment or lose consumption. Existing issued/consumed records and one explicit association are sufficient; no new identity claim inside the licence is needed. |
+| Pending record before upload; bounded source-object reconciliation | One durable metadata commit before a retained copy and inventory/API/retry capacity to meet the proposed one-hour orphan cleanup budget; no new customer action. | Upload-first can leave bytes outside the only retention scheduler after a crash. Pending-first makes ordinary writes tracked; inventory cleanup handles unexpected objects without replacing that origin fix. Unbounded or discovery-relative cleanup can miss hidden bytes indefinitely. One hour is a proposed operational repair budget, not a customer retention cap or permission to extend known expiry; a metadata-only scan cannot find objects absent from metadata. |
 
 ## Future qualification and exit gates
 
@@ -332,6 +370,10 @@ These are proof obligations, not executed tests:
 | Sale-recorded route shared/reassigned/compromised or business authority no longer current | Contact control alone never qualifies enrollment; investigate evidence sufficient for the actual requester. |
 | Duplicate association retry, concurrent conflicting associations, renewal or evidenced correction | Exact retry remains one association; conflict cannot overwrite original consumed history; legitimate revision and multiple entitlements remain possible. |
 | Vault-only rollback versus joint rollback or withdrawal absent from licensing's last decision | Detect the first using the independently recorded revision; do not claim it proves the latter cases. Qualify their ordering/baseline before enabling decisions. |
+| Pending-record commit fails or crash occurs before it commits | No source object is uploaded; zero-duration selection also creates no persistent copy. |
+| Pending record commits, then crash before upload or after upload before finalization | Same canonical receipt-time expiry applies in both cases; upload retry uses the tracked key, and bytes cannot escape the pending schedule. |
+| Expiry/deletion races upload completion or finalization; retry after a lost upload reply | Current record/state fences completion; no readable late object, clock reset or false deletion receipt; late bytes are reconciled and deleted. |
+| Complete bucket inventory finds an unrecorded source object; known valid object alongside it | Delete only the unrecorded source object within one hour of creation; preserve the valid object until its own expiry. Probe before/at/after the bound, pagination, failed deletion and unknown age; a missed bound is a reported failure, not a pass. |
 
 Open operator and licensing inputs are tracked in
 [issue 101](https://github.com/canfieldjuan/connect-automate/issues/101).
