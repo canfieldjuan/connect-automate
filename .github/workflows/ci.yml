@@ -9,6 +9,22 @@ permissions:
   contents: read
 
 jobs:
+  register-postgres:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v8.3.2
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - run: sudo apt-get update
+      - run: sudo apt-get install -y postgresql-16
+      - run: uv sync --locked --all-groups
+      - run: uv run --group register pytest tests/test_register_protocol.py tests/test_register_postgres.py
+        env:
+          RUN_REGISTER_POSTGRES: "1"
+          REGISTER_PG_BIN: /usr/lib/postgresql/16/bin
+
   test:
     runs-on: ubuntu-latest
     steps:
