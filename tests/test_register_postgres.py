@@ -27,15 +27,19 @@ def instant(t):
 
 
 @pytest.fixture(scope="module")
-def cluster():
+def cluster(tmp_path_factory):
     f = importlib.import_module("qualification.licensing_register.fixture")
-    with f.temporary_cluster(Path("/tmp")) as c:
+    with f.temporary_cluster(tmp_path_factory.getbasetemp()) as c:
         yield c
 
 
 @pytest.fixture
 def reg(cluster):
     return cluster.create(uid(1), uid(2))
+
+
+def test_cluster_uses_pytest_retention(cluster, tmp_path_factory):
+    assert cluster.root.is_relative_to(tmp_path_factory.getbasetemp())
 
 
 def evidence(kind, record, **fields):
@@ -70,11 +74,11 @@ def associate(reg, **fields):
     return command(reg, "associate", 13, proof)
 
 
-def consumption(reg):
+def consumption(reg, entitlement=12):
     # Reuse the real closed original-consumption binding model, with synthetic bytes.
     binding = dict(version="owner-bootstrap/1", operation_id=uid(15), installation_id=uid(16),
                    host_id=uid(17), organization_id=uid(1), claim_id=uid(14),
-                   entitlement_id=uid(12),
+                   entitlement_id=uid(entitlement),
                    generation=1, claim_sha256="b" * 64, principal_commitment="c" * 64,
                    initialization_sha256="d" * 64,
                    installation_public_key=base64.urlsafe_b64encode(bytes(32)).decode().rstrip("="))
@@ -139,6 +143,43 @@ def test_conflicting_facts_leave_snapshot_unchanged(reg, changed):
     with pytest.raises(psycopg.Error, match="BINDING_CONFLICT"):
         reg.client(role).apply(c)
     assert reg.snapshot() == before
+
+
+@pytest.mark.parametrize("mismatch", ["record", "kind", "consumed_entitlement", "issued_grant"])
+def test_existing_mismatched_proof_refuses_with_valid_control(reg, mismatch):
+    import psycopg
+    setup_path(reg)
+    # Both commercial sources and entitlements exist: an FK alone cannot protect the binding.
+    grant = reg.proof(evidence("GRANT", 30, provenance_ref=uid(40), policy_revision=1))
+    reg.client().apply(command(reg, "grant", 30, grant))
+    issuance = reg.proof(evidence("ISSUANCE", 32, grant_id=uid(30), envelope_sha256="f" * 64))
+    reg.client().apply(command(reg, "issuance", 32, issuance))
+    if mismatch == "record":
+        # An existing record's proof cannot authorize creating another record.
+        bad = command(reg, "grant", 31, grant)
+        good = command(reg, "grant", 31, reg.proof(evidence(
+            "GRANT", 31, provenance_ref=uid(41), policy_revision=1)))
+    elif mismatch == "kind":
+        with reg.admin() as db:
+            proof = str(db.execute("SELECT proof FROM licensing_register.enrollments "
+                                   "WHERE id=%s", (uid(11),)).fetchone()[0])
+        bad = command(reg, "grant", 11, proof)
+        good = command(reg, "grant", 11, reg.proof(evidence(
+            "GRANT", 11, provenance_ref=uid(41), policy_revision=1)))
+    elif mismatch == "consumed_entitlement":
+        reg.client().apply(associate(reg))
+        bad = consumption(reg, entitlement=32)
+        good = consumption(reg)
+    else:
+        bad = associate(reg, entitlement_id=uid(32))
+        good = associate(reg, entitlement_id=uid(32), grant_id=uid(30))
+    before = reg.snapshot()
+    with pytest.raises(psycopg.Error, match="BINDING_CONFLICT"):
+        reg.client().apply(bad)
+    assert reg.snapshot() == before
+    result = reg.client().apply(good)
+    assert result["result_kind"] == "RECORDED"
+    assert result["qualification_pass"] is False
 
 
 @pytest.mark.parametrize("kind,record,role", [("grant", 10, "licensing"),

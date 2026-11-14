@@ -181,8 +181,8 @@ class Register:
 
 @contextmanager
 def temporary_cluster(parent):
-    """Fresh path on a short private socket parent, no ambient PG connection variables."""
-    # Socket path has a platform size bound; keep nested pytest directory names out.
+    """Fresh path within caller-managed retention; no ambient PG connection variables."""
+    # Tests pass pytest's base temp directly, avoiding long per-test directory names.
     root = Path(parent) / ("reg_" + secrets.token_hex(6))
     with Cluster(root) as cluster:
         yield cluster

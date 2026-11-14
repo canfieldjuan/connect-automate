@@ -13,12 +13,15 @@ uv sync --locked --all-groups
 RUN_REGISTER_POSTGRES=1 uv run --group register pytest tests/test_register_postgres.py tests/test_register_protocol.py
 ```
 
-The fixture creates a fresh private cluster under `/tmp`, with a private Unix
+The tests create a fresh private cluster under pytest's managed base temp, with a private Unix
 socket, SCRAM login passwords and no TCP listener. `REGISTER_PG_BIN` may point to
 an absolute installed PostgreSQL binary directory. No ambient DSN is accepted.
-Only its own cluster is stopped; no databases are dropped or directories removed.
-The disposable directories remain owner-only for inspection and later operator
-cleanup. They contain temporary test passwords, never real credentials.
+Only its own cluster is stopped; the fixture issues no database drops or directory
+deletions. Pytest owns directory cleanup under its configured retention policy
+(the default keeps the last three runs). The socket sits directly below a short
+cluster directory under that base, without long per-test names. Retained directories
+are owner-only and contain temporary test passwords, never real credentials.
+Durable review evidence is stored separately, outside pytest's disposable storage.
 
 `Register` is a privileged test controller: it creates databases and imports
 closed synthetic statements signed by an in-memory Ed25519 authority created for
@@ -66,6 +69,8 @@ revision envelope is still to implement. Journal snapshots retain revisions here
 production revision tables, event timestamps/reasons and compact audit references
 are still to implement. The fixture journal contains only closed opaque synthetic
 command fields, never human notes or identity text.
+Each fixture actor is bound to one organization; a real licensing operator's
+multi-business authorization model is a separate porting requirement.
 
 The imported enrollment proof asserts a synthetic completed decision. It does not
 implement the contract's method/source branches, canonical registration ceremony,
