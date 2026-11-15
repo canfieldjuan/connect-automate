@@ -10,7 +10,7 @@ Run with PostgreSQL 16 binaries installed:
 
 ```sh
 uv sync --locked --all-groups
-RUN_REGISTER_POSTGRES=1 uv run --group register pytest tests/test_register_postgres.py tests/test_register_protocol.py
+RUN_REGISTER_POSTGRES=1 uv run --group register pytest tests/test_register_postgres.py tests/test_register_protocol.py tests/test_register_enrollment_change.py
 ```
 
 The tests create a fresh private cluster under pytest's managed base temp, with a private Unix
@@ -53,7 +53,7 @@ supported restore must impose the external lock. `lock_restored()` models that
 interlock; there is no unlock command or claim of production continuity.
 
 Not implemented: sale/provider ingestion, commercial/association corrections,
-business transfers, enrollment change/finalization ceremony, source custody or
+business transfers, real enrollment verification/registration ceremony, source custody or
 retention deletion, production authentication, deployment, continuity witness,
 restore unlock, recovery approval or publication. Existing offline issuer and
 recovery fixtures are unchanged. Later integration must preserve their parity.
@@ -74,9 +74,34 @@ multi-business authorization model is a separate porting requirement.
 
 The imported enrollment proof asserts a synthetic completed decision. It does not
 implement the contract's method/source branches, canonical registration ceremony,
-external source currentness or begin/finish-change protocol. Nullable source expiry
+external source currentness or private-store coordination. Nullable source expiry
 models only whether the fixture has a time-limited required source. Similarly,
 issuance and consumption statements are trusted fixture attestations; their real
 envelope/receipt verification adapters and full provenance records remain future
 work. This lane proves the database mechanisms below those adapters and grants no
 permission to bypass them. No existing issuer or host algorithm is ported or replaced.
+
+## Register-side enrollment changes
+
+Implements the bounded register ordering work order accepted at
+`8c4a883af29f340cd2df5322f5cdbe451498ba8a`. `begin_change` publishes a non-current
+revision before a synthetic evidence change; `finish_change` requires the exact
+pending revision/change plus a candidate decision and bound completion proof.
+The canonical candidate digest is computed at the existing verified Python import
+boundary; SQL compares that trusted digest, without a second JSON canonicalizer.
+Private revision/digest remain signed fixture assertions, not independently verified
+store facts. Tests produce completion facts only after begin commits.
+
+Enrollment heads select retained revisions through relational constraints. An
+enrollment-specific state enum and CHECK branches prohibit completed decision fields
+on non-current revisions. Change IDs are register-wide primary keys; associations
+reference the exact retained enrollment revision. Initial enrollment, begin, finish
+and withdrawal share one SQL transition owner. Existing `withdraw_enrollment` uses
+its operation ID as its internal change ID, and cannot leave an old finish eligible.
+Replay returns historical evidence and never restores a withdrawn head. A fresh,
+evidenced begin/finish can restore currentness from any non-current state.
+
+The fixture has no deployed migration, real private-store adapter, cleanup worker,
+source-currentness proof, new identity method or recovery permission. The existing
+restore lock remains closed. Tests reuse the PostgreSQL process barriers and managed
+temporary retention, and keep review evidence outside that disposable storage.

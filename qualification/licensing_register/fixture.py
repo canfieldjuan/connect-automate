@@ -52,9 +52,11 @@ class Client:
 def execute(db, command):
     """Transaction commits at the caller's connection boundary, never before it."""
     command = Command.validate_python(command)
-    return db.execute("SELECT licensing_register.apply(%s,%s,%s,%s,%s,%s)", (
+    fields = command.model_dump()
+    return db.execute("SELECT licensing_register.apply(%s,%s,%s,%s,%s,%s,%s,%s,%s)", (
         command.command, command.operation_id, command.epoch, command.record_id,
-        command.proof_id, command.expected_revision,
+        command.proof_id, command.expected_revision, fields.get("change_id"),
+        fields.get("reason"), fields.get("decision_id"),
     )).fetchone()[0]
 
 
@@ -155,9 +157,10 @@ class Register:
         value = EVIDENCE.validate_python(document).model_dump(mode="json")
         self._public.verify(signature, b"offline-register-proof/1\0" + canonical(value))
         with self.admin() as db:
-            db.execute("INSERT INTO licensing_register.proofs VALUES(%s,%s,%s,%s,%s,%s)",
+            db.execute("INSERT INTO licensing_register.proofs VALUES(%s,%s,%s,%s,%s,%s,%s)",
                        (value["proof_id"], value["kind"], value["organization_id"],
-                        value["record_id"], Jsonb(value), signature))
+                        value["record_id"], Jsonb(value), signature,
+                        hashlib.sha256(canonical(value)).hexdigest()))
         return value["proof_id"]
 
     def proof(self, document):

@@ -35,7 +35,24 @@ class WithdrawCommand(CommandBase):
     expected_revision: Revision
 
 
-Command = TypeAdapter(Annotated[CreateCommand | WithdrawCommand, Field(discriminator="command")])
+class BeginChange(CommandBase):
+    command: Literal["begin_change"]
+    proof_id: None = None
+    expected_revision: Revision
+    change_id: UuidV4
+    reason: Literal["SOURCE_UPDATED", "SOURCE_UNAVAILABLE", "AUTHORITY_WITHDRAWN"]
+
+
+class FinishChange(CommandBase):
+    command: Literal["finish_change"]
+    proof_id: UuidV4
+    expected_revision: Revision
+    change_id: UuidV4
+    decision_id: UuidV4
+
+
+Command = TypeAdapter(Annotated[CreateCommand | WithdrawCommand | BeginChange | FinishChange,
+                                Field(discriminator="command")])
 
 
 class Proof(Closed):
@@ -58,6 +75,17 @@ class Enrollment(Proof):
     registration_ref: UuidV4
     authority_expires_at: Instant
     required_source_expires_at: Instant | None
+
+
+class EnrollmentCompletion(Proof):
+    kind: Literal["ENROLLMENT_COMPLETION"]
+    change_id: UuidV4
+    pending_revision: Revision
+    decision_proof_id: UuidV4
+    decision_sha256: Digest
+    registration_ref: UuidV4
+    private_revision: Revision
+    private_sha256: Digest
 
 
 class Issuance(Proof):
@@ -86,6 +114,8 @@ class Consumption(Proof):
         return self
 
 
-Evidence = Annotated[Grant | Enrollment | Issuance | Association | Consumption,
-                     Field(discriminator="kind")]
+Evidence = Annotated[
+    Grant | Enrollment | EnrollmentCompletion | Issuance | Association | Consumption,
+    Field(discriminator="kind"),
+]
 EVIDENCE = TypeAdapter(Evidence)

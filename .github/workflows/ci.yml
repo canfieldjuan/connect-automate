@@ -20,7 +20,9 @@ jobs:
       - run: sudo apt-get update
       - run: sudo apt-get install -y postgresql-16
       - run: uv sync --locked --all-groups
-      - run: uv run --group register pytest tests/test_register_protocol.py tests/test_register_postgres.py
+      - run: >-
+          uv run --group register pytest tests/test_register_protocol.py
+          tests/test_register_postgres.py tests/test_register_enrollment_change.py
         env:
           RUN_REGISTER_POSTGRES: "1"
           REGISTER_PG_BIN: /usr/lib/postgresql/16/bin
