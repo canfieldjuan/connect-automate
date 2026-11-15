@@ -10,7 +10,7 @@ Run with PostgreSQL 16 binaries installed:
 
 ```sh
 uv sync --locked --all-groups
-RUN_REGISTER_POSTGRES=1 uv run --group register pytest tests/test_register_postgres.py tests/test_register_protocol.py tests/test_register_enrollment_change.py
+RUN_REGISTER_POSTGRES=1 uv run --group register pytest tests/test_register_postgres.py tests/test_register_protocol.py tests/test_register_enrollment_change.py tests/test_register_association_correction.py
 ```
 
 The tests create a fresh private cluster under pytest's managed base temp, with a private Unix
@@ -52,7 +52,7 @@ A complete jointly rolled-back snapshot cannot be detected by its own hash chain
 supported restore must impose the external lock. `lock_restored()` models that
 interlock; there is no unlock command or claim of production continuity.
 
-Not implemented: sale/provider ingestion, commercial/association corrections,
+Not implemented: sale/provider ingestion, commercial corrections,
 business transfers, real enrollment verification/registration ceremony, source custody or
 retention deletion, production authentication, deployment, continuity witness,
 restore unlock, recovery approval or publication. Existing offline issuer and
@@ -65,9 +65,10 @@ This is a bounded mechanism implementation, not the complete logical record or
 service command schema in the accepted contract. Its separate `offline-register/1`
 version must not be accepted by a production licensing service. Fixture database
 identity plus a fresh epoch isolates each run; the production register ID/schema
-revision envelope is still to implement. Journal snapshots retain revisions here;
-production revision tables, event timestamps/reasons and compact audit references
-are still to implement. The fixture journal contains only closed opaque synthetic
+revision envelope is still to implement. Enrollment and association relations now
+retain their revisions; commercial history still relies on journal snapshots.
+The full production schema, event timestamps and compact audit references remain
+unimplemented. The fixture journal contains only closed opaque synthetic
 command fields, never human notes or identity text.
 Each fixture actor is bound to one organization; a real licensing operator's
 multi-business authorization model is a separate porting requirement.
@@ -105,3 +106,27 @@ The fixture has no deployed migration, real private-store adapter, cleanup worke
 source-currentness proof, new identity method or recovery permission. The existing
 restore lock remains closed. Tests reuse the PostgreSQL process barriers and managed
 temporary retention, and keep review evidence outside that disposable storage.
+
+## Register-side association correction
+
+Implements the offline work order at `87755f367a5d3f3c8d39f79b03623faa3b82803c`.
+`correct_association` takes an exact expected head and an imported, signed synthetic
+`ASSOCIATION_CORRECTION` proof binding that head, the original entitlement and exact
+grant/enrollment revisions. A current supporting grant and enrollment, checked
+after lock waits, are required to publish a new current decision. This checks
+fixture facts; it does not authenticate a person or real sale/issuance/receipt.
+
+Creation, correction and withdrawal share one SQL transition owner. The head retains
+the original association identity and points to a retained revision; a separate
+constant original-revision FK preserves its initial decision. Each revision's
+decision-revision FK targets a `CURRENT` decision using a constrained constant
+target-state column. Current rows reference themselves; withdrawals reference their
+last current decision and carry no current proof or supporting fields. These are
+relational guarantees, not a second mutable decision projection.
+
+A correction can restore a withdrawn association, keep the same supporting facts
+and verification reference, or select another current enrollment of the same
+business. Original entitlement/organization and consumption stay fixed. Withdrawal
+does not require current support; consumption attachment remains historical evidence
+and can follow correction or withdrawal. Grant revision retention and real adapters
+remain outside this slice. No fixture result is recovery or host authority.

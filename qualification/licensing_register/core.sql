@@ -6,10 +6,11 @@ SET search_path = licensing_register, pg_catalog;
 CREATE DOMAIN uid AS uuid CHECK (substring(VALUE::text,15,1) = '4'
   AND substring(VALUE::text,20,1) IN ('8','9','a','b'));
 CREATE DOMAIN digest AS text CHECK (VALUE ~ '^[0-9a-f]{64}$');
-CREATE TYPE proof_kind AS ENUM ('GRANT','ENROLLMENT','ISSUANCE','ASSOCIATION','CONSUMPTION','ENROLLMENT_COMPLETION');
+CREATE TYPE proof_kind AS ENUM ('GRANT','ENROLLMENT','ISSUANCE','ASSOCIATION','CONSUMPTION','ENROLLMENT_COMPLETION','ASSOCIATION_CORRECTION');
 CREATE TYPE command_kind AS ENUM ('grant','enroll','issuance','associate','consume',
-  'withdraw_grant','withdraw_enrollment','withdraw_association','begin_change','finish_change');
+  'withdraw_grant','withdraw_enrollment','withdraw_association','begin_change','finish_change','correct_association');
 CREATE TYPE record_state AS ENUM ('CURRENT','WITHDRAWN');
+CREATE TYPE association_reason AS ENUM ('INITIAL','RECORD_CORRECTION','AUTHORITY_WITHDRAWN');
 CREATE TYPE enrollment_state AS ENUM ('CURRENT','PENDING','UNAVAILABLE','WITHDRAWN');
 CREATE TYPE change_reason AS ENUM ('INITIAL','SOURCE_UPDATED','SOURCE_UNAVAILABLE','AUTHORITY_WITHDRAWN');
 CREATE TABLE control (
@@ -66,21 +67,46 @@ CREATE TABLE issuances (
   id uid PRIMARY KEY, organization uid NOT NULL, grant_id uid NOT NULL, proof uid NOT NULL,
   UNIQUE(id,organization), FOREIGN KEY(grant_id,organization) REFERENCES grants(id,organization),
   FOREIGN KEY(proof,organization) REFERENCES proofs(id,organization));
-CREATE TABLE associations (
+-- Identity is stable in the head; decision fields live only in retained revisions.
+CREATE TABLE association_heads (
   id uid PRIMARY KEY, organization uid NOT NULL, entitlement uid NOT NULL UNIQUE,
-  grant_id uid NOT NULL, enrollment uid NOT NULL, enrollment_revision bigint NOT NULL,
-  grant_revision bigint NOT NULL, revision bigint NOT NULL CHECK(revision>0),
-  state record_state NOT NULL, proof uid NOT NULL, UNIQUE(id,organization,entitlement),
-  FOREIGN KEY(entitlement,organization) REFERENCES issuances(id,organization),
+  revision bigint NOT NULL CHECK(revision>0),
+  original_revision bigint NOT NULL DEFAULT 1 CHECK(original_revision=1),
+  UNIQUE(id,organization), UNIQUE(id,organization,entitlement),
+  FOREIGN KEY(entitlement,organization) REFERENCES issuances(id,organization));
+CREATE TABLE association_revisions (
+  id uid NOT NULL, organization uid NOT NULL, revision bigint NOT NULL CHECK(revision>0),
+  state record_state NOT NULL, reason association_reason NOT NULL,
+  proof uid, grant_id uid, grant_revision bigint CHECK(grant_revision>0),
+  enrollment uid, enrollment_revision bigint,
+  decision_revision bigint NOT NULL CHECK(decision_revision>0),
+  -- Constant target state makes the self-FK select a CURRENT decision, not a withdrawal.
+  decision_state record_state NOT NULL DEFAULT 'CURRENT' CHECK(decision_state='CURRENT'),
+  PRIMARY KEY(id,revision), UNIQUE(id,organization,revision), UNIQUE(id,organization,revision,state),
+  FOREIGN KEY(id,organization) REFERENCES association_heads(id,organization) DEFERRABLE INITIALLY DEFERRED,
+  FOREIGN KEY(proof,organization,id) REFERENCES proofs(id,organization,record_id),
   FOREIGN KEY(grant_id,organization) REFERENCES grants(id,organization),
   FOREIGN KEY(enrollment,organization,enrollment_revision)
     REFERENCES enrollment_revisions(id,organization,revision),
-  FOREIGN KEY(proof,organization) REFERENCES proofs(id,organization));
+  FOREIGN KEY(id,organization,decision_revision,decision_state)
+    REFERENCES association_revisions(id,organization,revision,state) DEFERRABLE INITIALLY DEFERRED,
+  CHECK ((state='CURRENT' AND proof IS NOT NULL AND grant_id IS NOT NULL AND grant_revision IS NOT NULL
+      AND enrollment IS NOT NULL AND enrollment_revision IS NOT NULL AND decision_revision=revision
+      AND ((revision=1 AND reason='INITIAL') OR (revision>1 AND reason='RECORD_CORRECTION')))
+    OR (state='WITHDRAWN' AND reason='AUTHORITY_WITHDRAWN' AND decision_revision<revision
+      AND proof IS NULL AND grant_id IS NULL AND grant_revision IS NULL
+      AND enrollment IS NULL AND enrollment_revision IS NULL)));
+ALTER TABLE association_heads ADD FOREIGN KEY(id,organization,revision)
+  REFERENCES association_revisions(id,organization,revision) DEFERRABLE INITIALLY DEFERRED;
+ALTER TABLE association_heads ADD FOREIGN KEY(id,organization,original_revision)
+  REFERENCES association_revisions(id,organization,revision) DEFERRABLE INITIALLY DEFERRED;
+CREATE VIEW associations AS SELECT r.*,h.entitlement FROM association_heads h
+  JOIN association_revisions r USING(id,organization,revision);
 CREATE TABLE consumptions (
   id uid PRIMARY KEY, organization uid NOT NULL, entitlement uid NOT NULL,
   claim uid NOT NULL UNIQUE, consumed_operation uid NOT NULL UNIQUE,
   proof uid NOT NULL, FOREIGN KEY(id,organization,entitlement)
-    REFERENCES associations(id,organization,entitlement),
+    REFERENCES association_heads(id,organization,entitlement),
   FOREIGN KEY(proof,organization) REFERENCES proofs(id,organization));
 CREATE TABLE journal (
   sequence bigint PRIMARY KEY CHECK(sequence>0), operation uid NOT NULL UNIQUE,
@@ -101,13 +127,15 @@ AS $$ SELECT jsonb_build_object(
  'enrollment_changes', (SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY id),'[]') FROM licensing_register.enrollment_changes t),
  'enrollments', (SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY id),'[]') FROM licensing_register.enrollments t),
  'issuances', (SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY id),'[]') FROM licensing_register.issuances t),
+ 'association_heads', (SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY id),'[]') FROM licensing_register.association_heads t),
+ 'association_revisions', (SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY id,revision),'[]') FROM licensing_register.association_revisions t),
  'associations', (SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY id),'[]') FROM licensing_register.associations t),
  'consumptions', (SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY id),'[]') FROM licensing_register.consumptions t),
  'proofs', (SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY id),'[]') FROM licensing_register.proofs t
    WHERE id IN (SELECT proof FROM licensing_register.grants UNION SELECT proof FROM licensing_register.enrollment_revisions
     UNION SELECT prior_proof FROM licensing_register.enrollment_revisions
     UNION SELECT completion FROM licensing_register.enrollment_revisions
-    UNION SELECT proof FROM licensing_register.issuances UNION SELECT proof FROM licensing_register.associations
+    UNION SELECT proof FROM licensing_register.issuances UNION SELECT proof FROM licensing_register.association_revisions
     UNION SELECT proof FROM licensing_register.consumptions))) $$;
 
 CREATE FUNCTION assert_history() RETURNS void LANGUAGE plpgsql
@@ -194,14 +222,69 @@ BEGIN
  RETURN next_revision;
 END $$;
 
+-- Only apply() calls this owner after lock/auth/history/replay admission.
+CREATE FUNCTION transition_association(cmd command_kind, rid uid, org uid, p proofs, expected bigint)
+RETURNS bigint LANGUAGE plpgsql SET search_path = pg_catalog, licensing_register AS $$
+DECLARE ass licensing_register.associations; g licensing_register.grants; en licensing_register.enrollments;
+ next_revision bigint; current_time_value timestamptz;
+BEGIN
+ SELECT * INTO ass FROM licensing_register.associations WHERE id=rid AND organization=org FOR UPDATE;
+ IF cmd='associate' THEN
+   IF FOUND THEN RAISE EXCEPTION 'BINDING_CONFLICT'; END IF;
+   next_revision:=1;
+ ELSE
+   IF NOT FOUND OR ass.revision<>expected THEN RAISE EXCEPTION 'REVISION_CONFLICT'; END IF;
+   next_revision:=ass.revision+1;
+ END IF;
+ IF cmd='withdraw_association' THEN
+   INSERT INTO licensing_register.association_revisions
+     (id,organization,revision,state,reason,decision_revision)
+     VALUES(rid,org,next_revision,'WITHDRAWN','AUTHORITY_WITHDRAWN',ass.decision_revision);
+ ELSE
+   IF cmd='correct_association' THEN
+     IF (p.document->>'expected_revision')::bigint IS DISTINCT FROM expected OR
+        (p.document->>'entitlement_id')::uuid IS DISTINCT FROM ass.entitlement THEN
+       RAISE EXCEPTION 'BINDING_CONFLICT'; END IF;
+   END IF;
+   SELECT * INTO g FROM licensing_register.grants
+     WHERE id=(p.document->>'grant_id')::uuid AND organization=org FOR UPDATE;
+   IF NOT FOUND THEN RAISE EXCEPTION 'BINDING_CONFLICT'; END IF;
+   SELECT * INTO en FROM licensing_register.enrollments
+     WHERE id=(p.document->>'enrollment_id')::uuid AND organization=org FOR UPDATE;
+   IF NOT FOUND THEN RAISE EXCEPTION 'BINDING_CONFLICT'; END IF;
+   IF NOT EXISTS(SELECT FROM licensing_register.issuances WHERE id=(p.document->>'entitlement_id')::uuid
+        AND organization=org AND grant_id=g.id) THEN
+     RAISE EXCEPTION 'BINDING_CONFLICT'; END IF;
+   IF cmd='correct_association' AND
+     ((p.document->>'grant_revision')::bigint IS DISTINCT FROM g.revision OR
+      (p.document->>'enrollment_revision')::bigint IS DISTINCT FROM en.revision) THEN
+     RAISE EXCEPTION 'REVISION_CONFLICT'; END IF;
+   current_time_value:=clock_timestamp();
+   IF g.state<>'CURRENT' OR en.state<>'CURRENT' OR en.expires<=current_time_value OR
+        en.source_expires<=current_time_value THEN RAISE EXCEPTION 'AUTHORITY_NOT_CURRENT'; END IF;
+   INSERT INTO licensing_register.association_revisions
+     (id,organization,revision,state,reason,proof,grant_id,grant_revision,enrollment,enrollment_revision,decision_revision)
+     VALUES(rid,org,next_revision,'CURRENT',
+       CASE WHEN cmd='associate' THEN 'INITIAL'::licensing_register.association_reason ELSE 'RECORD_CORRECTION' END,
+       p.id,g.id,g.revision,en.id,en.revision,next_revision);
+ END IF;
+ IF cmd='associate' THEN
+   INSERT INTO licensing_register.association_heads(id,organization,entitlement,revision)
+     VALUES(rid,org,(p.document->>'entitlement_id')::uuid,next_revision);
+ ELSE
+   UPDATE licensing_register.association_heads SET revision=next_revision WHERE id=rid AND organization=org;
+ END IF;
+ RETURN next_revision;
+END $$;
+
 CREATE FUNCTION apply(cmd command_kind, op uid, requested_epoch uid, rid uid,
  proof_id uid DEFAULT NULL, expected bigint DEFAULT NULL,
  requested_change uid DEFAULT NULL, why change_reason DEFAULT NULL, decision_id uid DEFAULT NULL) RETURNS jsonb
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, licensing_register AS $$
 DECLARE c licensing_register.control; a licensing_register.actors; p licensing_register.proofs;
- g licensing_register.grants; en licensing_register.enrollments; ass licensing_register.associations;
+ ass licensing_register.associations;
  old licensing_register.journal; req jsonb; res jsonb; snap jsonb; hashed licensing_register.digest;
- target_kind licensing_register.proof_kind; new_revision bigint; current_time_value timestamptz;
+ target_kind licensing_register.proof_kind; new_revision bigint;
 BEGIN
  IF cmd IS NULL OR op IS NULL OR requested_epoch IS NULL OR rid IS NULL THEN
    RAISE EXCEPTION 'INPUT_INVALID';
@@ -225,7 +308,9 @@ BEGIN
    END IF;
  ELSE
    IF requested_change IS NOT NULL OR why IS NOT NULL OR decision_id IS NOT NULL THEN RAISE EXCEPTION 'INPUT_INVALID'; END IF;
-   IF cmd::text LIKE 'withdraw_%' THEN
+   IF cmd='correct_association' THEN
+     IF proof_id IS NULL OR expected IS NULL OR expected<=0 THEN RAISE EXCEPTION 'INPUT_INVALID'; END IF;
+   ELSIF cmd::text LIKE 'withdraw_%' THEN
      IF proof_id IS NOT NULL OR expected IS NULL OR expected<=0 THEN RAISE EXCEPTION 'INPUT_INVALID'; END IF;
    ELSE
      IF proof_id IS NULL OR expected IS NOT NULL THEN RAISE EXCEPTION 'INPUT_INVALID'; END IF;
@@ -242,6 +327,7 @@ BEGIN
    target_kind:=CASE cmd WHEN 'grant' THEN 'GRANT' WHEN 'enroll' THEN 'ENROLLMENT'
      WHEN 'issuance' THEN 'ISSUANCE' WHEN 'associate' THEN 'ASSOCIATION'
      WHEN 'finish_change' THEN 'ENROLLMENT_COMPLETION'
+     WHEN 'correct_association' THEN 'ASSOCIATION_CORRECTION'
      ELSE 'CONSUMPTION' END;
    SELECT * INTO p FROM licensing_register.proofs WHERE id=proof_id;
    IF NOT FOUND THEN RAISE EXCEPTION 'SOURCE_UNAVAILABLE'; END IF;
@@ -258,21 +344,8 @@ BEGIN
  WHEN 'issuance' THEN
    INSERT INTO licensing_register.issuances VALUES(rid,a.organization,
       (p.document->>'grant_id')::uuid,p.id);
- WHEN 'associate' THEN
-   SELECT * INTO g FROM licensing_register.grants
-      WHERE id=(p.document->>'grant_id')::uuid AND organization=a.organization FOR UPDATE;
-   IF NOT FOUND THEN RAISE EXCEPTION 'BINDING_CONFLICT'; END IF;
-   SELECT * INTO en FROM licensing_register.enrollments
-      WHERE id=(p.document->>'enrollment_id')::uuid AND organization=a.organization FOR UPDATE;
-   IF NOT FOUND THEN RAISE EXCEPTION 'BINDING_CONFLICT'; END IF;
-   IF NOT EXISTS(SELECT FROM licensing_register.issuances WHERE id=(p.document->>'entitlement_id')::uuid
-        AND organization=a.organization AND grant_id=g.id) THEN
-      RAISE EXCEPTION 'BINDING_CONFLICT'; END IF;
-   current_time_value:=clock_timestamp();
-   IF g.state<>'CURRENT' OR en.state<>'CURRENT' OR en.expires<=current_time_value OR
-        en.source_expires<=current_time_value THEN RAISE EXCEPTION 'AUTHORITY_NOT_CURRENT'; END IF;
-   INSERT INTO licensing_register.associations VALUES(rid,a.organization,
-      (p.document->>'entitlement_id')::uuid,g.id,en.id,en.revision,g.revision,1,'CURRENT',p.id);
+ WHEN 'associate','correct_association','withdraw_association' THEN
+   new_revision:=licensing_register.transition_association(cmd,rid,a.organization,p,expected);
  WHEN 'consume' THEN
    SELECT * INTO ass FROM licensing_register.associations WHERE id=rid AND organization=a.organization;
    IF NOT FOUND THEN RAISE EXCEPTION 'BINDING_CONFLICT'; END IF;
@@ -283,10 +356,6 @@ BEGIN
       (p.document->'binding'->>'operation_id')::uuid,p.id);
  WHEN 'withdraw_grant' THEN
    UPDATE licensing_register.grants SET state='WITHDRAWN',revision=revision+1
-     WHERE id=rid AND organization=a.organization AND revision=expected RETURNING revision INTO new_revision;
-   IF NOT FOUND THEN RAISE EXCEPTION 'REVISION_CONFLICT'; END IF;
- WHEN 'withdraw_association' THEN
-   UPDATE licensing_register.associations SET state='WITHDRAWN',revision=revision+1
      WHERE id=rid AND organization=a.organization AND revision=expected RETURNING revision INTO new_revision;
    IF NOT FOUND THEN RAISE EXCEPTION 'REVISION_CONFLICT'; END IF;
  END CASE;

@@ -105,9 +105,15 @@ class Cluster:
 
     def __exit__(self, *args):
         if self.started:
-            subprocess.run([str(self.bin / "pg_ctl"), "-D", str(self.root / "data"),
-                            "-m", "fast", "-w", "stop"], check=True, capture_output=True)
-            self.started = False
+            try:
+                # Flush fixture writes before pg_ctl's bounded shutdown wait. A large
+                # set of test databases can take longer than that wait just to sync.
+                with self.admin("postgres", autocommit=True) as db:
+                    db.execute("CHECKPOINT")
+            finally:
+                subprocess.run([str(self.bin / "pg_ctl"), "-D", str(self.root / "data"),
+                                "-m", "fast", "-w", "stop"], check=True, capture_output=True)
+                self.started = False
         # No database drop or directory deletion; caller owns disposable fixture retention.
 
     def args(self, database, user="fixture_admin"):

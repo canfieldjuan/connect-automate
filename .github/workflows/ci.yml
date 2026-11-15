@@ -23,6 +23,7 @@ jobs:
       - run: >-
           uv run --group register pytest tests/test_register_protocol.py
           tests/test_register_postgres.py tests/test_register_enrollment_change.py
+          tests/test_register_association_correction.py
         env:
           RUN_REGISTER_POSTGRES: "1"
           REGISTER_PG_BIN: /usr/lib/postgresql/16/bin
