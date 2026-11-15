@@ -313,3 +313,8 @@ The proposed [offline association correction work order](LEAD-OWNER-ASSOCIATION-
 narrows a subsequent same-business correction and retained withdrawal-history slice.
 It is contract-only and requires its own review and acceptance before separately
 authorized implementation.
+
+The proposed [offline grant revisions and issuance-binding work order](LEAD-OWNER-GRANT-REVISIONS.md)
+narrows retained grant decisions, evidenced correction and exact historical issuance
+binding in the synthetic fixture. It is contract-only and requires its own review
+and explicit revision acceptance before separately authorized implementation.
