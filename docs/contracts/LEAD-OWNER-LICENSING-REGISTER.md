@@ -304,3 +304,7 @@ continuity remain explicit execution gates. Acceptance does not provision Supaba
 or authorize code. A later bounded offline implementation request can cover these
 record transitions while all live/identity/restore-unlock work remains held.
 Track operating inputs in [issue 101](https://github.com/canfieldjuan/connect-automate/issues/101).
+
+The proposed [offline enrollment change work order](LEAD-OWNER-ENROLLMENT-CHANGE.md)
+narrows a subsequent register-side begin/finish slice. It is contract-only and
+requires its own review and acceptance before separately authorized implementation.
