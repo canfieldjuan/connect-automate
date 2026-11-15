@@ -308,3 +308,8 @@ Track operating inputs in [issue 101](https://github.com/canfieldjuan/connect-au
 The proposed [offline enrollment change work order](LEAD-OWNER-ENROLLMENT-CHANGE.md)
 narrows a subsequent register-side begin/finish slice. It is contract-only and
 requires its own review and acceptance before separately authorized implementation.
+
+The proposed [offline association correction work order](LEAD-OWNER-ASSOCIATION-CORRECTION.md)
+narrows a subsequent same-business correction and retained withdrawal-history slice.
+It is contract-only and requires its own review and acceptance before separately
+authorized implementation.
