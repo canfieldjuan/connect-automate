@@ -51,8 +51,16 @@ class FinishChange(CommandBase):
     decision_id: UuidV4
 
 
-Command = TypeAdapter(Annotated[CreateCommand | WithdrawCommand | BeginChange | FinishChange,
-                                Field(discriminator="command")])
+class CorrectAssociation(CommandBase):
+    command: Literal["correct_association"]
+    proof_id: UuidV4
+    expected_revision: Revision
+
+
+Command = TypeAdapter(Annotated[
+    CreateCommand | WithdrawCommand | BeginChange | FinishChange | CorrectAssociation,
+    Field(discriminator="command"),
+])
 
 
 class Proof(Closed):
@@ -102,6 +110,13 @@ class Association(Proof):
     verification_ref: UuidV4
 
 
+class AssociationCorrection(Association):
+    kind: Literal["ASSOCIATION_CORRECTION"]
+    expected_revision: Revision
+    grant_revision: Revision
+    enrollment_revision: Revision
+
+
 class Consumption(Proof):
     kind: Literal["CONSUMPTION"]
     binding: ConsumeBinding
@@ -115,7 +130,8 @@ class Consumption(Proof):
 
 
 Evidence = Annotated[
-    Grant | Enrollment | EnrollmentCompletion | Issuance | Association | Consumption,
+    Grant | Enrollment | EnrollmentCompletion | Issuance | Association | AssociationCorrection
+    | Consumption,
     Field(discriminator="kind"),
 ]
 EVIDENCE = TypeAdapter(Evidence)
