@@ -144,7 +144,8 @@ def test_correction_existing_wrong_bindings(reg, field):
     new_enrollment(reg, organization=2)
     gp = reg.proof(evidence("GRANT", 31, provenance_ref=uid(32), policy_revision=1))
     reg.client().apply(command(reg, "grant", 31, gp))
-    ip = reg.proof(evidence("ISSUANCE", 43, grant_id=uid(10), envelope_sha256="a" * 64))
+    ip = reg.proof(evidence("ISSUANCE", 43, grant_id=uid(10), grant_revision=1,
+                                 envelope_sha256="a" * 64))
     reg.client().apply(command(reg, "issuance", 43, ip))
     ap = reg.proof(
         evidence(

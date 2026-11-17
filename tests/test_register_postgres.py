@@ -62,7 +62,8 @@ def setup_path(reg, *, lifetime=timedelta(minutes=10), source_lifetime=None):
         authority_expires_at=instant(now + lifetime),
         required_source_expires_at=(instant(now + source_lifetime)
                                    if source_lifetime is not None else None)))
-    issuance = reg.proof(evidence("ISSUANCE", 12, grant_id=uid(10), envelope_sha256="a" * 64))
+    issuance = reg.proof(evidence("ISSUANCE", 12, grant_id=uid(10), grant_revision=1,
+                                 envelope_sha256="a" * 64))
     reg.client().apply(command(reg, "grant", 10, grant))
     reg.client("enrollment").apply(command(reg, "enroll", 11, enrollment))
     reg.client().apply(command(reg, "issuance", 12, issuance))
@@ -152,7 +153,8 @@ def test_existing_mismatched_proof_refuses_with_valid_control(reg, mismatch):
     # Both commercial sources and entitlements exist: an FK alone cannot protect the binding.
     grant = reg.proof(evidence("GRANT", 30, provenance_ref=uid(40), policy_revision=1))
     reg.client().apply(command(reg, "grant", 30, grant))
-    issuance = reg.proof(evidence("ISSUANCE", 32, grant_id=uid(30), envelope_sha256="f" * 64))
+    issuance = reg.proof(evidence("ISSUANCE", 32, grant_id=uid(30), grant_revision=1,
+                                 envelope_sha256="f" * 64))
     reg.client().apply(command(reg, "issuance", 32, issuance))
     if mismatch == "record":
         # An existing record's proof cannot authorize creating another record.
@@ -208,7 +210,7 @@ def test_changed_signature_or_real_qualification_is_not_importable(reg):
 
 @pytest.mark.parametrize("statement", [
     "INSERT INTO licensing_register.control VALUES(false,null,false,0,null)",
-    "UPDATE licensing_register.grants SET state='CURRENT'",
+    "UPDATE licensing_register.grant_revisions SET state='CURRENT'",
     "INSERT INTO licensing_register.proofs SELECT * FROM licensing_register.proofs",
     "SELECT * FROM licensing_register.proofs",
     "SELECT licensing_register.snapshot()",
@@ -257,7 +259,8 @@ def test_stale_revision_and_epoch_are_not_defaults(reg):
 
 
 @pytest.mark.parametrize("mutation", [
-    "UPDATE licensing_register.grants SET state='WITHDRAWN'",
+    "UPDATE licensing_register.grant_revisions SET reason='RECORD_CORRECTION',"
+    "revision=2,decision_revision=2",
     "UPDATE licensing_register.proofs SET document=jsonb_set(document,'{policy_revision}','2')",
     "UPDATE licensing_register.journal SET result='{}'",
     "DELETE FROM licensing_register.journal",
@@ -270,6 +273,7 @@ def test_corrupt_history_is_stop_even_on_replay(reg, mutation):
     c = command(reg, "grant", 10, p)
     reg.client().apply(c)
     with reg.admin() as db:
+        db.execute("SET LOCAL session_replication_role=replica")
         db.execute(mutation)
     before = reg.snapshot()
     with pytest.raises(psycopg.Error, match="HISTORY_CORRUPT"):
@@ -428,7 +432,7 @@ def test_competing_associations_commit_once(reg, repeat, conflict):
         assert db.execute("SELECT count(*) FROM licensing_register.journal").fetchone()[0] == 4
 
 
-@pytest.mark.parametrize("table,event", [("grants", "INSERT"), ("journal", "INSERT"),
+@pytest.mark.parametrize("table,event", [("grant_revisions", "INSERT"), ("journal", "INSERT"),
                                        ("control", "UPDATE")])
 def test_failure_after_each_write_rolls_back_whole_command(reg, table, event):
     import psycopg

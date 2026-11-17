@@ -107,3 +107,63 @@ def test_correction_closed_fields_and_positive_boundaries():
                   {"actor": uid(8)}, {"verified": True}, {"organization_id": uid(9)}):
         with pytest.raises(ValidationError):
             r.Command.validate_python(c | extra)
+
+
+def test_grant_revision_and_issuance_closed_models():
+    c = command(command="revise_grant", expected_revision=1)
+    p = dict(
+        version="offline-register-evidence/1",
+        evidence_class="OFFLINE_CONFORMANCE",
+        qualification_pass=False,
+        proof_id=uid(1),
+        record_id=uid(2),
+        organization_id=uid(3),
+        kind="GRANT_REVISION",
+        expected_revision=1,
+        provenance_ref=uid(4),
+        policy_revision=1,
+    )
+    i = dict(
+        version="offline-register-evidence/1",
+        evidence_class="OFFLINE_CONFORMANCE",
+        qualification_pass=False,
+        proof_id=uid(1),
+        record_id=uid(2),
+        organization_id=uid(3),
+        kind="ISSUANCE",
+        grant_id=uid(4),
+        grant_revision=1,
+        envelope_sha256="a" * 64,
+    )
+    for value in (1, 2**63 - 1):
+        assert (
+            r.Command.validate_python(c | {"expected_revision": value}).expected_revision == value
+        )
+        for model, field in (
+            (p, "expected_revision"),
+            (p, "policy_revision"),
+            (i, "grant_revision"),
+        ):
+            assert getattr(r.EVIDENCE.validate_python(model | {field: value}), field) == value
+    for value in (None, 0, -1, True, False, "", "1", 2**63):
+        with pytest.raises(ValidationError):
+            r.Command.validate_python(c | {"expected_revision": value})
+        for model, field in (
+            (p, "expected_revision"),
+            (p, "policy_revision"),
+            (i, "grant_revision"),
+        ):
+            with pytest.raises(ValidationError):
+                r.EVIDENCE.validate_python(model | {field: value})
+    for model, adapter in ((c, r.Command), (p, r.EVIDENCE), (i, r.EVIDENCE)):
+        for field in model:
+            # Common protocol version and every branch field are explicitly required here.
+            with pytest.raises(ValidationError):
+                adapter.validate_python({k: v for k, v in model.items() if k != field})
+        for extra in ({"actor": uid(5)}, {"verified": True}, {"change_id": uid(6)}):
+            with pytest.raises(ValidationError):
+                adapter.validate_python(model | extra)
+    with pytest.raises(ValidationError):
+        r.EVIDENCE.validate_python(p | {"kind": "GRANT"})
+    with pytest.raises(ValidationError):
+        r.EVIDENCE.validate_python(i | {"provenance_ref": uid(4)})

@@ -51,6 +51,12 @@ class FinishChange(CommandBase):
     decision_id: UuidV4
 
 
+class ReviseGrant(CommandBase):
+    command: Literal["revise_grant"]
+    proof_id: UuidV4
+    expected_revision: Revision
+
+
 class CorrectAssociation(CommandBase):
     command: Literal["correct_association"]
     proof_id: UuidV4
@@ -58,7 +64,7 @@ class CorrectAssociation(CommandBase):
 
 
 Command = TypeAdapter(Annotated[
-    CreateCommand | WithdrawCommand | BeginChange | FinishChange | CorrectAssociation,
+    CreateCommand | WithdrawCommand | BeginChange | FinishChange | CorrectAssociation | ReviseGrant,
     Field(discriminator="command"),
 ])
 
@@ -76,6 +82,11 @@ class Grant(Proof):
     kind: Literal["GRANT"]
     provenance_ref: UuidV4
     policy_revision: Revision
+
+
+class GrantRevision(Grant):
+    kind: Literal["GRANT_REVISION"]
+    expected_revision: Revision
 
 
 class Enrollment(Proof):
@@ -99,6 +110,7 @@ class EnrollmentCompletion(Proof):
 class Issuance(Proof):
     kind: Literal["ISSUANCE"]
     grant_id: UuidV4
+    grant_revision: Revision
     envelope_sha256: Digest
 
 
@@ -130,8 +142,8 @@ class Consumption(Proof):
 
 
 Evidence = Annotated[
-    Grant | Enrollment | EnrollmentCompletion | Issuance | Association | AssociationCorrection
-    | Consumption,
+    Grant | GrantRevision | Enrollment | EnrollmentCompletion | Issuance | Association
+    | AssociationCorrection | Consumption,
     Field(discriminator="kind"),
 ]
 EVIDENCE = TypeAdapter(Evidence)

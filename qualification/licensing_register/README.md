@@ -10,7 +10,7 @@ Run with PostgreSQL 16 binaries installed:
 
 ```sh
 uv sync --locked --all-groups
-RUN_REGISTER_POSTGRES=1 uv run --group register pytest tests/test_register_postgres.py tests/test_register_protocol.py tests/test_register_enrollment_change.py tests/test_register_association_correction.py
+RUN_REGISTER_POSTGRES=1 uv run --group register pytest tests/test_register_postgres.py tests/test_register_protocol.py tests/test_register_enrollment_change.py tests/test_register_association_correction.py tests/test_register_grant_revisions.py
 ```
 
 The tests create a fresh private cluster under pytest's managed base temp, with a private Unix
@@ -52,7 +52,7 @@ A complete jointly rolled-back snapshot cannot be detected by its own hash chain
 supported restore must impose the external lock. `lock_restored()` models that
 interlock; there is no unlock command or claim of production continuity.
 
-Not implemented: sale/provider ingestion, commercial corrections,
+Not implemented: sale/provider ingestion, sale corrections,
 business transfers, real enrollment verification/registration ceremony, source custody or
 retention deletion, production authentication, deployment, continuity witness,
 restore unlock, recovery approval or publication. Existing offline issuer and
@@ -65,8 +65,9 @@ This is a bounded mechanism implementation, not the complete logical record or
 service command schema in the accepted contract. Its separate `offline-register/1`
 version must not be accepted by a production licensing service. Fixture database
 identity plus a fresh epoch isolates each run; the production register ID/schema
-revision envelope is still to implement. Enrollment and association relations now
-retain their revisions; commercial history still relies on journal snapshots.
+revision envelope is still to implement. Enrollment, association and synthetic grant
+relations retain their revisions; sale history and real commercial adapters remain
+unimplemented.
 The full production schema, event timestamps and compact audit references remain
 unimplemented. The fixture journal contains only closed opaque synthetic
 command fields, never human notes or identity text.
@@ -128,5 +129,34 @@ A correction can restore a withdrawn association, keep the same supporting facts
 and verification reference, or select another current enrollment of the same
 business. Original entitlement/organization and consumption stay fixed. Withdrawal
 does not require current support; consumption attachment remains historical evidence
-and can follow correction or withdrawal. Grant revision retention and real adapters
-remain outside this slice. No fixture result is recovery or host authority.
+and can follow correction or withdrawal. Grant retention is covered below; real
+adapters remain unimplemented. No fixture result is recovery or host authority.
+
+
+## Register-side grant revisions and issuance history
+
+Implements the offline work order accepted at
+`86e67bc02a8a173fd06ff952598cf23b4ea2c73a`. `revise_grant` requires an exact expected
+head and a distinct signed synthetic `GRANT_REVISION` proof bound to that head,
+grant and organization. It can correct a current decision or restore a withdrawn
+grant while retaining the same provenance reference and policy revision. Initial
+grant creation, revision and withdrawal share one SQL transition owner.
+
+Grant heads select retained revisions. State/reason CHECK branches and scoped
+decision-state FKs retain the original and prior decisions without presenting a
+withdrawal as current authority. Snapshot history covers all retained grant proofs.
+Both issuance and association references use a constrained `CURRENT` target-state
+FK, so a withdrawal revision cannot serve as their grant decision.
+
+Every synthetic issuance producer now supplies a required `grant_revision`; old
+proofs without it fail closed, with no inferred initial/latest revision. An attested
+issuance can be recorded against an older retained decision after correction or
+withdrawal. This does not issue a licence or qualify actual issuer chronology.
+New association decisions still check current grant/enrollment heads, but can use a
+newer grant decision than the original issuance. Issuance and consumed bindings
+remain immutable; grant restoration does not mutate a withdrawn association.
+
+The unchanged fixture version strings describe disposable offline inputs only.
+Fresh databases are required for this changed fixture schema; no deployed database
+conversion or production API compatibility is claimed. Sale/provider policy,
+real grant provenance and all four live/identity holds remain outside this work.
