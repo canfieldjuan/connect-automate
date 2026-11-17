@@ -381,7 +381,10 @@ def test_grant_write_faults_roll_back_every_stage(reg, kind, table, event):
     [
         "DELETE FROM licensing_register.grant_heads",
         "DELETE FROM licensing_register.grant_revisions WHERE revision=1",
-        "UPDATE licensing_register.grant_revisions SET decision_revision=1 WHERE revision=3",
+        pytest.param(
+            "UPDATE licensing_register.grant_revisions SET decision_revision=1 WHERE revision=3",
+            id="non-head-lineage",
+        ),
         "DELETE FROM licensing_register.proofs WHERE kind='GRANT'",
         "UPDATE licensing_register.proofs SET document=jsonb_set(document,'{policy_revision}','2') "
         "WHERE kind='GRANT_REVISION'",
@@ -401,10 +404,12 @@ def test_old_grant_and_issuance_corruption_is_stop(reg, mutation):
     c = revise(reg)
     reg.client().apply(c)
     reg.client().apply(command(reg, "withdraw_grant", 10, revision=2))
+    # Keep revision 3 behind the head so its lineage is visible only in retained history.
+    reg.client().apply(command(reg, "withdraw_grant", 10, revision=3))
     with reg.admin() as db:
         db.execute("SET LOCAL session_replication_role=replica")
         db.execute(mutation)
-    for request in (c, revise(reg, 3), issuance(reg)):
+    for request in (c, revise(reg, 4), issuance(reg)):
         assert_refuses(reg, request, "HISTORY_CORRUPT")
 
 
@@ -425,6 +430,13 @@ def test_old_grant_and_issuance_corruption_is_stop(reg, mutation):
         (
             "UPDATE licensing_register.grant_revisions SET state='WITHDRAWN' WHERE revision=2",
             "CheckViolation",
+        ),
+        pytest.param(
+            "UPDATE licensing_register.grant_revisions SET proof = "
+            "(SELECT proof FROM licensing_register.grant_revisions WHERE revision=2) "
+            "WHERE revision=3",
+            "CheckViolation",
+            id="withdrawn-proof",
         ),
         (
             "UPDATE licensing_register.grant_revisions "
@@ -455,6 +467,19 @@ def test_grant_relational_constraints(reg, mutation, error):
     before = reg.snapshot()
     with pytest.raises(getattr(psycopg.errors, error)), reg.admin() as db:
         db.execute(mutation)
+    assert reg.snapshot() == before
+
+
+def test_grant_original_revision_fk_preserves_unreferenced_initial_decision(reg):
+    import psycopg
+
+    # No issuance, association or withdrawal refers to revision 1.
+    proof = reg.proof(evidence("GRANT", 10, provenance_ref=uid(20), policy_revision=1))
+    reg.client().apply(command(reg, "grant", 10, proof))
+    reg.client().apply(revise(reg))
+    before = reg.snapshot()
+    with pytest.raises(psycopg.errors.ForeignKeyViolation), reg.admin() as db:
+        db.execute("DELETE FROM licensing_register.grant_revisions WHERE revision=1")
     assert reg.snapshot() == before
 
 
