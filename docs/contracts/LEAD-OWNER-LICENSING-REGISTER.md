@@ -318,3 +318,8 @@ The proposed [offline grant revisions and issuance-binding work order](LEAD-OWNE
 narrows retained grant decisions, evidenced correction and exact historical issuance
 binding in the synthetic fixture. It is contract-only and requires its own review
 and explicit revision acceptance before separately authorized implementation.
+
+The proposed [offline restore fence work order](LEAD-OWNER-REGISTER-RESTORE-FENCE.md)
+defines how to qualify a source writer fence, isolated restore and independent
+continuity comparison on disposable PostgreSQL. It requires separate review,
+acceptance and implementation authorization.
