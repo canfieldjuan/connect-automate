@@ -41,10 +41,12 @@ continuity checkpoint. The checkpoint binds the source sequence, journal tail an
 digest of the retained domain projection. Use strict UUID and digest types,
 nonnegative sequence with the existing empty-journal sentinel, and closed phase and
 result types. Use SQLite keys, checks and transactions for phase shape, unique
-identity and checkpoint publication. One transition owner checks progression and
-exact identity binding. Fixture-derived target identity includes the privately
-allocated cluster and database. A name or caller-provided path alone cannot
-identify a restore target. No secrets, proof payloads or private-source copies
+identity and checkpoint publication. A unique index over active restore intents
+enforces one active operation per logical register. One transition owner checks
+progression and exact identity binding. Read the PostgreSQL cluster identifier
+from `pg_control_system().system_identifier` and database OID from `pg_database`
+over the fixture's private socket. Use the pair for source and target identity.
+No secrets, proof payloads or private-source copies
 belong in the checkpoint. A missing control store in a resume path cannot mean
 that the operation starts over.
 
@@ -81,12 +83,30 @@ for database enforcement.
    target created by the controller. Bind the generated archive digest to its
    source identity and epoch in controller-owned metadata when taking the backup.
    Verify that binding before import, and check the restored source epoch before
-   rotating it. The controller withholds PostgreSQL database `CONNECT` from both
-   application roles and `PUBLIC` before import starts and through committed target
-   lock installation. Import under fixture-owned roles with ownership and access
-   restoration suppressed, and verify the target's ACL and locked state before
-   exposing it even for denial tests. These barriers cover raw SQL clients as
-   well as fixture wrappers. Preserve the locked source in its original location.
+   rotating it. Create the target with
+   [`ALLOW_CONNECTIONS false`](https://www.postgresql.org/docs/16/sql-createdatabase.html)
+   so a crash immediately after creation cannot expose the default `PUBLIC`
+   access. From the maintenance database, revoke `CONNECT` from `PUBLIC` and
+   withhold it from all scoped roles. Grant access only to the fixture roles
+   needed for import and verification. Verify the target's identity and
+   `pg_database.datacl`, including effective scoped-role access, and check
+   `pg_stat_activity` for no target sessions before enabling connections for
+   import. A target left unbound by a crash stays closed.
+
+   [Restore into the precreated database](https://www.postgresql.org/docs/16/app-pgrestore.html)
+   with archive ownership and object grants preserved. Use a non-superuser
+   fixture login with membership in the source object owner role and the
+   target privileges needed to restore its objects. Keep database creation and
+   connection grants under the controller's ownership outside the import.
+   Before opening scoped connections for denial tests, compare source and target
+   schema, relation and function ACLs (`nspacl`, `relacl`, `proacl`) and owners
+   (`nspowner`, `relowner`, `proowner`) by object identity and role name.
+   Use PostgreSQL's `aclexplode` and `acldefault` to compare normalized grants,
+   including grantor, grantee, privilege and grant option. An explicit owner-only
+   ACL and its equivalent catalog default can represent the same privileges.
+   Verify the restored `apply` still runs as the source's restricted owner.
+   Keep scoped `CONNECT` withheld until the new epoch and locked state commit
+   and these checks pass. Preserve the locked source in its original location.
 4. **Compare while locked.** Validate the target's retained history and identity
    against the source binding in the independent restore record. Compare sequence,
    journal tail and retained domain projection without comparing the deliberately
@@ -111,8 +131,8 @@ explicitly to the same source checkpoint. No destructive cleanup is needed.
 | Fail first and positive control | With the fixture's current local history check, an honest earlier snapshot validates internally despite a later committed withdrawal or consumption. An unfenced active fixture remains usable for normal commands and exact replay. |
 | Real backup and continuity | Restore an older genuine dump after those later commits. Independently captured sequence/tail/projection reject history loss. Restore a current genuine dump and report parity while locked. Include a same-sequence digest mismatch and an altered/non-head retained decision. Preserve source and target domain snapshots on denied attempts. |
 | Source ordering | Exercise licensing and enrollment through scoped clients and direct SQL. Independent processes and deterministic barriers cover both orders of a write or replay racing the fence. Show the last pre-fence commit is captured and later operations generate no new successful result. |
-| Target quarantine | Try the prior and new epochs against fresh writes and exact replays. Probe actual connections during partial import and before lock commit. Check current and old credentials against the intended denial boundary. Verify post-lock denial before replay if a test opens a scoped connection. |
-| Crash and retry | Interrupt before the SQL fence commits, after it commits but before checkpoint publication, during import and after target lock commit. Resume the same operation using a fresh controller process. Neither ambiguity nor a lost reply opens the target or clears the source fence. |
+| Target quarantine | Probe actual connections with valid scoped credentials at creation, during import and before lock commit. After lock and ownership/ACL parity are verified, open controlled scoped connections and require `apply` to raise `REGISTER_LOCKED` for fresh writes and exact replays at both epochs. A connection, schema or function privilege error fails the post-lock test. Show the same roles reach `apply` successfully on the active source before fencing. |
+| Crash and retry | Interrupt before the SQL fence commits, after it commits but before checkpoint publication, after target creation but before the `CONNECT` revoke, during import and after target lock commit. Resume the same operation using a fresh controller process. Neither ambiguity nor a lost reply opens the target or clears the source fence. |
 | Witness and role boundaries | Missing, unreadable, wrong-register or stale-operation control records cannot produce a satisfactory result. Wrong identity/epoch, another fixture's genuine archive, an altered archive and mixed or missing checkpoint fields fail. Probe direct scoped-role writes to fence state and compare protected results with valid controls. |
 | Isolation and regressions | Restore only controller-owned synthetic backups and prove that import cannot reach the external store. Use real PostgreSQL transport and transactions, not mocked admission. Preserve existing command/epoch/replay tests and exercise removal of each new fence or comparison protection against its named regression. |
 
@@ -121,7 +141,8 @@ explicitly to the same source checkpoint. No destructive cleanup is needed.
 | Constraint and cost | Concrete need and why a lighter rule fails |
 | --- | --- |
 | Restore pauses both scoped write lanes | The register and enrollment writers share authority and the journal. A lock around only one lane or around a client wrapper permits the other lane or direct SQL to change the captured source. A brief source transaction establishes the boundary without adding a new approval role. |
-| Independent checkpoint and target quarantine | A restore needs controller storage and an isolated target. A same-backup marker or a lock applied only after import leaves rollback or startup access untested. The fixture uses existing local dependencies and an actual PostgreSQL permission/socket boundary. |
+| Independent checkpoint and target quarantine | A restore needs controller storage and an isolated target. A same-backup marker misses rollback. A post-creation revoke alone leaves a crash window before revocation. Preserve object ownership and grants so the real register boundary remains testable. |
+| One active restore per register | A second restore must resume the active operation or wait for its resolution. Concurrent operations could give the same fenced source competing checkpoints and target identities. A retry under the existing operation ID and a SQLite unique index cover this fixture without adding a separate coordinator. |
 | Locked diagnostic exit | The fixture can test register continuity. It has no independent private evidence and deletion-tombstone reconciliation or proven production authority handoff. Publishing a writable target based on matching register hashes would bypass those prerequisites. |
 
 The fixture assumes the privileged controller and its external storage are outside
