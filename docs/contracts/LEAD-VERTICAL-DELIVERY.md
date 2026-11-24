@@ -30,6 +30,11 @@ Before a guarded non-squash merge, this acceptance-only delta needs oversight
 PASS, a clean connector review and green CI at its new head, reconciled findings,
 no unresolved review threads or changes requested, and clean local/remote parity.
 
+The [proposed first-proof amendment](LEAD-FIRST-PROOF-AMENDMENT.md) places V1c,
+V1d, V1e and V2 ahead of native owner provisioning and release setup. Its
+supersession rules take effect only after independent review and Juan's
+exact-revision acceptance. The accepted PR 69 text below is preserved.
+
 ---
 
 # Lead delivery: first real notification, local list, automatic setup
