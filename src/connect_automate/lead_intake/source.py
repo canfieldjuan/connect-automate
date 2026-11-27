@@ -19,6 +19,9 @@ from ..entitlement import UuidV4
 
 MAX_SOURCE_BYTES = 2097152
 MAX_BODY_CHARS = 200000
+# UTF-8 uses up to four bytes per character. Base64 encodes each three bytes
+# into four characters, including padding.
+_MAX_FORM_BASE64 = ((MAX_BODY_CHARS * 4 + 2) // 3) * 4
 MAX_OPAQUE_BYTES = 256
 MAX_DEPTH = 16
 MAX_METADATA_COUNT = 9007199254740991
@@ -135,22 +138,66 @@ class Snapshot(_Closed):
     attachments: Attachments
 
 
+class FormSourceEvidence(_Closed):
+    raw_message_sha256: Digest
+    signing_domain: Opaque
+    signing_selector: Opaque
+
+
+class FormPart(_Closed):
+    part_id: Opaque
+    media_type: Literal["text/plain"]
+    charset: Literal["utf-8"]
+    content_base64: Annotated[
+        str,
+        Field(
+            max_length=_MAX_FORM_BASE64,
+            pattern=r"^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$",
+            repr=False,
+        ),
+    ]
+    sha256: Digest
+    source_owner_evidence: FormSourceEvidence
+
+    def content_bytes(self) -> bytes:
+        return base64.b64decode(self.content_base64)
+
+    @model_validator(mode="after")
+    def _integrity(self):
+        raw = self.content_bytes()
+        if base64.b64encode(raw).decode("ascii") != self.content_base64:
+            raise ValueError("noncanonical part encoding")
+        if len(raw.decode("utf-8")) > MAX_BODY_CHARS:
+            raise ValueError("excess form length")
+        if hashlib.sha256(raw).hexdigest() != self.sha256:
+            raise ValueError("form digest mismatch")
+        return self
+
+
+class FormSnapshot(_Closed):
+    snapshot_id: UuidV4
+    representation: Literal["exact-mime-part"]
+    template_id: Literal["synthetic-form-v1"]
+    captured_at: Instant
+    part: FormPart
+    attachments: Attachments
+
+
 class Retention(_Closed):
     policy_id: UuidV4
     policy_version: Revision
     recovery_deadline: Instant
 
 
-class Payload(_Closed):
+class _SourcePayload(_Closed):
     schema_name: Literal["lead.source.admission"] = Field(alias="schema")
-    schema_version: Literal["1.0"]
     organization_id: UuidV4
     event_id: UuidV4
     watcher_event_id: Digest
     occurred_at: Instant
     source: SourceIdentity
     trigger: Trigger
-    snapshot: Snapshot
+    snapshot: Snapshot | FormSnapshot
     retention: Retention
 
     @model_validator(mode="after")
@@ -159,6 +206,16 @@ class Payload(_Closed):
         if not self.snapshot.captured_at <= self.occurred_at < self.retention.recovery_deadline:
             raise ValueError("invalid source time ordering")
         return self
+
+
+class Payload(_SourcePayload):
+    schema_version: Literal["1.0"]
+    snapshot: Snapshot
+
+
+class FormPayload(_SourcePayload):
+    schema_version: Literal["2.0"]
+    snapshot: FormSnapshot
 
 
 class Authorization(_Closed):
@@ -170,7 +227,7 @@ class Authorization(_Closed):
 class UntrustedSource(_Closed):
     """Syntax-valid only: signature, authority, scope and freshness are unverified."""
 
-    payload: Payload
+    payload: Annotated[Payload | FormPayload, Field(discriminator="schema_version")]
     authorization: Authorization
 
 

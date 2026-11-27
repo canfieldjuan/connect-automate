@@ -21,6 +21,7 @@ from .auth import SourceAuthenticationError, authenticate_source
 from .receipts import ReceiptReference
 from .source import (
     MAX_SOURCE_BYTES,
+    FormPayload,
     Revision,
     _Closed,
     canonical_source,
@@ -164,6 +165,10 @@ class SourceAdmission:
             raw, trust=authority, now=self._store._check_clock(db, self._clock())
         )
         payload = first.source.payload
+        # The V2 wire format can be signed now. It enters custody only once
+        # the form parser is available here, before the first write.
+        if isinstance(payload, FormPayload):
+            raise SourceAuthenticationError()
         if request is None:
             self._store._unreserved_event(db, first.namespace_id, payload.event_id)
         else:

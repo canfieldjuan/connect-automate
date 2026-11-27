@@ -67,6 +67,7 @@ jobs:
           tests/test_lead_source_clock.py
           tests/test_lead_source_content.py
           tests/test_lead_source.py
+          tests/test_lead_form_source.py
           tests/test_lead_custody_protocol.py
           tests/test_lead_custody_status.py
           tests/test_lead_custody_status_process.py
