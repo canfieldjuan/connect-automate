@@ -392,45 +392,8 @@ class _IdentityHistory:
         self.previous_keys = current
 
 
-class SourceStore:
-    """Opt-in local host authority and transaction owner for source custody.
-
-    The root must already exist and be private, including inheritable Windows
-    ACLs. No directory repair, implicit enrollment, database upgrade or caller-
-    supplied trust on source admission is provided. ``initialize`` is explicit;
-    ordinary reads/publications never create an absent store.
-    """
-
-    @_boundary
-    def __init__(
-        self,
-        path: Path,
-        *,
-        private_root: Path,
-        host_id: str,
-        organization_id: str,
-        busy_timeout_ms: int = 5000,
-    ):
-        valid = False
-        try:
-            host_id = _UUID.validate_python(host_id)
-            organization_id = _UUID.validate_python(organization_id)
-            valid = type(busy_timeout_ms) is int and 1 <= busy_timeout_ms <= 30000
-        except (ValueError, TypeError):
-            pass
-        if not valid:
-            raise SourceStoreInputError()
-        self.path, self.root = Path(path), Path(private_root)
-        if (
-            not self.path.is_absolute()
-            or not self.root.is_absolute()
-            or self.path.parent != self.root
-            or ".." in self.path.parts
-            or self.path.name in ("", ".", "..")
-        ):
-            raise SourceStoreInputError()
-        self.host_id, self.organization_id = host_id, organization_id
-        self.busy_timeout_ms = busy_timeout_ms
+class _PrivateDatabaseFile:
+    """Shared private database placement and file lifecycle."""
 
     def _paths(self, *, allow_missing: bool = False) -> None:
         # Reject links in ancestors too. A same-user process remains trusted;
@@ -476,6 +439,47 @@ class SourceStore:
         else:
             os.close(fd)
         self._paths()
+
+
+class SourceStore(_PrivateDatabaseFile):
+    """Opt-in local host authority and transaction owner for source custody.
+
+    The root must already exist and be private, including inheritable Windows
+    ACLs. No directory repair, implicit enrollment, database upgrade or caller-
+    supplied trust on source admission is provided. ``initialize`` is explicit;
+    ordinary reads/publications never create an absent store.
+    """
+
+    @_boundary
+    def __init__(
+        self,
+        path: Path,
+        *,
+        private_root: Path,
+        host_id: str,
+        organization_id: str,
+        busy_timeout_ms: int = 5000,
+    ):
+        valid = False
+        try:
+            host_id = _UUID.validate_python(host_id)
+            organization_id = _UUID.validate_python(organization_id)
+            valid = type(busy_timeout_ms) is int and 1 <= busy_timeout_ms <= 30000
+        except (ValueError, TypeError):
+            pass
+        if not valid:
+            raise SourceStoreInputError()
+        self.path, self.root = Path(path), Path(private_root)
+        if (
+            not self.path.is_absolute()
+            or not self.root.is_absolute()
+            or self.path.parent != self.root
+            or ".." in self.path.parts
+            or self.path.name in ("", ".", "..")
+        ):
+            raise SourceStoreInputError()
+        self.host_id, self.organization_id = host_id, organization_id
+        self.busy_timeout_ms = busy_timeout_ms
 
     def _wait(self, db: sqlite3.Connection, sql: str, deadline: float):
         while True:
