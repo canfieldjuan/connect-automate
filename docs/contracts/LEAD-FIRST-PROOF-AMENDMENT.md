@@ -33,6 +33,9 @@ remains a shipping requirement. The original PR 69 text remains archived intact.
 
 ## Work order
 
+The [V1c form-record work order](LEAD-V1C-FORM-RECORD-WORK-ORDER.md) bounds the
+first executable change from a synthetic form source to one lead.
+
 | Order and owner | Scope and exit |
 | --- | --- |
 | V1c, Lead Intake with EW contract input | First executable slice after separate authorization. Define one closed versioned template and field schema, structural extraction and one canonical idempotent lead record. Use synthetic fixtures with the same expected template structure before Juan selects a message. This qualifies the modeled structure. The actual selected template and authenticating domain must be matched privately before a real lead can commit. Pin the lossless source representation and use existing custody and workflow owners. |
