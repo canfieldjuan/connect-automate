@@ -7,6 +7,7 @@ from copy import deepcopy
 from datetime import timedelta
 
 import pytest
+from test_lead_form_source import form_envelope
 from test_lead_source_auth import NOW, OTHER, encode, envelope, key, resign, trust, trust_data
 from test_lead_source_store import database, store, trigger_statement
 from test_lead_source_store import private_root as private_root
@@ -31,6 +32,17 @@ def admission(private_root):
     owner = store(private_root)
     owner.initialize(trust())
     return SourceAdmission(owner, clock=lambda: NOW)
+
+
+def test_signed_v2_does_not_enter_custody_before_template_admission(admission, private_root):
+    raw = resign(form_envelope())
+    assert authenticate_source(raw, trust=trust(), now=NOW).source.payload.schema_version == "2.0"
+    with database(store(private_root).path) as db:
+        before = tuple(db.iterdump())
+    with pytest.raises(SourceAuthenticationError):
+        admission.admit_source(raw)
+    with database(store(private_root).path) as db:
+        assert tuple(db.iterdump()) == before
 
 
 @pytest.mark.parametrize("indented", [False, True])
